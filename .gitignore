@@ -1,0 +1,31 @@
+bin
+tmp
+
+# 默认忽略所有点文件/目录，按需反忽略
+.*
+!.gitignore
+!.editorconfig
+!.golangci.yml
+!.github
+!.ignore
+
+# 覆盖率报告
+coverage.out
+coverage.html
+*.coverprofile
+
+# 测试输出
+*.test
+test-output/
+
+# 临时与缓存文件
+*.tmp
+*.swp
+*.swo
+*~
+*.log
+
+# 本地草稿与临时脚本
+docs/review/
+scripts/comment_audit/main.go
+

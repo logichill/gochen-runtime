@@ -1,0 +1,52 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+  settings:
+    govet:
+      disable:
+        - inline
+    staticcheck:
+      checks:
+        - all
+        - -S*
+        - -ST*
+        - -QF*
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+      - path: _test\.go
+        text: "SA1012:"
+        linters:
+          - staticcheck
+      - path: httpx/request/request_body_test\.go
+        text: "SA1019:"
+        linters:
+          - staticcheck
+      - path: eventing/projection/manager_registry\.go
+        text: "SA2001:"
+        linters:
+          - staticcheck
+      - path: messaging/transport/memory/workers\.go
+        text: "SA2001:"
+        linters:
+          - staticcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
