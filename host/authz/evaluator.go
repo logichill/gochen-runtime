@@ -114,7 +114,7 @@ func (e *principalEvaluator) Evaluate(
 //   - ctx 已绑定范围 → 用它；
 //   - IsSystem → 全局。IsSystem 已经让 AllowsPermission 无条件放行，再给它
 //     一个受限范围没有意义；反过来说，不该看到全部数据的主体就不该被标记 IsSystem；
-//   - ActiveScopeID > 0 → 该单范围。这是 rbac-to-layered-authz.md §6 的锚点：
+//   - ActiveScopeID > 0 → 该单范围。见 Core docs/architecture/layered-authz.md「隔离、范围与主体」：
 //     "这次以哪个身份工作"由登录时显式激活，不靠推断；
 //   - 其余 → ScopeDenyAll，判定拒绝。想要"整棵子树可见"（VisibleScopes）
 //     必须显式提供 resolver，框架不替业务遍历范围树。

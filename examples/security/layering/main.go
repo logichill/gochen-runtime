@@ -319,7 +319,7 @@ func mustCrossIsolationContext(reason, operator string) context.Context {
 //
 // 真实系统里这一步由 Transport 的 AuthN 中间件完成（解析 token → 写入 Principal），
 // 其中 ActiveScopeID 是登录时**显式激活**的身份，不靠推断——见
-// docs/architecture/rbac-to-layered-authz.md §6。
+// Core docs/architecture/layered-authz.md「隔离、范围与主体」。
 func mustPrincipalContext(activeScopeID int64, permissions ...string) context.Context {
 	ctx, err := authz.WithPrincipal(context.Background(), authz.Principal{
 		SubjectID:     9,
