@@ -2,7 +2,6 @@ package quick
 
 import (
 	"context"
-	"reflect"
 	"strings"
 
 	"gochen-runtime/host/config"
@@ -42,7 +41,7 @@ func WithExtensions(exts ...any) ModuleOption {
 type quickModule struct {
 	id          string
 	name        string
-	registrar   any
+	registrar   func(httpx.IRouteGroup) error
 	middlewares []httpx.Middleware
 	deps        []string
 	extensions  []any
@@ -96,61 +95,7 @@ func (m *quickModule) RegisterRoutes(ctx context.Context) error {
 		group.Use(m.middlewares...)
 	}
 
-	switch r := m.registrar.(type) {
-	case func(httpx.IRouteGroup) error:
-		return r(group)
-	case interface {
-		RegisterRoutes(httpx.IRouteGroup) error
-	}:
-		return r.RegisterRoutes(group)
-	case func() (interface {
-		RegisterRoutes(httpx.IRouteGroup) error
-	}, error):
-		inst, err := r()
-		if err != nil {
-			return err
-		}
-		if inst != nil {
-			return inst.RegisterRoutes(group)
-		}
-		return nil
-	case func() (func(httpx.IRouteGroup) error, error):
-		fn, err := r()
-		if err != nil {
-			return err
-		}
-		if fn != nil {
-			return fn(group)
-		}
-		return nil
-	default:
-		// 兼容自定义命名函数类型（例如 type RouteRegistrarFunc func(httpx.IRouteGroup) error）。
-		//
-		// 形参与返回值都要求类型完全相同，不能放宽成 AssignableTo：
-		//   - 形参放宽会放进 func(*concreteGroup) error，而实际传入的是宿主给的
-		//     另一个具体类型，Call 时 panic；方向也正好反了（该问的是
-		//     IRouteGroup 能否传进形参，而非形参能否赋给 IRouteGroup）；
-		//   - 返回值放宽会放进 func(httpx.IRouteGroup) MyErr（值类型实现 error），
-		//     此时 res[0].IsNil() 对非 nilable 类型 panic。
-		// 放宽换来的那点灵活性不值得用启动期 panic 去换，落到 default 报
-		// InvalidInput 才是这里该有的失败模式。
-		if fnVal := reflect.ValueOf(m.registrar); fnVal.IsValid() && fnVal.Kind() == reflect.Func {
-			fnType := fnVal.Type()
-			routeGroupType := reflect.TypeOf((*httpx.IRouteGroup)(nil)).Elem()
-			errType := reflect.TypeOf((*error)(nil)).Elem()
-			if fnType.NumIn() == 1 && fnType.NumOut() == 1 &&
-				fnType.In(0) == routeGroupType &&
-				fnType.Out(0) == errType {
-				res := fnVal.Call([]reflect.Value{reflect.ValueOf(group)})
-				if !res[0].IsNil() {
-					return res[0].Interface().(error)
-				}
-				return nil
-			}
-		}
-		return errors.NewCode(errors.InvalidInput, "unsupported route registrar type in quick module").
-			WithContext("module", m.id)
-	}
+	return m.registrar(group)
 }
 
 var (
@@ -162,12 +107,8 @@ var (
 
 // Module 快速声明仅包含路由注册的轻量模块构造器。
 //
-// registrar 支持：
-//   - func(httpx.IRouteGroup) error (匿名函数或自定义命名函数类型，例如 quick.RESTRegistrar(app))
-//   - interface{ RegisterRoutes(httpx.IRouteGroup) error }
-//   - func() (interface{ RegisterRoutes(httpx.IRouteGroup) error }, error)
-//   - func() (func(httpx.IRouteGroup) error, error)
-func Module(name string, registrar any, opts ...ModuleOption) module.ModuleCtor {
+// registrar 接受路由注册函数；对象通过 RegisterRoutes 方法值传入，工厂在调用方显式求值。
+func Module(name string, registrar func(httpx.IRouteGroup) error, opts ...ModuleOption) module.ModuleCtor {
 	return func() (module.IModule, error) {
 		name = strings.TrimSpace(name)
 		if name == "" {

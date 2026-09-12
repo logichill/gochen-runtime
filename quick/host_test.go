@@ -82,17 +82,6 @@ func (r *testRouteRegistrarStruct) RegisterRoutes(g httpx.IRouteGroup) error {
 
 type customNamedRegistrar func(httpx.IRouteGroup) error
 
-// otherRouteGroup 同样实现 httpx.IRouteGroup，但与宿主实际传入的
-// *mockRouteGroup 是不同的具体类型——这正是 reflect 兜底放行具体类型形参时
-// fnVal.Call 会 panic 的场景。
-type otherRouteGroup struct{ mockRouteGroup }
-
-// valueError 是值类型实现的 error：reflect 兜底若按 AssignableTo 放行它，
-// res[0].IsNil() 会对非 nilable 类型 panic。
-type valueError struct{}
-
-func (valueError) Error() string { return "value error" }
-
 func TestModuleQuick_BasicLifecycle(t *testing.T) {
 	dummyMiddleware := func(c httpx.IContext, next func() error) error { return next() }
 	ctor := quick.Module("test-mod", nil,
@@ -179,7 +168,7 @@ func TestModuleQuick_RegisterRoutes_Branches(t *testing.T) {
 	})
 
 	// Helper for initialized route modules
-	initRouteModule := func(t *testing.T, registrar any, opts ...quick.ModuleOption) (module.IRouteModule, *mockRouteGroup) {
+	initRouteModule := func(t *testing.T, registrar func(httpx.IRouteGroup) error, opts ...quick.ModuleOption) (module.IRouteModule, *mockRouteGroup) {
 		mod, err := quick.Module("test-mod", registrar, opts...)()
 		require.NoError(t, err)
 		rm := mod.(module.IRouteModule)
@@ -205,47 +194,17 @@ func TestModuleQuick_RegisterRoutes_Branches(t *testing.T) {
 	})
 
 	// 6. Branch: interface{ RegisterRoutes(httpx.IRouteGroup) error }
-	t.Run("branch interface with RegisterRoutes", func(t *testing.T) {
+	t.Run("bound RegisterRoutes method", func(t *testing.T) {
 		regStruct := &testRouteRegistrarStruct{}
-		rm, group := initRouteModule(t, regStruct)
+		rm, group := initRouteModule(t, regStruct.RegisterRoutes)
 		err := rm.RegisterRoutes(ctx)
 		require.NoError(t, err)
 		assert.True(t, regStruct.called)
 		assert.Contains(t, group.routes, "GET /struct")
-	})
-
-	// 7. Branch: func() (interface{ RegisterRoutes(httpx.IRouteGroup) error }, error)
-	t.Run("branch factory returning interface", func(t *testing.T) {
-		regStruct := &testRouteRegistrarStruct{}
-		factory := func() (interface{ RegisterRoutes(httpx.IRouteGroup) error }, error) {
-			return regStruct, nil
-		}
-		rm, group := initRouteModule(t, factory)
-		err := rm.RegisterRoutes(ctx)
-		require.NoError(t, err)
-		assert.True(t, regStruct.called)
-		assert.Contains(t, group.routes, "GET /struct")
-	})
-
-	// 8. Branch: func() (func(httpx.IRouteGroup) error, error)
-	t.Run("branch factory returning func", func(t *testing.T) {
-		called := false
-		factory := func() (func(httpx.IRouteGroup) error, error) {
-			return func(g httpx.IRouteGroup) error {
-				called = true
-				g.POST("/factory-fn", func(c httpx.IContext) error { return nil })
-				return nil
-			}, nil
-		}
-		rm, group := initRouteModule(t, factory)
-		err := rm.RegisterRoutes(ctx)
-		require.NoError(t, err)
-		assert.True(t, called)
-		assert.Contains(t, group.routes, "POST /factory-fn")
 	})
 
 	// 9. Branch: Named func type (type CustomNamedRegistrar func(httpx.IRouteGroup) error)
-	t.Run("branch named func type via reflect fallback", func(t *testing.T) {
+	t.Run("named function type", func(t *testing.T) {
 		called := false
 		namedReg := customNamedRegistrar(func(g httpx.IRouteGroup) error {
 			called = true
@@ -257,44 +216,6 @@ func TestModuleQuick_RegisterRoutes_Branches(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, called)
 		assert.Contains(t, group.routes, "DELETE /named")
-	})
-
-	// 10. Branch: Unsupported type (default branch)
-	t.Run("branch unsupported registrar type returns InvalidInput", func(t *testing.T) {
-		rm, _ := initRouteModule(t, 12345)
-		err := rm.RegisterRoutes(ctx)
-		require.Error(t, err)
-		assert.True(t, gochenerrors.Is(err, gochenerrors.InvalidInput))
-	})
-
-	// 10a. reflect 兜底不得放行具体类型形参：实际传入的是宿主给的另一个具体
-	// 类型，放行会在 fnVal.Call 处 panic，必须落到 default 报 InvalidInput。
-	t.Run("concrete param registrar returns InvalidInput instead of panicking", func(t *testing.T) {
-		rm, _ := initRouteModule(t, func(g *otherRouteGroup) error { return nil })
-		err := rm.RegisterRoutes(ctx)
-		require.Error(t, err)
-		assert.True(t, gochenerrors.Is(err, gochenerrors.InvalidInput))
-	})
-
-	// 10b. reflect 兜底不得放行非 error 返回值：值类型实现 error 时
-	// res[0].IsNil() 会 panic，必须落到 default 报 InvalidInput。
-	t.Run("non-error return registrar returns InvalidInput instead of panicking", func(t *testing.T) {
-		rm, _ := initRouteModule(t, func(g httpx.IRouteGroup) valueError { return valueError{} })
-		err := rm.RegisterRoutes(ctx)
-		require.Error(t, err)
-		assert.True(t, gochenerrors.Is(err, gochenerrors.InvalidInput))
-	})
-
-	// 11. Branch: Factory error propagation
-	t.Run("factory returning error propagates", func(t *testing.T) {
-		sentinel := errors.New("factory init failed")
-		factory := func() (func(httpx.IRouteGroup) error, error) {
-			return nil, sentinel
-		}
-		rm, _ := initRouteModule(t, factory)
-		err := rm.RegisterRoutes(ctx)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, sentinel))
 	})
 
 	// 12. Branch: Registrar error propagation
