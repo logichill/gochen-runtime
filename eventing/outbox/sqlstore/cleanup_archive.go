@@ -31,44 +31,9 @@ func (s *CleanupService) archiveOldRecords(ctx context.Context, olderThan time.T
 	defer sleepTimer.Stop()
 
 	for {
-		tx, err := s.db.BeginTx(ctx, nil)
+		affected, err := s.archiveBatch(ctx, olderThan)
 		if err != nil {
-			return totalArchived, errors.Wrap(err, errors.Dependency, "begin archive transaction failed")
-		}
-
-		entryIDs, err := s.selectArchiveBatchIDs(ctx, tx, olderThan, s.policy.BatchSize)
-		if err != nil {
-			_ = tx.Rollback()
 			return totalArchived, err
-		}
-		if len(entryIDs) == 0 {
-			if err := tx.Commit(); err != nil {
-				return totalArchived, errors.Wrap(err, errors.Dependency, "commit archive transaction failed")
-			}
-			break
-		}
-
-		insertQuery, insertArgs := s.buildArchiveInsertByIDsQuery(entryIDs)
-		if _, err := tx.Exec(ctx, insertQuery, insertArgs...); err != nil {
-			_ = tx.Rollback()
-			return totalArchived, errors.Wrap(err, errors.Dependency, "archive records failed")
-		}
-
-		deleteQuery, deleteArgs := s.buildDeleteByIDsQuery(entryIDs)
-		deleteResult, err := tx.Exec(ctx, deleteQuery, deleteArgs...)
-		if err != nil {
-			_ = tx.Rollback()
-			return totalArchived, errors.Wrap(err, errors.Dependency, "delete archived records failed")
-		}
-
-		affected, appErr := readRowsAffected(deleteResult, "get rows affected failed")
-		if appErr != nil {
-			_ = tx.Rollback()
-			return totalArchived, appErr
-		}
-
-		if err := tx.Commit(); err != nil {
-			return totalArchived, errors.Wrap(err, errors.Dependency, "commit archive transaction failed")
 		}
 
 		totalArchived += affected
@@ -91,6 +56,47 @@ func (s *CleanupService) archiveOldRecords(ctx context.Context, olderThan time.T
 	}
 
 	return totalArchived, nil
+}
+
+// archiveBatch 将单批事务限定在一个调用内，确保错误、panic 和提交失败均会回滚。
+func (s *CleanupService) archiveBatch(ctx context.Context, olderThan time.Time) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, errors.Wrap(err, errors.Dependency, "begin archive transaction failed")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	entryIDs, err := s.selectArchiveBatchIDs(ctx, tx, olderThan, s.policy.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	var affected int64
+	if len(entryIDs) > 0 {
+		insertQuery, insertArgs := s.buildArchiveInsertByIDsQuery(entryIDs)
+		if _, err := tx.Exec(ctx, insertQuery, insertArgs...); err != nil {
+			return 0, errors.Wrap(err, errors.Dependency, "archive records failed")
+		}
+
+		deleteQuery, deleteArgs := s.buildDeleteByIDsQuery(entryIDs)
+		deleteResult, err := tx.Exec(ctx, deleteQuery, deleteArgs...)
+		if err != nil {
+			return 0, errors.Wrap(err, errors.Dependency, "delete archived records failed")
+		}
+		affected, err = readRowsAffected(deleteResult, "get rows affected failed")
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, errors.Wrap(err, errors.Dependency, "commit archive transaction failed")
+	}
+	committed = true
+	return affected, nil
 }
 
 func (s *CleanupService) selectArchiveBatchIDs(ctx context.Context, tx db.ITransaction, olderThan time.Time, limit int) ([]int64, error) {
