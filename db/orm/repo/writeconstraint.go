@@ -23,7 +23,7 @@ func (r *Repo[T, ID]) CreateWithConstraint(ctx context.Context, entity T, constr
 		return err
 	}
 	if err := quer.Create(entity); err != nil {
-		return errors.Wrap(err, errors.Database, "failed to save record")
+		return writeError(err, "failed to save record")
 	}
 	return nil
 }
@@ -84,7 +84,7 @@ func (r *Repo[T, ID]) UpdateWithConstraint(ctx context.Context, entity T, constr
 		if errors.Is(err, errors.Unsupported) {
 			return errors.NewCode(errors.Unsupported, "constrained update requires an orm model with result support")
 		}
-		return errors.Wrap(err, errors.Database, "failed to update record")
+		return writeError(err, "failed to update record")
 	}
 	affected, err := rowsAffected(result, "constrained update")
 	if err != nil {

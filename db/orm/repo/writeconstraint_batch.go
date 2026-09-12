@@ -6,7 +6,6 @@ import (
 
 	"gochen/auth/scoped"
 	"gochen/db/tx"
-	"gochen/errors"
 )
 
 // createAllWithConstraint 在显式写入约束下批量创建实体。
@@ -43,7 +42,7 @@ func (r *Repo[T, ID]) createAllWithConstraint(ctx context.Context, entities []T,
 			return err
 		}
 		if err := quer.Create(items...); err != nil {
-			return errors.Wrap(err, errors.Database, "failed to batch save records")
+			return writeError(err, "failed to batch save records")
 		}
 		return nil
 	})

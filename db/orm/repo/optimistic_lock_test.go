@@ -14,6 +14,26 @@ import (
 
 type fakeResult int64
 
+type modelWithoutResult struct {
+	orm.IModel
+	saveCalls int
+}
+
+func (m *modelWithoutResult) Save(context.Context, any, ...orm.QueryOption) error {
+	m.saveCalls++
+	return nil
+}
+
+func TestRepo_Update_DoesNotSilentlyDisableOptimisticLock(t *testing.T) {
+	m := &modelWithoutResult{IModel: &optimisticModel{}}
+	r := &Repo[*auditedEntity, int64]{model: m, auditFields: true, defaultActor: "system"}
+	e := &auditedEntity{AuditedEntity: &audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 1, Version: 7}}}
+	err := r.Update(context.Background(), e)
+	if !errors.Is(err, errors.Unsupported) || errors.Code(err) != errors.Unsupported || m.saveCalls != 0 {
+		t.Fatalf("optimistic lock was bypassed: err=%v saveCalls=%d", err, m.saveCalls)
+	}
+}
+
 // LastInsertId result1：数值结果。
 //
 // 返回：

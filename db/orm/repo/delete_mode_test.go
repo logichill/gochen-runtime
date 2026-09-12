@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"gochen/contextx"
 	"gochen/db"
 	"gochen/db/orm"
 	"gochen/errors"
@@ -403,7 +404,15 @@ func TestRepo_DeleteAllFallbacksToPlainModelWhenResultUnsupported(t *testing.T) 
 }
 
 type deleteModeSession struct {
-	model orm.IModel
+	model      orm.IModel
+	dispatcher contextx.IAfterCommitDispatcher
+}
+
+func (s *deleteModeSession) AfterCommitDispatcher() contextx.IAfterCommitDispatcher {
+	if s.dispatcher == nil {
+		s.dispatcher = contextx.NewAfterCommitDispatcher()
+	}
+	return s.dispatcher
 }
 
 func (s *deleteModeSession) Capabilities() orm.Capabilities       { return nil }

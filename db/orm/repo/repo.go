@@ -285,17 +285,6 @@ func (r *Repo[T, ID]) Association(owner any, name string) orm.IAssociation {
 	return r.model.Association(owner, name)
 }
 
-func (r *Repo[T, ID]) withOrm(ormEngine orm.IOrm) (*Repo[T, ID], error) {
-	cp := *r
-	cp.orm = ormEngine
-	model, err := ormEngine.Model(r.meta)
-	if err != nil {
-		return nil, err
-	}
-	cp.model = model
-	return &cp, nil
-}
-
 // ValidateWriteConstraintSupport 预检 constrained update/delete 所需的 ORM result 能力。
 func (r *Repo[T, ID]) ValidateWriteConstraintSupport() error {
 	if r == nil || r.model == nil {

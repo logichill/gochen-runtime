@@ -7,7 +7,6 @@ import (
 
 	"gochen-runtime/internal/sqlresult"
 	"gochen/contextx"
-	"gochen/db/orm"
 	"gochen/domain"
 	"gochen/domain/audited"
 	"gochen/errors"
@@ -182,7 +181,7 @@ func (r *Repo[T, ID]) Create(ctx context.Context, entity T) error {
 		return err
 	}
 	if err := quer.Create(entity); err != nil {
-		return errors.Wrap(err, errors.Database, "failed to save record")
+		return writeError(err, "failed to save record")
 	}
 	return nil
 }
@@ -225,13 +224,13 @@ func (r *Repo[T, ID]) Update(ctx context.Context, entity T) error {
 			}
 			return nil
 		}
-		if !errors.Is(err, errors.Unsupported) {
-			return errors.Wrap(err, errors.Database, "failed to update record")
+		if errors.Is(err, errors.Unsupported) {
+			return errors.Wrap(err, errors.Unsupported, "optimistic locking requires an orm model with result support")
 		}
-		// 不支持 result 的模型：回退为普通更新（不做冲突检测）。
+		return writeError(err, "failed to update record")
 	}
 	if err := quer.Save(entity); err != nil {
-		return errors.Wrap(err, errors.Database, "failed to update record")
+		return writeError(err, "failed to update record")
 	}
 	return nil
 }
@@ -317,34 +316,6 @@ func (r *Repo[T, ID]) Purge(ctx context.Context, id ID) error {
 	return requireRowsAffected(result, "purge", id)
 }
 
-// inTx 在当前上下文没有活动事务时自行开启一个事务作用域执行回调。
-func (r *Repo[T, ID]) inTx(ctx context.Context, fn func(txRepo *Repo[T, ID]) error) error {
-	if _, ok := orm.SessionFromContext(ctx); ok {
-		return fn(r)
-	}
-	if _, ok := r.orm.(orm.IOrmSession); ok {
-		return fn(r)
-	}
-	session, err := r.orm.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	txRepo, err := r.withOrm(session)
-	if err != nil {
-		_ = session.Rollback()
-		return err
-	}
-	if err := fn(txRepo); err != nil {
-		_ = session.Rollback()
-		return err
-	}
-	if err := session.Commit(); err != nil {
-		_ = session.Rollback()
-		return err
-	}
-	return nil
-}
-
 // CreateAll 在同一事务里批量创建多条实体记录。
 func (r *Repo[T, ID]) CreateAll(ctx context.Context, entities []T) error {
 	if len(entities) == 0 {
@@ -360,20 +331,20 @@ func (r *Repo[T, ID]) CreateAll(ctx context.Context, entities []T) error {
 	if constrained {
 		return r.createAllWithConstraint(ctx, entities, constraint)
 	}
-	return r.inTx(ctx, func(txRepo *Repo[T, ID]) error {
+	return r.WithinTx(ctx, func(txCtx context.Context) error {
 		items := make([]any, 0, len(entities))
 		for i := range entities {
-			if err := txRepo.prepareCreate(ctx, entities[i]); err != nil {
+			if err := r.prepareCreate(txCtx, entities[i]); err != nil {
 				return err
 			}
 			items = append(items, entities[i])
 		}
-		quer, err := txRepo.query(ctx)
+		quer, err := r.query(txCtx)
 		if err != nil {
 			return err
 		}
 		if err := quer.Create(items...); err != nil {
-			return errors.Wrap(err, errors.Database, "failed to batch save records")
+			return writeError(err, "failed to batch save records")
 		}
 		return nil
 	})
@@ -394,9 +365,9 @@ func (r *Repo[T, ID]) UpdateAll(ctx context.Context, entities []T) error {
 	if constrained {
 		return r.updateAllWithConstraint(ctx, entities, constraint)
 	}
-	return r.inTx(ctx, func(txRepo *Repo[T, ID]) error {
+	return r.WithinTx(ctx, func(txCtx context.Context) error {
 		for i := range entities {
-			if err := txRepo.Update(ctx, entities[i]); err != nil {
+			if err := r.Update(txCtx, entities[i]); err != nil {
 				return err
 			}
 		}
@@ -425,20 +396,20 @@ func (r *Repo[T, ID]) DeleteAll(ctx context.Context, ids []ID) error {
 	if constrained {
 		return r.deleteAllWithConstraint(ctx, ids, constraint)
 	}
-	return r.inTx(ctx, func(txRepo *Repo[T, ID]) error {
+	return r.WithinTx(ctx, func(txCtx context.Context) error {
 		// ID 数量可能达到批量上限，按占位参数预算分片下发，避免撞驱动的
 		// 占位参数上限。分片全在本事务内，原子性与单条语句时一致。
-		if txRepo.softDelete {
-			values, err := txRepo.softDeleteValues(ctx)
+		if r.softDelete {
+			values, err := r.softDeleteValues(txCtx)
 			if err != nil {
 				return err
 			}
-			for _, chunk := range chunkSlice(ids, txRepo.maxBindParameters()) {
-				quer, err := txRepo.query(ctx)
+			for _, chunk := range chunkSlice(ids, r.maxBindParameters()) {
+				quer, err := r.query(txCtx)
 				if err != nil {
 					return err
 				}
-				quer = quer.Where("id IN ?", chunk).Where(txRepo.softDeleteCols.DeletedAt + " IS NULL")
+				quer = quer.Where("id IN ?", chunk).Where(r.softDeleteCols.DeletedAt + " IS NULL")
 				result, err := quer.UpdateValuesWithResult(values)
 				if err != nil {
 					if errors.Is(err, errors.Unsupported) {
@@ -456,8 +427,8 @@ func (r *Repo[T, ID]) DeleteAll(ctx context.Context, ids []ID) error {
 			return nil
 		}
 
-		for _, chunk := range chunkSlice(ids, txRepo.maxBindParameters()) {
-			quer, err := txRepo.query(ctx)
+		for _, chunk := range chunkSlice(ids, r.maxBindParameters()) {
+			quer, err := r.query(txCtx)
 			if err != nil {
 				return err
 			}
