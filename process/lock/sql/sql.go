@@ -369,54 +369,10 @@ func isDuplicateLockInsertError(err error) bool {
 	return db.IsUniqueViolation(err)
 }
 
-type sqlLockLease struct {
-	release func()
-	lost    chan error
-}
-
-func (l *sqlLockLease) Release() {
-	if l == nil || l.release == nil {
-		return
-	}
-	l.release()
-}
-
-func (l *sqlLockLease) Lost() <-chan error {
-	if l == nil {
-		ch := make(chan error)
-		close(ch)
-		return ch
-	}
-	return l.lost
-}
-
-func (p *SQLLockProvider) newLease(key string, leaseToken string) *sqlLockLease {
-	lost := make(chan error, 1)
-	stopRenew := p.startRenewal(key, leaseToken, &safeLostChan{ch: lost})
-	return &sqlLockLease{
-		lost:    lost,
-		release: p.releaseFunc(key, leaseToken, stopRenew),
-	}
-}
-
-type safeLostChan struct {
-	ch   chan<- error
-	once sync.Once
-}
-
-func (l *safeLostChan) close(err error) {
-	if l == nil || l.ch == nil {
-		return
-	}
-	l.once.Do(func() {
-		if err != nil {
-			select {
-			case l.ch <- err:
-			default:
-			}
-		}
-		close(l.ch)
-	})
+func (p *SQLLockProvider) newLease(key string, leaseToken string) *lock.Lease {
+	safeLost := lock.NewSafeLostChan()
+	stopRenew := p.startRenewal(key, leaseToken, safeLost)
+	return lock.NewLease(p.releaseFunc(key, leaseToken, stopRenew), safeLost.Channel())
 }
 
 // maxRenewAttempts 是单个续租周期内对瞬时数据库错误的最大尝试次数。
@@ -424,10 +380,10 @@ func (l *safeLostChan) close(err error) {
 // 仅对数据库瞬时错误（连接抖动、临时不可用）重试，避免误判 lease lost。
 const maxRenewAttempts = 3
 
-func (p *SQLLockProvider) startRenewal(key string, leaseToken string, lost *safeLostChan) func() {
+func (p *SQLLockProvider) startRenewal(key string, leaseToken string, lost *lock.SafeLostChan) func() {
 	if p.renewInterval < 0 {
 		return func() {
-			lost.close(nil)
+			lost.Close(nil)
 		}
 	}
 	interval := p.renewInterval
@@ -448,14 +404,14 @@ func (p *SQLLockProvider) startRenewal(key string, leaseToken string, lost *safe
 			case <-ticker.C:
 				if err := p.renewWithRetry(renewCtx, key, leaseToken); err != nil {
 					if renewCtx.Err() != nil {
-						lost.close(nil)
+						lost.Close(nil)
 						return
 					}
-					lost.close(err)
+					lost.Close(err)
 					return
 				}
 			case <-renewCtx.Done():
-				lost.close(nil)
+				lost.Close(nil)
 				return
 			}
 		}
@@ -469,7 +425,7 @@ func (p *SQLLockProvider) startRenewal(key string, leaseToken string, lost *safe
 			select {
 			case <-done:
 			case <-wait.C:
-				lost.close(nil)
+				lost.Close(nil)
 				p.logger.Warn(contextx.Background(), "lock renewal stop timed out",
 					logging.String("key", key),
 					logging.Duration("timeout", p.stopRenewTimeout()),

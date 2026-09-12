@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -68,41 +69,42 @@ func validateFieldByTag(field reflect.Value, tag string) error {
 
 	rules := strings.Split(tag, ",")
 	allowEmpty := false
-	for _, rule := range rules {
-		if strings.TrimSpace(rule) == "omitempty" {
+	for i, rule := range rules {
+		rules[i] = strings.TrimSpace(rule)
+		if rules[i] == "omitempty" {
 			allowEmpty = true
-			break
 		}
 	}
 
+	// omitempty 只跳过值检查；规则名称、类型和参数仍须有效。
+	skipValue := allowEmpty && isZeroValue(field)
 	actual := field
 	for actual.Kind() == reflect.Pointer {
 		if actual.IsNil() {
-			if allowEmpty {
-				return nil
+			if !skipValue {
+				break
 			}
-			break
+			actual = reflect.Zero(actual.Type().Elem())
+		} else {
+			actual = actual.Elem()
 		}
-		actual = actual.Elem()
-	}
-
-	if allowEmpty && isZeroValue(actual) {
-		return nil
 	}
 
 	for _, rule := range rules {
-		rule = strings.TrimSpace(rule)
 		if rule == "" || rule == "omitempty" {
 			continue
 		}
 		switch {
 		case rule == "required":
-			if isZeroValue(actual) {
+			if !skipValue && isZeroValue(actual) {
 				return fmt.Errorf("required configuration missing")
 			}
 		case strings.HasPrefix(rule, "oneof="):
 			options := strings.Fields(strings.TrimPrefix(rule, "oneof="))
 			if len(options) == 0 {
+				return fmt.Errorf("oneof rule requires at least one option")
+			}
+			if skipValue {
 				continue
 			}
 			value := fmt.Sprint(derefValue(actual))
@@ -117,28 +119,12 @@ func validateFieldByTag(field reflect.Value, tag string) error {
 				return fmt.Errorf("value %q not in allowed values %v", value, options)
 			}
 		case strings.HasPrefix(rule, "min="):
-			limit, err := strconv.ParseFloat(strings.TrimPrefix(rule, "min="), 64)
-			if err != nil {
+			if err := validateMinMax(actual, "min", strings.TrimPrefix(rule, "min="), skipValue); err != nil {
 				return err
-			}
-			value, ok := numericValue(actual)
-			if !ok {
-				return fmt.Errorf("min rule only supports numeric fields")
-			}
-			if value < limit {
-				return fmt.Errorf("value %v is less than minimum %v", derefValue(actual), trimFloat(limit))
 			}
 		case strings.HasPrefix(rule, "max="):
-			limit, err := strconv.ParseFloat(strings.TrimPrefix(rule, "max="), 64)
-			if err != nil {
+			if err := validateMinMax(actual, "max", strings.TrimPrefix(rule, "max="), skipValue); err != nil {
 				return err
-			}
-			value, ok := numericValue(actual)
-			if !ok {
-				return fmt.Errorf("max rule only supports numeric fields")
-			}
-			if value > limit {
-				return fmt.Errorf("value %v is greater than maximum %v", derefValue(actual), trimFloat(limit))
 			}
 		case strings.HasPrefix(rule, "startswith="):
 			prefix := strings.TrimPrefix(rule, "startswith=")
@@ -146,7 +132,7 @@ func validateFieldByTag(field reflect.Value, tag string) error {
 			if !ok {
 				return fmt.Errorf("startswith rule only supports string fields")
 			}
-			if !strings.HasPrefix(value, prefix) {
+			if !skipValue && !strings.HasPrefix(value, prefix) {
 				return fmt.Errorf("value %q must start with %q", value, prefix)
 			}
 		case strings.HasPrefix(rule, "notcontains="):
@@ -155,7 +141,7 @@ func validateFieldByTag(field reflect.Value, tag string) error {
 			if !ok {
 				return fmt.Errorf("notcontains rule only supports string fields")
 			}
-			if strings.Contains(value, needle) {
+			if !skipValue && strings.Contains(value, needle) {
 				return fmt.Errorf("value %q must not contain %q", value, needle)
 			}
 		case rule == "nospace":
@@ -163,9 +149,11 @@ func validateFieldByTag(field reflect.Value, tag string) error {
 			if !ok {
 				return fmt.Errorf("nospace rule only supports string fields")
 			}
-			if strings.Contains(value, " ") {
+			if !skipValue && strings.Contains(value, " ") {
 				return fmt.Errorf("value %q must not contain spaces", value)
 			}
+		default:
+			return fmt.Errorf("unknown validation rule %q", rule)
 		}
 	}
 	return nil
@@ -194,29 +182,6 @@ func derefValue(value reflect.Value) any {
 	return value.Interface()
 }
 
-func numericValue(value reflect.Value) (float64, bool) {
-	for value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return 0, false
-		}
-		value = value.Elem()
-	}
-
-	switch value.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if value.Type() == reflect.TypeOf(time.Duration(0)) {
-			return float64(value.Interface().(time.Duration)), true
-		}
-		return float64(value.Int()), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return float64(value.Uint()), true
-	case reflect.Float32, reflect.Float64:
-		return value.Float(), true
-	default:
-		return 0, false
-	}
-}
-
 func stringValue(value reflect.Value) (string, bool) {
 	for value.Kind() == reflect.Pointer {
 		if value.IsNil() {
@@ -230,9 +195,67 @@ func stringValue(value reflect.Value) (string, bool) {
 	return value.String(), true
 }
 
-func trimFloat(value float64) any {
-	if float64(int64(value)) == value {
-		return int64(value)
+func validateMinMax(actual reflect.Value, ruleName, limitStr string, skipValue bool) error {
+	if strings.EqualFold(limitStr, "nan") || strings.EqualFold(limitStr, "+nan") || strings.EqualFold(limitStr, "-nan") ||
+		strings.EqualFold(limitStr, "inf") || strings.EqualFold(limitStr, "+inf") || strings.EqualFold(limitStr, "-inf") {
+		return fmt.Errorf("invalid float limit %q: must be finite", limitStr)
 	}
-	return value
+
+	switch actual.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if actual.Type() == reflect.TypeOf(time.Duration(0)) {
+			// duration 支持带单位的时长和整数纳秒。
+			limit, err := time.ParseDuration(limitStr)
+			if err != nil {
+				nanos, parseErr := strconv.ParseInt(limitStr, 10, 64)
+				if parseErr != nil {
+					return fmt.Errorf("invalid duration limit %q: %w", limitStr, err)
+				}
+				limit = time.Duration(nanos)
+			}
+			return validateBound(actual.Interface().(time.Duration), limit, ruleName, skipValue)
+		}
+		limit, err := strconv.ParseInt(limitStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid integer limit %q: %w", limitStr, err)
+		}
+		return validateBound(actual.Int(), limit, ruleName, skipValue)
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		limit, err := strconv.ParseUint(limitStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid unsigned integer limit %q: %w", limitStr, err)
+		}
+		return validateBound(actual.Uint(), limit, ruleName, skipValue)
+
+	case reflect.Float32, reflect.Float64:
+		limit, err := strconv.ParseFloat(limitStr, 64)
+		if err != nil {
+			return fmt.Errorf("invalid float limit %q: %w", limitStr, err)
+		}
+		if math.IsNaN(limit) || math.IsInf(limit, 0) {
+			return fmt.Errorf("invalid float limit %q: must be finite", limitStr)
+		}
+		value := actual.Float()
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("invalid float value %v", value)
+		}
+		return validateBound(value, limit, ruleName, skipValue)
+
+	default:
+		return fmt.Errorf("%s rule only supports numeric fields", ruleName)
+	}
+}
+
+func validateBound[T ~int64 | ~uint64 | ~float64](value, limit T, ruleName string, skipValue bool) error {
+	if skipValue {
+		return nil
+	}
+	if ruleName == "min" && value < limit {
+		return fmt.Errorf("value %v is less than minimum %v", value, limit)
+	}
+	if ruleName == "max" && value > limit {
+		return fmt.Errorf("value %v is greater than maximum %v", value, limit)
+	}
+	return nil
 }

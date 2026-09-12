@@ -92,7 +92,7 @@ func (s *SQLCheckpointStore) Save(ctx context.Context, checkpoint *projection.Ch
 }
 
 // SaveWithDB 使用给定数据库句柄保存检查点；可显式传入事务句柄参与同一提交边界。
-func (s *SQLCheckpointStore) SaveWithDB(ctx context.Context, database db.IDatabase, checkpoint *projection.Checkpoint) error {
+func (s *SQLCheckpointStore) saveWithDB(ctx context.Context, database db.IDatabase, checkpoint *projection.Checkpoint, queryFn func(*projection.Checkpoint) (string, []any, error)) error {
 	if checkpoint == nil {
 		return errors.NewCode(errors.InvalidInput, "invalid checkpoint").
 			WithContext("reason", "checkpoint is nil")
@@ -106,7 +106,6 @@ func (s *SQLCheckpointStore) SaveWithDB(ctx context.Context, database db.IDataba
 		return err
 	}
 
-	// 更新 UpdatedAt
 	checkpoint.UpdatedAt = time.Now()
 
 	if database == nil {
@@ -115,7 +114,7 @@ func (s *SQLCheckpointStore) SaveWithDB(ctx context.Context, database db.IDataba
 	if database == nil {
 		return errors.NewCode(errors.InvalidInput, "checkpoint store database cannot be nil")
 	}
-	query, args, err := s.buildForwardSaveQuery(checkpoint)
+	query, args, err := queryFn(checkpoint)
 	if err != nil {
 		return err
 	}
@@ -124,6 +123,11 @@ func (s *SQLCheckpointStore) SaveWithDB(ctx context.Context, database db.IDataba
 			WithContext("projection_name", checkpoint.ProjectionName)
 	}
 	return nil
+}
+
+// SaveWithDB 使用给定数据库句柄保存检查点；可显式传入事务句柄参与同一提交边界。
+func (s *SQLCheckpointStore) SaveWithDB(ctx context.Context, database db.IDatabase, checkpoint *projection.Checkpoint) error {
+	return s.saveWithDB(ctx, database, checkpoint, s.buildForwardSaveQuery)
 }
 
 // ForceSave 无条件将检查点写为给定位置（即使低于已持久化位置），用于重建对齐游标。
@@ -136,36 +140,7 @@ func (s *SQLCheckpointStore) ForceSave(ctx context.Context, checkpoint *projecti
 
 // forceSaveWithDB 使用给定数据库句柄无条件覆盖检查点；可显式传入事务句柄参与同一提交边界。
 func (s *SQLCheckpointStore) forceSaveWithDB(ctx context.Context, database db.IDatabase, checkpoint *projection.Checkpoint) error {
-	if checkpoint == nil {
-		return errors.NewCode(errors.InvalidInput, "invalid checkpoint").
-			WithContext("reason", "checkpoint is nil")
-	}
-	if !checkpoint.IsValid() {
-		return errors.NewCode(errors.InvalidInput, "invalid checkpoint").
-			WithContext("projection_name", checkpoint.ProjectionName).
-			WithContext("position", checkpoint.Position)
-	}
-	if err := s.validateTableName(); err != nil {
-		return err
-	}
-
-	checkpoint.UpdatedAt = time.Now()
-
-	if database == nil {
-		database = s.db
-	}
-	if database == nil {
-		return errors.NewCode(errors.InvalidInput, "checkpoint store database cannot be nil")
-	}
-	query, args, err := s.buildForceSaveQuery(checkpoint)
-	if err != nil {
-		return err
-	}
-	if _, err := database.Exec(ctx, query, args...); err != nil {
-		return errors.NewCodeWithCause(errors.Database, "checkpoint store failed", err).
-			WithContext("projection_name", checkpoint.ProjectionName)
-	}
-	return nil
+	return s.saveWithDB(ctx, database, checkpoint, s.buildForceSaveQuery)
 }
 
 func (s *SQLCheckpointStore) buildForwardSaveQuery(checkpoint *projection.Checkpoint) (string, []any, error) {

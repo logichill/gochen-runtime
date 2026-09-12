@@ -98,25 +98,7 @@ func (o *Orm) Model(meta *orm.ModelMeta) (orm.IModel, error) {
 
 // Begin 开启事务会话。
 func (o *Orm) Begin(ctx context.Context) (orm.IOrmSession, error) {
-	tx, err := o.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	txOrm, err := New(tx, WithNamingConvention(o.naming))
-	if err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-	typed, ok := txOrm.(*Orm)
-	if !ok {
-		_ = tx.Rollback()
-		return nil, errors.NewCode(errors.Internal, "unexpected orm type")
-	}
-	return &session{
-		Orm:         typed,
-		tx:          tx,
-		afterCommit: contextx.NewAfterCommitDispatcher(),
-	}, nil
+	return o.BeginTx(ctx, nil)
 }
 
 // BeginTx 开启带选项的事务会话。
@@ -125,6 +107,10 @@ func (o *Orm) BeginTx(ctx context.Context, opts *sql.TxOptions) (orm.IOrmSession
 	if err != nil {
 		return nil, err
 	}
+	return o.wrapSession(tx)
+}
+
+func (o *Orm) wrapSession(tx db.ITransaction) (orm.IOrmSession, error) {
 	txOrm, err := New(tx, WithNamingConvention(o.naming))
 	if err != nil {
 		_ = tx.Rollback()

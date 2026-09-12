@@ -2,6 +2,7 @@ package lite
 
 import (
 	"context"
+	"fmt"
 
 	"gochen/db/dialect"
 	"gochen/db/orm"
@@ -144,11 +145,35 @@ func (m *model) Find(ctx context.Context, dest any, opts ...orm.QueryOption) err
 func (m *model) Count(ctx context.Context, opts ...orm.QueryOption) (int64, error) {
 	qo := orm.CollectQueryOptions(opts...)
 
-	builder := m.orm.sql.SelectExprUnsafe("COUNT(*)")
 	tableExpr, err := buildTableExpr(dialect.FromDatabase(m.orm.db), m.table, qo.Joins)
 	if err != nil {
 		return 0, err
 	}
+
+	if len(qo.GroupBy) > 0 {
+		inner := m.orm.sql.SelectExprUnsafe("1")
+		if len(qo.Joins) == 0 {
+			inner = inner.From(tableExpr)
+		} else {
+			inner = inner.FromUnsafe(tableExpr)
+		}
+		for _, w := range qo.Where {
+			inner = inner.Where(w.Expr, w.Args...)
+		}
+		inner = inner.GroupBy(qo.GroupBy...)
+		innerSQL, innerArgs, err := inner.Build()
+		if err != nil {
+			return 0, err
+		}
+		row := m.orm.db.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS _gochen_count", innerSQL), innerArgs...)
+		var count int64
+		if err := row.Scan(&count); err != nil {
+			return 0, err
+		}
+		return count, nil
+	}
+
+	builder := m.orm.sql.SelectExprUnsafe("COUNT(*)")
 	if len(qo.Joins) == 0 {
 		builder = builder.From(tableExpr)
 	} else {

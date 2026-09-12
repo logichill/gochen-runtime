@@ -41,6 +41,7 @@ func (r *updatePanicRecord) GetVersion() uint64 { return r.Version }
 // 返回的 ORM 必须暴露 Database，数据库须支持标准建表语句和事务。
 func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 	t.Helper()
+	t.Run("Query", func(t *testing.T) { runQuery(t, factory) })
 	fixture := func(t *testing.T) (orm.IOrm, orm.IModel) {
 		t.Helper()
 		adapter := factory(t)

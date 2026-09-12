@@ -178,9 +178,8 @@ func (r *Runner) Status(ctx context.Context) (Status, error) {
 	return r.status(ctx)
 }
 
-// Up 按顺序执行全部未执行的 up migration。
-func (r *Runner) Up(ctx context.Context) error {
-	if err := r.beginExclusiveOperation("up"); err != nil {
+func (r *Runner) withLockedState(ctx context.Context, op string, fn func(ctx context.Context, state Status) error) error {
+	if err := r.beginExclusiveOperation(op); err != nil {
 		return err
 	}
 	defer r.mu.Unlock()
@@ -201,33 +200,14 @@ func (r *Runner) Up(ctx context.Context) error {
 	if state.Dirty {
 		return dirtyStateError(state.Version)
 	}
+	return fn(ctx, state)
+}
 
-	migrations, err := r.list(ctx)
-	if err != nil {
-		return err
-	}
-
-	applied := 0
-	for _, migration := range migrations {
-		if migration.Version <= state.Version {
-			continue
-		}
-		if migration.Up == nil {
-			return errors.NewCode(errors.InvalidInput, "up migration file missing").
-				WithContext("version", migration.Version).
-				WithContext("name", migration.Name)
-		}
-		if err := r.applyFile(ctx, migration.Version, migration.Version, *migration.Up); err != nil {
-			return err
-		}
-		state.Version = migration.Version
-		state.Dirty = false
-		applied++
-	}
-	if applied == 0 {
-		return ErrNoChange
-	}
-	return nil
+// Up 按顺序执行全部未执行的 up migration。
+func (r *Runner) Up(ctx context.Context) error {
+	return r.withLockedState(ctx, "up", func(ctx context.Context, state Status) error {
+		return r.applyUpTo(ctx, state, 0, 0)
+	})
 }
 
 // Steps 按指定步数迁移；n > 0 执行 up，n < 0 执行 down。
@@ -243,38 +223,20 @@ func (r *Runner) Steps(ctx context.Context, n int) error {
 
 // Migrate 迁移到指定版本。
 func (r *Runner) Migrate(ctx context.Context, target uint64) error {
-	if err := r.beginExclusiveOperation("migrate"); err != nil {
-		return err
-	}
-	defer r.mu.Unlock()
-
-	ctx = normalizeContext(ctx)
-	if err := r.ensureStateTable(ctx); err != nil {
-		return err
-	}
-	if err := r.acquireLock(ctx); err != nil {
-		return err
-	}
-	defer r.releaseLock()
-	state, err := r.readStatus(ctx)
-	if err != nil {
-		return err
-	}
-	if state.Dirty {
-		return dirtyStateError(state.Version)
-	}
-	if state.Version == target {
-		return ErrNoChange
-	}
-	if target != 0 {
-		if err := r.ensureTargetExists(ctx, target); err != nil {
-			return err
+	return r.withLockedState(ctx, "migrate", func(ctx context.Context, state Status) error {
+		if state.Version == target {
+			return ErrNoChange
 		}
-	}
-	if target > state.Version {
-		return r.applyUpTo(ctx, state, target, 0)
-	}
-	return r.applyDownTo(ctx, state, target, 0)
+		if target != 0 {
+			if err := r.ensureTargetExists(ctx, target); err != nil {
+				return err
+			}
+		}
+		if target > state.Version {
+			return r.applyUpTo(ctx, state, target, 0)
+		}
+		return r.applyDownTo(ctx, state, target, 0)
+	})
 }
 
 // Down 回滚当前最新版本的一步 migration。
@@ -283,56 +245,18 @@ func (r *Runner) Down(ctx context.Context) error {
 }
 
 func (r *Runner) stepsUp(ctx context.Context, steps int) error {
-	if err := r.beginExclusiveOperation("steps_up"); err != nil {
-		return err
-	}
-	defer r.mu.Unlock()
-
-	ctx = normalizeContext(ctx)
-	if err := r.ensureStateTable(ctx); err != nil {
-		return err
-	}
-	if err := r.acquireLock(ctx); err != nil {
-		return err
-	}
-	defer r.releaseLock()
-
-	state, err := r.readStatus(ctx)
-	if err != nil {
-		return err
-	}
-	if state.Dirty {
-		return dirtyStateError(state.Version)
-	}
-	return r.applyUpTo(ctx, state, 0, steps)
+	return r.withLockedState(ctx, "steps_up", func(ctx context.Context, state Status) error {
+		return r.applyUpTo(ctx, state, 0, steps)
+	})
 }
 
 func (r *Runner) stepsDown(ctx context.Context, steps int) error {
-	if err := r.beginExclusiveOperation("steps_down"); err != nil {
-		return err
-	}
-	defer r.mu.Unlock()
-
-	ctx = normalizeContext(ctx)
-	if err := r.ensureStateTable(ctx); err != nil {
-		return err
-	}
-	if err := r.acquireLock(ctx); err != nil {
-		return err
-	}
-	defer r.releaseLock()
-
-	state, err := r.readStatus(ctx)
-	if err != nil {
-		return err
-	}
-	if state.Dirty {
-		return dirtyStateError(state.Version)
-	}
-	if state.Version == 0 {
-		return ErrNilVersion
-	}
-	return r.applyDownTo(ctx, state, 0, steps)
+	return r.withLockedState(ctx, "steps_down", func(ctx context.Context, state Status) error {
+		if state.Version == 0 {
+			return ErrNilVersion
+		}
+		return r.applyDownTo(ctx, state, 0, steps)
+	})
 }
 
 // Force 强制设置当前 migration 版本并清理 dirty 状态。
