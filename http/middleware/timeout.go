@@ -37,6 +37,7 @@ const timeoutResponseBufferLimit = httpx.DefaultMaxBodySizeBytes
 // - 仅供 timeout middleware 内部使用；
 // - handler 正常返回后才提交 buffer；超时后 close 与迟到 Write 可能并发；
 // - 超时分支写回真实 writer 后不会再提交该 buffer，迟到写入会被丢弃。
+// - 已开始的透传写入持锁到完成，确保真实 writer 不会在请求返回后继续写入。
 type bufferedResponseWriter struct {
 	mu          sync.Mutex
 	header      http.Header
@@ -45,6 +46,7 @@ type bufferedResponseWriter struct {
 	status      int
 	wroteHeader bool
 	closed      bool
+	writeErr    error
 	dst         http.ResponseWriter
 	passthrough bool
 	markWritten func()
@@ -60,21 +62,21 @@ func (w *bufferedResponseWriter) Header() http.Header {
 
 func (w *bufferedResponseWriter) WriteHeader(status int) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	if w.passthrough {
-		dst := w.dst
-		markWritten := w.markWritten
-		w.mu.Unlock()
-		if dst != nil {
-			if markWritten != nil {
-				markWritten()
+		if w.dst != nil {
+			if w.markWritten != nil {
+				w.markWritten()
 			}
-			dst.WriteHeader(status)
+			w.dst.WriteHeader(status)
 		}
 		return
 	}
 
 	w.writeHeaderLocked(status)
-	w.mu.Unlock()
 }
 
 func (w *bufferedResponseWriter) writeHeaderLocked(status int) {
@@ -87,43 +89,42 @@ func (w *bufferedResponseWriter) writeHeaderLocked(status int) {
 
 func (w *bufferedResponseWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if w.closed {
-		w.mu.Unlock()
 		return 0, errors.NewCode(errors.Timeout, "timeout response already closed")
 	}
 	if w.passthrough {
-		dst := w.dst
-		markWritten := w.markWritten
-		w.mu.Unlock()
-		if dst == nil {
+		if w.writeErr != nil {
+			return 0, w.writeErr
+		}
+		if w.dst == nil {
 			return len(data), nil
 		}
-		if markWritten != nil {
-			markWritten()
+		if w.markWritten != nil {
+			w.markWritten()
 		}
-		return dst.Write(data)
+		n, err := w.dst.Write(data)
+		w.writeErr = err
+		return n, err
 	}
 	if !w.wroteHeader {
 		w.writeHeaderLocked(http.StatusOK)
 	}
 	if w.limit > 0 && int64(w.body.Len()+len(data)) > w.limit {
-		w.mu.Unlock()
 		return 0, errors.NewCode(errors.PayloadTooLarge, "timeout response buffer exceeded")
 	}
-	n, err := w.body.Write(data)
-	w.mu.Unlock()
-	return n, err
+	return w.body.Write(data)
 }
 
-func (w *bufferedResponseWriter) commit(dst http.ResponseWriter) {
+func (w *bufferedResponseWriter) commit(dst http.ResponseWriter) error {
 	if dst == nil {
-		return
+		return nil
 	}
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.closed || w.passthrough {
-		w.mu.Unlock()
-		return
+		return w.writeErr
 	}
 	header := w.header.Clone()
 	status := w.status
@@ -133,30 +134,44 @@ func (w *bufferedResponseWriter) commit(dst http.ResponseWriter) {
 		dst.WriteHeader(status)
 	}
 	if w.body.Len() > 0 {
-		_, _ = w.body.WriteTo(dst)
+		_, err := w.body.WriteTo(dst)
+		w.writeErr = err
+		return err
 	}
-	w.mu.Unlock()
+	return nil
 }
 
 func (w *bufferedResponseWriter) Flush() {
+	_ = w.FlushError()
+}
+
+func (w *bufferedResponseWriter) FlushError() error {
 	if w == nil {
-		return
+		return http.ErrNotSupported
 	}
-	w.flushToPassthrough()
+	return w.flushToPassthrough(true)
 }
 
 func (w *bufferedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if w == nil {
 		return nil, nil, http.ErrNotSupported
 	}
-	dst := w.startPassthrough()
-	hijacker, ok := dst.(http.Hijacker)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil, nil, errors.NewCode(errors.Timeout, "timeout response already closed")
+	}
+	hijacker, ok := w.dst.(http.Hijacker)
 	if !ok {
 		return nil, nil, http.ErrNotSupported
 	}
 	conn, rw, err := hijacker.Hijack()
-	if err == nil && w.markWritten != nil {
-		w.markWritten()
+	if err == nil {
+		w.body.Reset()
+		w.passthrough = true
+		if w.markWritten != nil {
+			w.markWritten()
+		}
 	}
 	return conn, rw, err
 }
@@ -172,8 +187,12 @@ func (w *bufferedResponseWriter) Push(target string, opts *http.PushOptions) err
 	if w == nil {
 		return http.ErrNotSupported
 	}
-	dst := w.dstWriter()
-	pusher, ok := dst.(http.Pusher)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return errors.NewCode(errors.Timeout, "timeout response already closed")
+	}
+	pusher, ok := w.dst.(http.Pusher)
 	if !ok {
 		return http.ErrNotSupported
 	}
@@ -184,11 +203,11 @@ func (w *bufferedResponseWriter) ReadFrom(src io.Reader) (int64, error) {
 	if w == nil {
 		return 0, http.ErrNotSupported
 	}
-	dst := w.flushToPassthrough()
-	if readerFrom, ok := dst.(io.ReaderFrom); ok {
-		return readerFrom.ReadFrom(src)
+	if err := w.flushToPassthrough(false); err != nil {
+		return 0, err
 	}
-	return io.Copy(w, src)
+	// 源读取可能越过请求期限；逐次通过 Write 检查关闭状态，禁止直接交给真实 writer。
+	return io.Copy(struct{ io.Writer }{w}, src)
 }
 
 func (w *bufferedResponseWriter) IsPassthrough() bool {
@@ -206,52 +225,41 @@ func (w *bufferedResponseWriter) dstWriter() http.ResponseWriter {
 	return w.dst
 }
 
-func (w *bufferedResponseWriter) startPassthrough() http.ResponseWriter {
+func (w *bufferedResponseWriter) flushToPassthrough(flush bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
-		return nil
+		return errors.NewCode(errors.Timeout, "timeout response already closed")
 	}
-	w.body.Reset()
-	w.passthrough = true
-	return w.dst
-}
-
-func (w *bufferedResponseWriter) flushToPassthrough() http.ResponseWriter {
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		return nil
+	if w.writeErr != nil {
+		return w.writeErr
 	}
 	dst := w.dst
-	header := w.header.Clone()
-	status := w.status
-	wroteHeader := w.wroteHeader
-	body := append([]byte(nil), w.body.Bytes()...)
-	w.body.Reset()
-	w.passthrough = true
-	markWritten := w.markWritten
-	w.mu.Unlock()
-
 	if dst == nil {
-		return nil
+		return http.ErrNotSupported
 	}
-	copyHeaders(dst.Header(), header)
-	if markWritten != nil {
-		markWritten()
+	if !w.passthrough {
+		w.passthrough = true
+		copyHeaders(dst.Header(), w.header)
+		if w.markWritten != nil {
+			w.markWritten()
+		}
+		if w.wroteHeader {
+			dst.WriteHeader(w.status)
+		} else {
+			dst.WriteHeader(http.StatusOK)
+		}
+		if w.body.Len() > 0 {
+			_, w.writeErr = w.body.WriteTo(dst)
+			if w.writeErr != nil {
+				return w.writeErr
+			}
+		}
 	}
-	if wroteHeader {
-		dst.WriteHeader(status)
-	} else {
-		dst.WriteHeader(http.StatusOK)
+	if flush {
+		w.writeErr = http.NewResponseController(dst).Flush()
 	}
-	if len(body) > 0 {
-		_, _ = dst.Write(body)
-	}
-	if flusher, ok := dst.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return dst
+	return w.writeErr
 }
 
 func (w *bufferedResponseWriter) close() {
@@ -265,23 +273,23 @@ func (w *bufferedResponseWriter) close() {
 	w.body.Reset()
 }
 
-func (w *bufferedResponseWriter) beginTimeoutResponse() bool {
+func (w *bufferedResponseWriter) beginTimeoutResponse() (bool, error) {
 	if w == nil {
-		return false
+		return false, nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
-		return false
+		return false, w.writeErr
 	}
 	if w.passthrough {
 		w.closed = true
 		w.body.Reset()
-		return false
+		return false, w.writeErr
 	}
 	w.closed = true
 	w.body.Reset()
-	return true
+	return true, nil
 }
 
 func (w *bufferedResponseWriter) discardBuffered() bool {
@@ -328,6 +336,8 @@ type TimeoutConfig struct {
 //   - 该中间件通过 ctx cancellation 传递超时信号；无法强制终止不响应 ctx 的业务逻辑；
 //   - 不启动常驻 goroutine，超时路径也不会再增加 Stop waiter；但忽略 ctx 的 handler
 //     goroutine 仍会存活到业务逻辑自行返回，调用方必须保证下游传播取消信号。
+//   - HTTP 适配器必须支持异步响应隔离；Gin 的池化上下文不支持该能力，返回 Unsupported。
+//   - 已开始的网络写入由服务器 WriteTimeout 约束，中间件不会在写入途中归还真实 writer。
 func Timeout(timeout time.Duration) httpx.Middleware {
 	return TimeoutWithConfig(TimeoutConfig{Timeout: timeout})
 }
@@ -357,15 +367,6 @@ func TimeoutWithConfig(cfg TimeoutConfig) httpx.Middleware {
 	}
 
 	return func(ctx httpx.IContext, next func() error) error {
-		if sem != nil {
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			default:
-				return errors.NewCode(errors.TooManyRequests, "too many concurrent requests")
-			}
-		}
-
 		if ctx == nil {
 			return errors.NewCode(errors.InvalidInput, "ctx is nil")
 		}
@@ -373,6 +374,19 @@ func TimeoutWithConfig(cfg TimeoutConfig) httpx.Middleware {
 		if reqCtx == nil {
 			return errors.NewCode(errors.InvalidInput, "request context is nil")
 		}
+		if _, hasWriter := ctx.(interface{ ResponseWriter() http.ResponseWriter }); hasWriter {
+			if _, ok := ctx.(responseWriterProvider); !ok {
+				return errors.NewCode(errors.Unsupported, "timeout middleware requires asynchronous response isolation")
+			}
+		}
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			default:
+				return errors.NewCode(errors.TooManyRequests, "too many concurrent requests")
+			}
+		}
+
 		timeoutCtx, cancel := reqCtx.WithTimeout(timeout)
 		defer cancel()
 
@@ -382,6 +396,10 @@ func TimeoutWithConfig(cfg TimeoutConfig) httpx.Middleware {
 		done := make(chan error, 1)
 		super := task.NewTaskSupervisorWithLogger("gochen.http.timeout_middleware", logger)
 		if err := super.Go(timeoutCtx, "next", func(ctx context.Context) {
+			// 请求超时不代表 handler 已退出；名额必须覆盖它的完整生命周期。
+			if sem != nil {
+				defer func() { <-sem }()
+			}
 			defer func() {
 				if rec := recover(); rec != nil {
 					logger.Error(ctx, "Timeout middleware goroutine panic",
@@ -400,6 +418,9 @@ func TimeoutWithConfig(cfg TimeoutConfig) httpx.Middleware {
 			default:
 			}
 		}); err != nil {
+			if sem != nil {
+				<-sem
+			}
 			return err
 		}
 
@@ -407,7 +428,7 @@ func TimeoutWithConfig(cfg TimeoutConfig) httpx.Middleware {
 		select {
 		case err := <-done:
 			if err == nil && bufferWriter != nil {
-				bufferWriter.commit(realWriter)
+				err = bufferWriter.commit(realWriter)
 			} else if bufferWriter != nil {
 				if bufferWriter.discardBuffered() {
 					resetBufferedResponseWritten(ctx)
@@ -438,10 +459,11 @@ func TimeoutWithConfig(cfg TimeoutConfig) httpx.Middleware {
 			)
 			timeoutErr := errors.NewCodeWithCause(errors.Timeout, "request timeout", timeoutCtx.Err())
 			if realWriter != nil && bufferWriter != nil {
-				if bufferWriter.beginTimeoutResponse() {
-					writeTimeoutResponse(ctx, realWriter, timeoutErr)
+				if write, err := bufferWriter.beginTimeoutResponse(); write {
+					return writeTimeoutResponse(ctx, realWriter, timeoutErr)
+				} else {
+					return err
 				}
-				return nil
 			}
 			return timeoutErr
 		}
@@ -469,7 +491,7 @@ func installTimeoutBuffer(ctx httpx.IContext) (http.ResponseWriter, func(), *buf
 	return realWriter, restore, bufferWriter
 }
 
-func writeTimeoutResponse(ctx httpx.IContext, writer http.ResponseWriter, err error) {
+func writeTimeoutResponse(ctx httpx.IContext, writer http.ResponseWriter, err error) error {
 	status, payload := httpx.EncodeErrorResponse(ctx, err)
 	body, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
@@ -488,8 +510,12 @@ func writeTimeoutResponse(ctx httpx.IContext, writer http.ResponseWriter, err er
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
-	written, _ := writer.Write(body)
+	written, writeErr := writer.Write(body)
 	if canOverrideState && stateOverrider != nil {
 		stateOverrider.OverrideResponseState(status, int64(written))
 	}
+	if writeErr == nil && written != len(body) {
+		writeErr = io.ErrShortWrite
+	}
+	return writeErr
 }

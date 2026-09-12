@@ -22,10 +22,10 @@ func (s *Server) rebuildMuxLocked() {
 
 	for _, static := range s.staticRoutes {
 		if static.single {
-			registerStaticFile(mux, static.prefix, static.root)
+			s.registerStaticFile(mux, static.prefix, static.root)
 			continue
 		}
-		registerStaticRoute(mux, static.prefix, static.root)
+		s.registerStaticRoute(mux, static.prefix, static.root)
 	}
 
 	type optionsMeta struct {
@@ -197,6 +197,7 @@ func (s *Server) createHandler(r *route, globalMiddlewares []httpx.Middleware) h
 		if err := s.executeMiddlewareChain(ctx, middlewares, r.handler); err != nil {
 			_ = WriteErrorResponse(ctx, err)
 		}
+		ctx.flushStatus()
 	}
 }
 
@@ -216,6 +217,9 @@ func (s *Server) parsePathParams(ctx *Context, pattern string, req *http.Request
 }
 
 func (s *Server) executeMiddlewareChain(ctx httpx.IContext, middlewares []httpx.Middleware, handler httpx.Handler) error {
+	if ctx.IsAborted() {
+		return nil
+	}
 	if len(middlewares) == 0 {
 		return handler(ctx)
 	}

@@ -28,8 +28,7 @@ type Server struct {
 	lifecycleMu  sync.Mutex
 	lifecycle    serverLifecycleState
 
-	trustedProxyAddrs    map[netip.Addr]struct{}
-	trustedProxyPrefixes []netip.Prefix
+	trustedProxyChecker func(netip.Addr) bool
 }
 
 type serverLifecycleState uint8
@@ -68,15 +67,14 @@ func NewServer(config *runtimehttp.WebConfig) *Server {
 	handler := newAtomicHandler(current)
 	wrapper := http.NewServeMux()
 	srv := &Server{
-		mux:               wrapper,
-		handler:           handler,
-		config:            config,
-		routes:            make(map[string]*route),
-		routeCounts:       make(map[serverRouteKey]int),
-		groups:            make(map[string]*RouteGroup),
-		middlewares:       make([]httpx.Middleware, 0),
-		staticRoutes:      make([]staticRoute, 0),
-		trustedProxyAddrs: make(map[netip.Addr]struct{}),
+		mux:          wrapper,
+		handler:      handler,
+		config:       config,
+		routes:       make(map[string]*route),
+		routeCounts:  make(map[serverRouteKey]int),
+		groups:       make(map[string]*RouteGroup),
+		middlewares:  make([]httpx.Middleware, 0),
+		staticRoutes: make([]staticRoute, 0),
 	}
 	wrapper.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		srv.mu.RLock()

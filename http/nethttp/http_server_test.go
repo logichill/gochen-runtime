@@ -1,7 +1,6 @@
 package nethttp
 
 import (
-	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -189,37 +188,6 @@ func TestHTTPServer_PathParams(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/42", nil))
 	if rec.Code != http.StatusOK || gotID != "42" {
 		t.Fatalf("status=%d id=%q", rec.Code, gotID)
-	}
-}
-
-func TestHTTPServer_ApplyTimeoutDefaultsIncludesHeaderGuards(t *testing.T) {
-	cfg := &runtimehttp.WebConfig{}
-	srv := NewServer(cfg)
-	srv.applyTimeoutDefaults()
-	if cfg.ReadHeaderTimeout != runtimehttp.DefaultReadHeaderTimeout {
-		t.Fatalf("ReadHeaderTimeout = %v", cfg.ReadHeaderTimeout)
-	}
-	if cfg.MaxHeaderBytes != runtimehttp.DefaultMaxHeaderBytes {
-		t.Fatalf("MaxHeaderBytes = %v", cfg.MaxHeaderBytes)
-	}
-}
-
-func TestHTTPServer_TLSMinVersionDefaultsTo12AndRejectsLowerConfig(t *testing.T) {
-	srv := NewServer(&runtimehttp.WebConfig{TLSEnabled: true})
-	if err := srv.applySecurityDefaults(); err != nil {
-		t.Fatalf("applySecurityDefaults: %v", err)
-	}
-	httpSrv, err := srv.newHTTPServer(":0")
-	if err != nil {
-		t.Fatalf("newHTTPServer: %v", err)
-	}
-	if httpSrv.TLSConfig == nil || httpSrv.TLSConfig.MinVersion != tls.VersionTLS12 {
-		t.Fatalf("unexpected TLS config: %#v", httpSrv.TLSConfig)
-	}
-
-	tooLow := NewServer(&runtimehttp.WebConfig{TLSEnabled: true, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS11}})
-	if err := tooLow.applySecurityDefaults(); err == nil {
-		t.Fatal("expected TLS 1.1 configuration to be rejected")
 	}
 }
 

@@ -12,31 +12,22 @@ import (
 	"testing"
 )
 
-// newTestContext helper to build a basic IContext for tests.。
-//
-// 说明：
-//
-// 参数：
-// - method：参数值（具体语义见函数上下文）（类型：string）
-// - target：参数值（具体语义见函数上下文）（类型：string）
-//
-// 返回：
-// - result：返回的实例（类型：*Context）
-func newTestContext(t *testing.T, method, target string) *Context {
+func newTestContext(t *testing.T, method, target string) (*Context, *httptest.ResponseRecorder) {
+	t.Helper()
 	req := httptest.NewRequest(method, target, nil)
 	rec := httptest.NewRecorder()
 	ctx, err := NewBaseContext(rec, req)
 	if err != nil {
 		t.Fatalf("NewBaseContext returned error: %v", err)
 	}
-	return ctx
+	return ctx, rec
 }
 
 // TestParseInt64Param 验证路径参数 ID 解析。
 func TestParseInt64Param(t *testing.T) {
 
 	// 正常路径
-	ctx := newTestContext(t, http.MethodGet, "/users/123")
+	ctx, _ := newTestContext(t, http.MethodGet, "/users/123")
 	ctx.SetParam("id", "123")
 
 	id, err := httpx.ParseInt64Param(ctx, "id")
@@ -48,7 +39,7 @@ func TestParseInt64Param(t *testing.T) {
 	}
 
 	// 空参数
-	ctxEmpty := newTestContext(t, http.MethodGet, "/users")
+	ctxEmpty, _ := newTestContext(t, http.MethodGet, "/users")
 	_, err = httpx.ParseInt64Param(ctxEmpty, "id")
 	if err == nil {
 		t.Fatalf("expected error for empty id, got nil")
@@ -59,7 +50,7 @@ func TestParseInt64Param(t *testing.T) {
 }
 
 func TestContextSetParamsMergesRouteParams(t *testing.T) {
-	ctx := newTestContext(t, http.MethodGet, "/users/123/orders/456")
+	ctx, _ := newTestContext(t, http.MethodGet, "/users/123/orders/456")
 	ctx.SetParam("tenant", "t1")
 	ctx.SetParams(map[string]string{
 		"id":     "123",
@@ -81,7 +72,7 @@ func TestContextSetParamsMergesRouteParams(t *testing.T) {
 // TestWriteErrorResponse 验证标准错误响应写入。
 func TestWriteErrorResponse(t *testing.T) {
 
-	ctx := newTestContext(t, http.MethodGet, "/")
+	ctx, rec := newTestContext(t, http.MethodGet, "/")
 	derived, err := contextx.WithRequestID(ctx.RequestContext(), "req-1")
 	if err != nil {
 		t.Fatalf("WithRequestID returned error: %v", err)
@@ -99,7 +90,6 @@ func TestWriteErrorResponse(t *testing.T) {
 		t.Fatalf("WriteErrorResponse returned error: %v", err)
 	}
 
-	rec := ctx.writer.(*httptest.ResponseRecorder)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
 	}
@@ -128,13 +118,12 @@ func TestWriteErrorResponse(t *testing.T) {
 }
 
 func TestWriteErrorResponse_DoesNotLeakUnknownError(t *testing.T) {
-	ctx := newTestContext(t, http.MethodGet, "/")
+	ctx, rec := newTestContext(t, http.MethodGet, "/")
 
 	if err := WriteErrorResponse(ctx, errors.New("boom")); err != nil {
 		t.Fatalf("WriteErrorResponse returned error: %v", err)
 	}
 
-	rec := ctx.writer.(*httptest.ResponseRecorder)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, rec.Code)
 	}
@@ -152,13 +141,12 @@ func TestWriteErrorResponse_DoesNotLeakUnknownError(t *testing.T) {
 }
 
 func TestWriteErrorResponse_DoesNotLeakInternalErrorMessage(t *testing.T) {
-	ctx := newTestContext(t, http.MethodGet, "/")
+	ctx, rec := newTestContext(t, http.MethodGet, "/")
 
 	if err := WriteErrorResponse(ctx, errors.NewCode(errors.Internal, "password=secret")); err != nil {
 		t.Fatalf("WriteErrorResponse returned error: %v", err)
 	}
 
-	rec := ctx.writer.(*httptest.ResponseRecorder)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, rec.Code)
 	}
@@ -193,7 +181,7 @@ func (c *jsonFailContext) String(code int, text string) error {
 }
 
 func TestWriteErrorResponse_FallbackKeepsEncodedStatus(t *testing.T) {
-	base := newTestContext(t, http.MethodGet, "/")
+	base, _ := newTestContext(t, http.MethodGet, "/")
 	ctx := &jsonFailContext{Context: base}
 
 	if err := WriteErrorResponse(ctx, errors.NewCode(errors.InvalidInput, "bad request")); err != nil {

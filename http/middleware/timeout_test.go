@@ -788,8 +788,8 @@ func TestTimeout_PreservesResponseWriterCapabilities(t *testing.T) {
 	if rec.pushed != "/asset.js" {
 		t.Fatalf("Push target = %q", rec.pushed)
 	}
-	if !rec.readFrom {
-		t.Fatalf("expected ReadFrom to delegate to underlying writer")
+	if ctx.BytesWritten() != 2 {
+		t.Fatalf("ReadFrom bytes = %d, want 2", ctx.BytesWritten())
 	}
 	if body := rec.Body.String(); body != "ok" {
 		t.Fatalf("body = %q", body)

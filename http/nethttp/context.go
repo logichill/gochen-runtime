@@ -28,7 +28,7 @@ type Context struct {
 	writer  http.ResponseWriter
 	reqCtx  httpx.IRequestContext
 	status  int
-	// bytesWritten 记录通过 ctx.JSON/String/Data 写出的响应体字节数（best-effort）。
+	// bytesWritten 记录底层 writer 实际写出的响应体字节数（best-effort）。
 	bytesWritten atomic.Int64
 	aborted      bool
 	values       map[string]any
@@ -81,6 +81,7 @@ func NewBaseContext(w http.ResponseWriter, r *http.Request) (*Context, error) {
 		baseRequest:   r,
 	}
 	ctx.paramsSnapshot.Store(map[string]string{})
+	ctx.writer = &contextResponseWriter{ResponseWriter: w, ctx: ctx}
 	return ctx, nil
 }
 
@@ -249,12 +250,7 @@ func (c *Context) writeResponse(contentType string, code int, data []byte, op st
 	}
 
 	writer.WriteHeader(code)
-	n, err := writer.Write(data)
-	if err == nil {
-		if n > 0 {
-			c.bytesWritten.Add(int64(n))
-		}
-	}
+	_, err := writer.Write(data)
 	return err
 }
 
@@ -340,14 +336,23 @@ func (c *Context) Abort() {
 	c.aborted = true
 }
 
-// AbortWithStatus 设置状态码并标记当前请求已终止。
+// AbortWithStatus 提交响应状态码并标记当前请求已终止。
 func (c *Context) AbortWithStatus(code int) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.responseWrittenLocked() {
-		c.status = code
-	}
 	c.aborted = true
+	if c.responseWrittenLocked() {
+		c.mu.Unlock()
+		return
+	}
+	c.status = code
+	writer := c.writer
+	c.markResponseWrittenLocked()
+	c.mu.Unlock()
+
+	writer.WriteHeader(code)
 }
 
 // AbortWithStatusJSON 写入 JSON 响应后立刻中断后续处理链。
