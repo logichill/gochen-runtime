@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	stderrors "errors"
 	"fmt"
 	"strings"
@@ -804,6 +805,13 @@ func (d unsupportedRowsAffectedOutboxDB) Exec(ctx context.Context, query string,
 		return nil, err
 	}
 	return unsupportedRowsAffectedResult{}, nil
+}
+
+type unsupportedRowsAffectedResult struct{}
+
+func (unsupportedRowsAffectedResult) LastInsertId() (int64, error) { return 0, nil }
+func (unsupportedRowsAffectedResult) RowsAffected() (int64, error) {
+	return 0, driver.ErrSkip
 }
 
 func TestSQLDLQRepository_UsesValidQualifiedProviderTableNames(t *testing.T) {

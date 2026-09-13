@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
 	"gochen/db/dialect"
 	"gochen/errors"
@@ -66,7 +67,7 @@ func (b *insertBuilder) Build() (string, []any, error) {
 	if len(b.rows) == 0 {
 		return "", nil, errors.NewCode(errors.InvalidInput, "insertBuilder: at least one row is required")
 	}
-	if !isSafeIdentifier(b.table) {
+	if !safeident.IsSafeIdentifier(b.table) {
 		return "", nil, errors.NewCode(errors.InvalidInput, "insertBuilder: unsafe table name").WithContext("table", b.table)
 	}
 
@@ -78,7 +79,7 @@ func (b *insertBuilder) Build() (string, []any, error) {
 	sb.WriteString(" (")
 	quotedCols := make([]string, len(b.columns))
 	for i, col := range b.columns {
-		if !isSafeIdentifier(col) {
+		if !safeident.IsSafeIdentifier(col) {
 			return "", nil, errors.NewCode(errors.InvalidInput, "insertBuilder: unsafe column name").WithContext("column", col)
 		}
 		quotedCols[i] = b.dialect.QuoteIdentifier(col)

@@ -16,7 +16,7 @@ import (
 type Option func(*Orm)
 
 // WithNamingConvention 配置 Orm 的全局命名规范。
-func WithNamingConvention(naming orm.NamingConvention) Option {
+func WithNamingConvention(naming db.NamingConvention) Option {
 	return func(o *Orm) {
 		o.naming = naming.WithDefaults()
 	}
@@ -27,26 +27,26 @@ type Orm struct {
 	db     db.IDatabase
 	sql    sqlbuilder.ISQL
 	caps   orm.Capabilities
-	naming orm.NamingConvention
+	naming db.NamingConvention
 
 	mu        sync.RWMutex
 	structMap map[reflect.Type]*structMeta
 }
 
 // New 创建orm.IOrm。
-func New(db db.IDatabase, opts ...Option) (orm.IOrm, error) {
-	sql, err := sqlbuilder.New(db)
+func New(database db.IDatabase, opts ...Option) (orm.IOrm, error) {
+	sql, err := sqlbuilder.New(database)
 	if err != nil {
 		return nil, err
 	}
-	var naming orm.NamingConvention
-	if provider, ok := db.(orm.INamingConventionProvider); ok {
+	var naming db.NamingConvention
+	if provider, ok := database.(db.INamingConventionProvider); ok {
 		naming = provider.NamingConvention()
 	} else {
-		naming = orm.DefaultNamingConvention()
+		naming = db.DefaultNamingConvention()
 	}
 	o := &Orm{
-		db:  db,
+		db:  database,
 		sql: sql,
 		caps: orm.NewCapabilities(
 			orm.CapabilityBasicCRUD,
@@ -130,10 +130,10 @@ func (o *Orm) wrapSession(tx db.ITransaction) (orm.IOrmSession, error) {
 
 func (o *Orm) Database() db.IDatabase { return o.db }
 
-// NamingConvention 实现 orm.INamingConventionProvider。
-func (o *Orm) NamingConvention() orm.NamingConvention {
+// NamingConvention 实现 db.INamingConventionProvider。
+func (o *Orm) NamingConvention() db.NamingConvention {
 	if o == nil {
-		return orm.DefaultNamingConvention()
+		return db.DefaultNamingConvention()
 	}
 	return o.naming
 }

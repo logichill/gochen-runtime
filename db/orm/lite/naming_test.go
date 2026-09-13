@@ -8,7 +8,6 @@ import (
 	"gochen-runtime/db/orm/lite"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/db"
-	"gochen/db/orm"
 	"gochen/testkit/assert"
 	"gochen/testkit/require"
 )
@@ -30,20 +29,20 @@ func TestLiteOrmNamingConvention(t *testing.T) {
 	ormEngine, err := lite.New(database)
 	require.NoError(t, err)
 
-	provider, ok := ormEngine.(orm.INamingConventionProvider)
+	provider, ok := ormEngine.(db.INamingConventionProvider)
 	require.True(t, ok)
 	assert.Equal(t, "tenant_code", provider.NamingConvention().TenantColumn)
 	assert.Equal(t, "dept_id", provider.NamingConvention().ScopeColumn)
 
 	// 2. Explicit WithNamingConvention override
-	overrideNaming := orm.NamingConvention{
+	overrideNaming := db.NamingConvention{
 		TenantColumn: "override_tenant",
 		ScopeColumn:  "override_scope",
 	}
 	ormEngineOverride, err := lite.New(database, lite.WithNamingConvention(overrideNaming))
 	require.NoError(t, err)
 
-	providerOverride, ok := ormEngineOverride.(orm.INamingConventionProvider)
+	providerOverride, ok := ormEngineOverride.(db.INamingConventionProvider)
 	require.True(t, ok)
 	assert.Equal(t, "override_tenant", providerOverride.NamingConvention().TenantColumn)
 	assert.Equal(t, "override_scope", providerOverride.NamingConvention().ScopeColumn)

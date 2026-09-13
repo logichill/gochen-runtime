@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"reflect"
 	"strconv"
 
 	"gochen/auth/scoped"
@@ -180,7 +181,7 @@ func takeBatchConstraintResourceForID(resourcesByID map[string][]scoped.Resource
 
 func (r *Repo[T, ID]) fillBatchConstraintScope(ctx context.Context, entity T, target scoped.Resource) scoped.Resource {
 	schema := r.accessSchema()
-	value := reflectValue(entity)
+	value := reflect.ValueOf(entity)
 	if schema.managedScope.hasField() {
 		if managedScopeID, ok := readInt64Field(value, schema.managedScope.index); ok {
 			target.ManagedScopeID = normalizePositiveID(managedScopeID)

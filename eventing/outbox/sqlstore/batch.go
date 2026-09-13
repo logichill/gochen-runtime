@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gochen-runtime/db/sql/sqlbuilder"
+	"gochen-runtime/internal/sqlresult"
 	"gochen/db"
 	"gochen/errors"
 	"gochen/eventing/outbox"
@@ -121,7 +122,7 @@ func (b *BatchOperations) markAsPublishedBatchChunk(ctx context.Context, tx db.I
 		return errors.Wrap(err, errors.Database, "batch mark as published failed")
 	}
 
-	if err := ensureRowsAffected(result, int64(len(entries)), "batch mark as published affected unexpected rows"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, int64(len(entries)), "batch mark as published affected unexpected rows"); err != nil {
 		return err
 	}
 
@@ -208,7 +209,7 @@ func (b *BatchOperations) markAsFailedBatchChunk(ctx context.Context, tx db.ITra
 		return errors.Wrap(err, errors.Database, "batch mark as failed failed")
 	}
 
-	if err := ensureRowsAffected(result, int64(len(entries)), "batch mark as failed affected unexpected rows"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, int64(len(entries)), "batch mark as failed affected unexpected rows"); err != nil {
 		return err
 	}
 

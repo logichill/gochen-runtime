@@ -257,7 +257,7 @@ func (r *Repo[T, ID]) alignConstraintVersion(entity T, expectedVersion uint64) e
 		return errors.NewCode(errors.Internal, "write constraint cannot align missing version field").
 			WithContext("column", r.versionColumn())
 	}
-	if !setUint64Field(reflectValue(entity), field.index, expectedVersion) {
+	if !setUint64Field(reflect.ValueOf(entity), field.index, expectedVersion) {
 		return errors.NewCode(errors.Internal, "write constraint cannot write the entity version").
 			WithContext("column", r.versionColumn())
 	}
@@ -299,13 +299,13 @@ func alignConstraintManagedScopeField[T any](entity T, field dataScopeField, tar
 			WithContext("field", "managed_scope_id").
 			WithContext("column", field.column)
 	}
-	current, ok := readInt64Field(reflectValue(entity), field.index)
+	current, ok := readInt64Field(reflect.ValueOf(entity), field.index)
 	if ok && current != 0 && current != normalizePositiveID(target) {
 		return errors.NewCode(errors.Forbidden, "write constraint does not authorize the target managed_scope_id").
 			WithContext("managed_scope_id", current).
 			WithContext("authorized_managed_scope_id", normalizePositiveID(target))
 	}
-	if !setInt64Field(reflectValue(entity), field.index, target) {
+	if !setInt64Field(reflect.ValueOf(entity), field.index, target) {
 		return errors.NewCode(errors.Forbidden, "write constraint cannot write the target managed_scope_id").
 			WithContext("column", field.column)
 	}
@@ -323,21 +323,19 @@ func alignConstraintTenantField[T any](entity T, field dataScopeField, target st
 			WithContext("field", "tenant_id").
 			WithContext("column", field.column)
 	}
-	current, ok := readStringField(reflectValue(entity), field.index)
+	current, ok := readStringField(reflect.ValueOf(entity), field.index)
 	current = strings.TrimSpace(current)
 	if ok && current != "" && current != target {
 		return errors.NewCode(errors.Forbidden, "write constraint does not authorize the target tenant_id").
 			WithContext("tenant_id", current).
 			WithContext("authorized_tenant_id", target)
 	}
-	if !setStringField(reflectValue(entity), field.index, target) {
+	if !setStringField(reflect.ValueOf(entity), field.index, target) {
 		return errors.NewCode(errors.Forbidden, "write constraint cannot write the target tenant_id").
 			WithContext("column", field.column)
 	}
 	return nil
 }
-
-func reflectValue(value any) reflect.Value { return reflect.ValueOf(value) }
 
 func (r *Repo[T, ID]) classifyConstraintWriteMiss(ctx context.Context, id ID, expectedVersion uint64) error {
 	// 极速防探测模式（§4.2）：不发探针 SELECT，按配置的固定归因直接返回。

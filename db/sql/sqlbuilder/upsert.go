@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"gochen-runtime/db/sql/safeident"
 	"gochen-runtime/internal/sqlresult"
 	"gochen/db"
 	"gochen/db/dialect"
@@ -111,7 +112,7 @@ func (b *upsertBuilder) Exec(ctx context.Context) (sql.Result, error) {
 	}
 
 	for _, key := range b.keyColumns {
-		if !isSafeIdentifier(key) {
+		if !safeident.IsSafeIdentifier(key) {
 			return nil, errors.NewCode(errors.InvalidInput, "upsert: unsafe key column").
 				WithContext("key_column", key)
 		}

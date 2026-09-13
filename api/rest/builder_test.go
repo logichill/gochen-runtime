@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"gochen-runtime/api/rest/internal/testutil"
 	"gochen-runtime/http/nethttp"
+	"gochen-runtime/internal/testutil"
 	appaudited "gochen/app/audited"
 	appcrud "gochen/app/crud"
 	"gochen/app/query"

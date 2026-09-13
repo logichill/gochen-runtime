@@ -16,7 +16,7 @@ import (
 	"gochen/errors"
 
 	"gochen-runtime/db/sql/sqlbuilder"
-
+	"gochen-runtime/internal/sqlresult"
 	"gochen-runtime/internal/sqlsafe"
 	"gochen/db"
 	"gochen/eventing"
@@ -621,7 +621,7 @@ func (r *SimpleSQLOutboxRepository[ID]) ClaimPendingEntries(ctx context.Context,
 		return nil, errors.Wrap(err, errors.Database, "claim pending entries failed")
 	}
 
-	if err := ensureRowsAffected(result, int64(len(entries)), "claim pending entries affected unexpected rows"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, int64(len(entries)), "claim pending entries affected unexpected rows"); err != nil {
 		return nil, err
 	}
 
@@ -662,7 +662,7 @@ func (r *SimpleSQLOutboxRepository[ID]) MarkAsPublished(ctx context.Context, ent
 			WithContext("entry_id", entryID)
 	}
 
-	if err := ensureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
 		return err.WithContext("entry_id", entryID)
 	}
 	return nil
@@ -692,7 +692,7 @@ func (r *SimpleSQLOutboxRepository[ID]) MarkAsFailed(ctx context.Context, entryI
 			WithContext("entry_id", entryID)
 	}
 
-	if err := ensureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
 		return err.WithContext("entry_id", entryID)
 	}
 	return nil
@@ -718,7 +718,7 @@ func (r *SimpleSQLOutboxRepository[ID]) RenewClaim(ctx context.Context, entryID 
 			WithContext("entry_id", entryID)
 	}
 
-	if err := ensureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
 		return err.WithContext("entry_id", entryID)
 	}
 	return nil
@@ -743,7 +743,7 @@ func (r *SimpleSQLOutboxRepository[ID]) DeletePublished(ctx context.Context, old
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		if rowsErr := rowsAffectedError(err, "delete published rows affected failed"); rowsErr != nil {
+		if rowsErr := sqlresult.RowsAffectedError(err, "delete published rows affected failed"); rowsErr != nil {
 			return rowsErr.WithContext("older_than", olderThan)
 		}
 	}

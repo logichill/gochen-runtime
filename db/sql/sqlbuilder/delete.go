@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
 	"gochen/db/dialect"
 	"gochen/errors"
@@ -74,7 +75,7 @@ func (b *deleteBuilder) Build() (string, []any, error) {
 	if b.err != nil {
 		return "", nil, b.err
 	}
-	if !isSafeIdentifier(b.table) {
+	if !safeident.IsSafeIdentifier(b.table) {
 		return "", nil, errors.NewCode(errors.InvalidInput, "deleteBuilder: unsafe table name").WithContext("table", b.table)
 	}
 

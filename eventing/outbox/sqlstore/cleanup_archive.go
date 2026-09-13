@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"gochen-runtime/internal/sqlresult"
 	"gochen/db"
 	"gochen/db/dialect"
 	"gochen/errors"
@@ -87,7 +88,7 @@ func (s *CleanupService) archiveBatch(ctx context.Context, olderThan time.Time) 
 		if err != nil {
 			return 0, errors.Wrap(err, errors.Dependency, "delete archived records failed")
 		}
-		affected, err = readRowsAffected(deleteResult, "get rows affected failed")
+		affected, err = sqlresult.ReadRowsAffected(deleteResult, "get rows affected failed", "get rows affected failed")
 		if err != nil {
 			return 0, err
 		}

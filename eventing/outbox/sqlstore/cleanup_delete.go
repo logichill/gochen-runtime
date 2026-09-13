@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"gochen-runtime/internal/sqlresult"
 	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/eventing/outbox"
@@ -34,7 +35,7 @@ func (s *CleanupService) deleteOldRecords(ctx context.Context, olderThan time.Ti
 			return totalDeleted, errors.Wrap(err, errors.Dependency, "delete old records failed")
 		}
 
-		affected, appErr := readRowsAffected(rawResult, "get rows affected failed")
+		affected, appErr := sqlresult.ReadRowsAffected(rawResult, "get rows affected failed", "get rows affected failed")
 		if appErr != nil {
 			return totalDeleted, appErr
 		}

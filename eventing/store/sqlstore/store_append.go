@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"gochen-runtime/internal/dbsavepoint"
 	"gochen-runtime/internal/sqlsafe"
 	"gochen/db"
 	"gochen/errors"
@@ -149,7 +150,7 @@ func (s *SQLEventStore[ID]) appendEventsIndividually(ctx context.Context, databa
 				}
 				p = prepared[i]
 			}
-			err := executeRecoverableStatement(ctx, database, "append_single", func() error {
+			err := dbsavepoint.ExecuteRecoverableStatement(ctx, database, "append_single", func() error {
 				args := []any{p.id, p.typ, agg, p.aggregateType, p.version, p.schemaVersion, p.timestamp, p.payloadJSON, p.metadataJSON}
 				if hasGlobalPosition {
 					args = []any{p.id, p.typ, agg, p.aggregateType, p.version, p.schemaVersion, p.globalPosition, p.timestamp, p.payloadJSON, p.metadataJSON}
@@ -282,7 +283,7 @@ func (s *SQLEventStore[ID]) appendPreparedBatch(
 			if hasGlobalPosition {
 				args = []any{p.id, p.typ, agg, p.aggregateType, p.version, p.schemaVersion, p.globalPosition, p.timestamp, p.payloadJSON, p.metadataJSON}
 			}
-			err := executeRecoverableStatement(ctx, database, "append_single", func() error {
+			err := dbsavepoint.ExecuteRecoverableStatement(ctx, database, "append_single", func() error {
 				_, err := database.Exec(ctx, insertSQL, args...)
 				return err
 			})
@@ -370,7 +371,7 @@ func (s *SQLEventStore[ID]) appendPreparedBatchChunks(
 			}
 			args = append(args, p.timestamp, p.payloadJSON, p.metadataJSON)
 		}
-		if err := executeRecoverableStatement(ctx, database, "append_batch", func() error {
+		if err := dbsavepoint.ExecuteRecoverableStatement(ctx, database, "append_batch", func() error {
 			_, err := database.Exec(ctx, batchSQL, args...)
 			return err
 		}); err != nil {

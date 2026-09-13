@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"gochen-runtime/internal/sqlresult"
 	"gochen/codec"
 	"gochen/codec/idcodec"
 	"gochen/db"
@@ -180,7 +181,7 @@ func (r *SQLDLQRepository[ID]) cleanupMovedOutboxEntry(ctx context.Context, tx d
 			return errors.Wrap(err, errors.Database, "delete outbox entry failed").
 				WithContext("outbox_entry_id", entry.ID)
 		}
-		if err := ensureRowsAffected(result, 1, "delete outbox entry affected unexpected rows"); err != nil {
+		if err := sqlresult.EnsureRowsAffected(result, 1, "delete outbox entry affected unexpected rows"); err != nil {
 			return err.WithContext("outbox_entry_id", entry.ID)
 		}
 		return nil
@@ -195,7 +196,7 @@ func (r *SQLDLQRepository[ID]) cleanupMovedOutboxEntry(ctx context.Context, tx d
 		return errors.Wrap(err, errors.Database, "mark outbox entry dead-lettered failed").
 			WithContext("outbox_entry_id", entry.ID)
 	}
-	if err := ensureRowsAffected(result, 1, "mark outbox entry dead-lettered affected unexpected rows"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "mark outbox entry dead-lettered affected unexpected rows"); err != nil {
 		return err.WithContext("outbox_entry_id", entry.ID)
 	}
 	return nil
@@ -231,7 +232,7 @@ func (r *SQLDLQRepository[ID]) markClaimedOutboxForDLQ(ctx context.Context, tx d
 				WithContext("outbox_entry_id", entry.ID)
 		}
 	}
-	if err := ensureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "outbox entry claim is no longer owned"); err != nil {
 		return err.WithContext("outbox_entry_id", entry.ID)
 	}
 	return nil
@@ -434,7 +435,7 @@ func (r *SQLDLQRepository[ID]) RetryFromDLQ(ctx context.Context, entryID int64) 
 		return errors.Wrap(err, errors.Database, "delete dlq entry failed").
 			WithContext("dlq_entry_id", entryID)
 	}
-	if err := ensureRowsAffected(result, 1, "delete dlq entry affected unexpected rows"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "delete dlq entry affected unexpected rows"); err != nil {
 		return err.WithContext("dlq_entry_id", entryID)
 	}
 
@@ -479,7 +480,7 @@ func (r *SQLDLQRepository[ID]) ensureOutboxRetryableByEventID(ctx context.Contex
 			return false, errors.Wrap(err, errors.Database, "reset existing outbox entry for dlq retry failed").
 				WithContext("event_id", eventID)
 		}
-		if err := ensureRowsAffected(res, 1, "reset existing outbox entry for dlq retry affected unexpected rows"); err != nil {
+		if err := sqlresult.EnsureRowsAffected(res, 1, "reset existing outbox entry for dlq retry affected unexpected rows"); err != nil {
 			if !errors.Is(err, errors.Conflict) {
 				return false, err.WithContext("event_id", eventID)
 			}
@@ -520,7 +521,7 @@ func (r *SQLDLQRepository[ID]) DeleteDLQEntry(ctx context.Context, entryID int64
 			WithContext("dlq_entry_id", entryID)
 	}
 
-	if err := ensureRowsAffected(result, 1, "delete dlq entry affected unexpected rows"); err != nil {
+	if err := sqlresult.EnsureRowsAffected(result, 1, "delete dlq entry affected unexpected rows"); err != nil {
 		if errors.Is(err, errors.Conflict) {
 			return errors.NewCode(errors.NotFound, "dlq entry not found").WithContext("dlq_entry_id", entryID)
 		}

@@ -65,7 +65,7 @@ func setupTestDB(t *testing.T) orm.IOrm {
 	)`)
 	require.NoError(t, err)
 
-	engine, err := lite.New(database, lite.WithNamingConvention(orm.NamingConvention{
+	engine, err := lite.New(database, lite.WithNamingConvention(db.NamingConvention{
 		TenantColumn: "tenant_id",
 		ScopeColumn:  "org_id",
 	}))

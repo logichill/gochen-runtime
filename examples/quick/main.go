@@ -17,7 +17,6 @@ import (
 	"gochen-runtime/quick"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/db/orm"
 	domcrud "gochen/domain/crud"
 )
 
@@ -68,7 +67,7 @@ func main() {
 		log.Fatalf("failed to seed initial orders: %v", err)
 	}
 
-	ormEngine, err := lite.New(database, lite.WithNamingConvention(orm.NamingConvention{
+	ormEngine, err := lite.New(database, lite.WithNamingConvention(db.NamingConvention{
 		TenantColumn: "tenant_id",
 		ScopeColumn:  "org_id",
 	}))

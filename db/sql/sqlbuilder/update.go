@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
 	"gochen/db/dialect"
 	"gochen/errors"
@@ -70,7 +71,7 @@ func (b *updateBuilder) SetIncrement(column string, delta any) IUpdateBuilder {
 	if column == "" {
 		return b
 	}
-	if !isSafeIdentifier(column) {
+	if !safeident.IsSafeIdentifier(column) {
 		b.setErr(errors.NewCode(errors.InvalidInput, "updateBuilder: unsafe column name").WithContext("column", column))
 		return b
 	}
@@ -93,11 +94,11 @@ func (b *updateBuilder) SetCaseWhenEq(column string, whenColumn string, cases []
 		b.setErr(errors.NewCode(errors.InvalidInput, "updateBuilder: cases cannot be empty"))
 		return b
 	}
-	if !isSafeIdentifier(column) {
+	if !safeident.IsSafeIdentifier(column) {
 		b.setErr(errors.NewCode(errors.InvalidInput, "updateBuilder: unsafe column name").WithContext("column", column))
 		return b
 	}
-	if !isSafeIdentifier(whenColumn) {
+	if !safeident.IsSafeIdentifier(whenColumn) {
 		b.setErr(errors.NewCode(errors.InvalidInput, "updateBuilder: unsafe when column name").WithContext("column", whenColumn))
 		return b
 	}
@@ -166,7 +167,7 @@ func (b *updateBuilder) Build() (string, []any, error) {
 	if len(b.setCols) == 0 && len(b.exprSet) == 0 {
 		return "", nil, errors.NewCode(errors.InvalidInput, "updateBuilder: no columns or expressions to set")
 	}
-	if !isSafeIdentifier(b.table) {
+	if !safeident.IsSafeIdentifier(b.table) {
 		return "", nil, errors.NewCode(errors.InvalidInput, "updateBuilder: unsafe table name").WithContext("table", b.table)
 	}
 
@@ -183,7 +184,7 @@ func (b *updateBuilder) Build() (string, []any, error) {
 			sb.WriteString(", ")
 		}
 		first = false
-		if !isSafeIdentifier(col) {
+		if !safeident.IsSafeIdentifier(col) {
 			return "", nil, errors.NewCode(errors.InvalidInput, "updateBuilder: unsafe column name").WithContext("column", col)
 		}
 		sb.WriteString(b.dialect.QuoteIdentifier(col))

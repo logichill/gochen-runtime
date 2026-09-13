@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
 	"gochen/db/dialect"
 	"gochen/errors"
@@ -46,7 +47,7 @@ func (b *selectBuilder) From(table string) ISelectBuilder {
 		b.setErr(errors.NewCode(errors.InvalidInput, "selectBuilder: From cannot be empty"))
 		return b
 	}
-	if !isSafeIdentifier(table) {
+	if !safeident.IsSafeIdentifier(table) {
 		b.setErr(errors.NewCode(errors.InvalidInput, "selectBuilder: unsafe from table").
 			WithContext("table", table))
 		return b
@@ -126,7 +127,7 @@ func (b *selectBuilder) GroupBy(cols ...string) ISelectBuilder {
 		if col == "" {
 			continue
 		}
-		if !isSafeIdentifier(col) {
+		if !safeident.IsSafeIdentifier(col) {
 			b.setErr(errors.NewCode(errors.InvalidInput, "selectBuilder: unsafe group by column").
 				WithContext("column", col))
 			return b
@@ -145,7 +146,7 @@ func (b *selectBuilder) OrderBy(orders ...Order) ISelectBuilder {
 		if o.Column == "" {
 			continue
 		}
-		if !isSafeIdentifier(o.Column) {
+		if !safeident.IsSafeIdentifier(o.Column) {
 			b.setErr(errors.NewCode(errors.InvalidInput, "selectBuilder: unsafe order by column").
 				WithContext("column", o.Column))
 			return b
@@ -322,7 +323,7 @@ func (b *selectBuilder) buildSelectColumns() string {
 		}
 		if b.colsUnsafe {
 			cols[i] = col
-		} else if isSafeIdentifier(col) {
+		} else if safeident.IsSafeIdentifier(col) {
 			cols[i] = b.dialect.QuoteIdentifier(col)
 		} else {
 			b.setErr(errors.NewCode(errors.InvalidInput, "selectBuilder: unsafe select column").

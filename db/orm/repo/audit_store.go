@@ -310,7 +310,7 @@ func (s *AuditStore) ListAuditRecordsByEntity(ctx context.Context, entityID stri
 		orm.WithOffset(offset),
 		orm.WithLimit(limit),
 	}
-	if kind := strings.TrimSpace(auditResourceKindFromContext(ctx)); kind != "" {
+	if kind := strings.TrimSpace(audited.AuditResourceKind(ctx)); kind != "" {
 		opts = append([]orm.QueryOption{orm.WithWhere("resource_kind = ?", kind)}, opts...)
 	}
 

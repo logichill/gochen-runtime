@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"gochen/auth/scoped"
+	"gochen/db"
 	"gochen/db/orm"
 	"gochen/domain"
 	"gochen/domain/audited"
@@ -72,17 +73,17 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 	}
 
 	// 提取全局规范约定（保证字段全量默认值归一化）
-	var globalNaming orm.NamingConvention
-	if provider, ok := ormEngine.(orm.INamingConventionProvider); ok {
+	var globalNaming db.NamingConvention
+	if provider, ok := ormEngine.(db.INamingConventionProvider); ok {
 		globalNaming = provider.NamingConvention().WithDefaults()
 	} else if ormEngine.Database() != nil {
-		if provider, ok := ormEngine.Database().(orm.INamingConventionProvider); ok {
+		if provider, ok := ormEngine.Database().(db.INamingConventionProvider); ok {
 			globalNaming = provider.NamingConvention().WithDefaults()
 		} else {
-			globalNaming = orm.DefaultNamingConvention()
+			globalNaming = db.DefaultNamingConvention()
 		}
 	} else {
-		globalNaming = orm.DefaultNamingConvention()
+		globalNaming = db.DefaultNamingConvention()
 	}
 
 	// 能力探测（不依赖具体实体实例值）

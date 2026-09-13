@@ -107,7 +107,7 @@ func (s *SQLStore[ID]) SaveSnapshot(ctx context.Context, snapshot snapcore.Snaps
 	}
 	rows, errRA := res.RowsAffected()
 	if errRA != nil {
-		return wrapSnapshotRowsAffectedError(errRA, "update snapshot rows affected failed")
+		return sqlresult.RowsAffectedError(errRA, "update snapshot rows affected failed")
 	}
 	if rows > 0 {
 		snapshotStoreLogger(s.log).Debug(ctx, "snapshot updated",
@@ -147,7 +147,7 @@ func (s *SQLStore[ID]) SaveSnapshot(ctx context.Context, snapshot snapcore.Snaps
 			}
 			rows, errRA := res.RowsAffected()
 			if errRA != nil {
-				return wrapSnapshotRowsAffectedError(errRA, "retry update snapshot rows affected failed")
+				return sqlresult.RowsAffectedError(errRA, "retry update snapshot rows affected failed")
 			}
 			if rows > 0 {
 				snapshotStoreLogger(s.log).Debug(ctx, "snapshot updated after insert conflict",
@@ -374,7 +374,7 @@ func (s *SQLStore[ID]) CleanupSnapshots(ctx context.Context, retentionPeriod tim
 	}
 	deleted, errRA := res.RowsAffected()
 	if errRA != nil {
-		return wrapSnapshotRowsAffectedError(errRA, "cleanup snapshots rows affected failed")
+		return sqlresult.RowsAffectedError(errRA, "cleanup snapshots rows affected failed")
 	}
 	snapshotStoreLogger(s.log).Info(ctx, "expired snapshots cleaned up",
 		logging.Int64("deleted_count", deleted),
@@ -391,10 +391,6 @@ func normalizeSnapshotSQLTableName(database db.IDatabase, tableName, fallback st
 		return "", errors.NewCode(errors.InvalidInput, "invalid SQL table name").WithContext("cause", err.Error())
 	}
 	return quoted, nil
-}
-
-func wrapSnapshotRowsAffectedError(err error, message string) error {
-	return sqlresult.RowsAffectedError(err, message)
 }
 
 func decodeSnapshotMetadata(raw string) (map[string]any, errors.IAppError) {

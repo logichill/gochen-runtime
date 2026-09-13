@@ -6,12 +6,9 @@ import (
 
 	"gochen-runtime/internal/normalize"
 	"gochen/auth/action"
-	"gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/errors"
 )
-
-type IAuthorizer = scoped.IAuthorizer
 
 // ExecutionMetadata 表达后台执行或重放授权的元数据。
 type ExecutionMetadata struct {
@@ -39,11 +36,11 @@ type Principal struct {
 
 func (p Principal) Clone() Principal {
 	cloned := Principal{
-		SubjectID:       NormalizePositiveID(p.SubjectID),
-		HomeTenantID:    NormalizePositiveID(p.HomeTenantID),
-		HomeScopeID:     NormalizePositiveID(p.HomeScopeID),
-		ActiveScopeID:   NormalizePositiveID(p.ActiveScopeID),
-		ActiveBindingID: NormalizePositiveID(p.ActiveBindingID),
+		SubjectID:       normalize.PositiveID(p.SubjectID),
+		HomeTenantID:    normalize.PositiveID(p.HomeTenantID),
+		HomeScopeID:     normalize.PositiveID(p.HomeScopeID),
+		ActiveScopeID:   normalize.PositiveID(p.ActiveScopeID),
+		ActiveBindingID: normalize.PositiveID(p.ActiveBindingID),
 		Roles:           normalize.Strings(p.Roles),
 		Permissions:     normalize.Strings(p.Permissions),
 		IsSystem:        p.IsSystem,
@@ -128,11 +125,6 @@ func RequirePrincipal(ctx context.Context) (Principal, error) {
 		return Principal{}, errors.NewCode(errors.Unauthorized, "principal is required")
 	}
 	return principal, nil
-}
-
-// NormalizePositiveID 在 value 为正数时返回原值，否则返回 0。
-func NormalizePositiveID(value int64) int64 {
-	return normalize.PositiveID(value)
 }
 
 type executionMetadataContextKey struct{}

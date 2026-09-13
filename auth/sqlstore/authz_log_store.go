@@ -273,7 +273,7 @@ func isNilStringGenerator(generator gen.IGenerator[string]) bool {
 func normalizeLoggedResource(resource governance.AuthzLoggedResource) governance.AuthzLoggedResource {
 	resource.Kind = strings.TrimSpace(resource.Kind)
 	resource.ID = strings.TrimSpace(resource.ID)
-	resource.ManagedScopeID = governanceNormalizePositiveID(resource.ManagedScopeID)
+	resource.ManagedScopeID = normalize.PositiveID(resource.ManagedScopeID)
 	resource.TenantID = strings.TrimSpace(resource.TenantID)
 	resource.OwnerID = strings.TrimSpace(resource.OwnerID)
 	resource.Revision = strings.TrimSpace(resource.Revision)

@@ -12,13 +12,6 @@ import (
 	"gochen/errors"
 )
 
-type ITypedResourceResolver = scoped.ITypedResourceResolver
-type Resource = scoped.Resource
-
-func TypedResourceResolver[T any](resolver func(target T) (scoped.Resource, bool)) scoped.ITypedResourceResolver {
-	return scoped.TypedResourceResolver[T](resolver)
-}
-
 // ModuleRegistration 定义单个模块向 auth 注册表暴露的授权元数据。
 
 // 一个模块可以同时声明权限码、标准权限定义以及资源解析器；注册表会把这些信息
