@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -212,4 +213,76 @@ func validateQueryValue(field string, value query.QueryValue) error {
 			WithContext("field", field)
 	}
 	return nil
+}
+
+// applyAdvancedFilters 应用受控高级过滤条件。
+func (r *Repo[T, ID]) applyAdvancedFilters(quer *queryBuilder, advanced query.AdvancedFilters) (*queryBuilder, error) {
+	if len(advanced.Or) > 0 {
+		expr, args, err := buildOrCondition(advanced.Or, quer.resolveQuotedAllowedColumn)
+		if err != nil {
+			return nil, err
+		}
+		if expr != "" {
+			quer = quer.Where(expr, args...)
+		}
+	}
+	if advanced.DateRange != nil {
+		column, ok := quer.resolveQuotedAllowedColumn("created_at")
+		if !ok {
+			return nil, errors.NewCode(errors.InvalidInput, "date range uses hard-coded field created_at, but it is not allowed").
+				WithContext("field", "created_at")
+		}
+		if advanced.DateRange.Start != "" {
+			quer = quer.Where(column+" >= ?", advanced.DateRange.Start)
+		}
+		if advanced.DateRange.End != "" {
+			quer = quer.Where(column+" <= ?", advanced.DateRange.End)
+		}
+	}
+	return quer, nil
+}
+
+// buildOrCondition 构造OrCondition。
+func buildOrCondition(conditions []query.OrCondition, resolveColumn func(string) (string, bool)) (string, []any, error) {
+	var exprs []string
+	var args []any
+	for _, condition := range conditions {
+		if len(condition) == 0 {
+			continue
+		}
+		var inner []string
+		var innerArgs []any
+		keys := make([]string, 0, len(condition))
+		for key := range condition {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, rawKey := range keys {
+			value := condition[rawKey]
+			key := strings.TrimSpace(rawKey)
+			if key == "" {
+				return "", nil, errors.NewCode(errors.InvalidInput, "advanced filter field is required")
+			}
+			column := key
+			if resolveColumn != nil {
+				resolved, ok := resolveColumn(key)
+				if !ok {
+					return "", nil, errors.NewCode(errors.InvalidInput, "invalid advanced filter field").
+						WithContext("field", key)
+				}
+				column = resolved
+			}
+			queryValue := query.StringValue(value)
+			if err := validateQueryValue(key, queryValue); err != nil {
+				return "", nil, err
+			}
+			inner = append(inner, fmt.Sprintf("%s = ?", column))
+			innerArgs = append(innerArgs, queryValue.Any())
+		}
+		if len(inner) > 0 {
+			exprs = append(exprs, "("+strings.Join(inner, " AND ")+")")
+			args = append(args, innerArgs...)
+		}
+	}
+	return strings.Join(exprs, " OR "), args, nil
 }

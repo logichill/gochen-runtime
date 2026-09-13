@@ -18,6 +18,12 @@ import (
 	"gochen/httpx"
 )
 
+// Context 内部使用的 key（避免散落魔法字符串）。
+const (
+	httpContextKeyRequestBodyCache = "request_body_cache"
+	httpContextKeyResponseWritten  = "response_written"
+)
+
 // Context 是 `gochenhttp.IContext` 在 net/http 适配层上的实现。
 type Context struct {
 	// request 在 SetContext 时会替换为携带最新 context 的副本；请求元数据热路径使用快照字段读取。
