@@ -42,7 +42,9 @@ func NewProvider(opts ...ProviderOption) (*Provider, error) {
 	}
 
 	for _, opt := range opts {
-		opt(p)
+		if opt != nil {
+			opt(p)
+		}
 	}
 
 	if err := p.load(); err != nil {

@@ -26,7 +26,9 @@ func envKeyToConfigKey(k string) string {
 func NewEnvSource(prefix string, opts ...EnvSourceOption) *EnvSource {
 	source := &EnvSource{prefix: prefix}
 	for _, opt := range opts {
-		opt(source)
+		if opt != nil {
+			opt(source)
+		}
 	}
 	return source
 }

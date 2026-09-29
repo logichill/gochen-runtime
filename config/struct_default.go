@@ -28,7 +28,7 @@ func applyDefaultsRecursive(value reflect.Value) {
 	for index := 0; index < value.NumField(); index++ {
 		fieldValue := value.Field(index)
 		fieldType := valueType.Field(index)
-		if !fieldType.IsExported() {
+		if !isConfigStructField(fieldType) {
 			continue
 		}
 

@@ -11,16 +11,28 @@ import (
 
 func validateTaggedStruct(target any) error {
 	var validationErrors ValidationErrors
-	validateTaggedValue(reflect.ValueOf(target), nil, &validationErrors)
+	validateTaggedValue(reflect.ValueOf(target), nil, &validationErrors, make(map[configValueVisit]struct{}))
 	if len(validationErrors) > 0 {
 		return validationErrors
 	}
 	return nil
 }
 
-func validateTaggedValue(value reflect.Value, path []string, validationErrors *ValidationErrors) {
+type configValueVisit struct {
+	typ reflect.Type
+	ptr uintptr
+}
+
+func validateTaggedValue(value reflect.Value, path []string, validationErrors *ValidationErrors, active map[configValueVisit]struct{}) {
 	if !value.IsValid() {
 		return
+	}
+	if key, ok := configValueVisitKey(value); ok {
+		if _, seen := active[key]; seen {
+			return
+		}
+		active[key] = struct{}{}
+		defer delete(active, key)
 	}
 	for value.Kind() == reflect.Pointer {
 		if value.IsNil() {
@@ -36,17 +48,17 @@ func validateTaggedValue(value reflect.Value, path []string, validationErrors *V
 	for index := 0; index < value.NumField(); index++ {
 		fieldValue := value.Field(index)
 		fieldType := valueType.Field(index)
-		if !fieldType.IsExported() {
+		if !isConfigStructField(fieldType) {
 			continue
 		}
-		yamlName, ok := yamlFieldName(fieldType)
+		fieldName, ok := configFieldName(fieldType)
 		if !ok {
 			continue
 		}
-		fieldPath := appendPath(path, yamlName)
+		fieldPath := appendPath(path, fieldName)
 
 		if isStructLikeField(fieldValue) {
-			validateTaggedValue(fieldValue, fieldPath, validationErrors)
+			validateTaggedValue(fieldValue, fieldPath, validationErrors, active)
 		}
 
 		tag := strings.TrimSpace(fieldType.Tag.Get("validate"))
@@ -60,6 +72,17 @@ func validateTaggedValue(value reflect.Value, path []string, validationErrors *V
 			})
 		}
 	}
+}
+
+func configValueVisitKey(value reflect.Value) (configValueVisit, bool) {
+	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() {
+		return configValueVisit{}, false
+	}
+	elem := value.Type().Elem()
+	if elem.Kind() != reflect.Struct {
+		return configValueVisit{}, false
+	}
+	return configValueVisit{typ: value.Type(), ptr: value.Pointer()}, true
 }
 
 func validateFieldByTag(field reflect.Value, tag string) error {

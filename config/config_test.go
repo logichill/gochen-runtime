@@ -35,6 +35,21 @@ func TestNewProvider_WithNilSourceReturnsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestConfigConstructorsIgnoreNilOptions(t *testing.T) {
+	if _, err := NewProvider(nil); err != nil {
+		t.Fatalf("NewProvider(nil): %v", err)
+	}
+	if NewEnvSource("", nil) == nil {
+		t.Fatal("NewEnvSource returned nil")
+	}
+	if NewYAMLSource("", nil) == nil {
+		t.Fatal("NewYAMLSource returned nil")
+	}
+	if NewDotEnvSource("", nil) == nil {
+		t.Fatal("NewDotEnvSource returned nil")
+	}
+}
+
 func TestProvider_GetString_TypeMismatch_UsesDefaultAndWarns(t *testing.T) {
 	provider, err := NewProvider(
 		WithDefaults(map[string]any{

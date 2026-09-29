@@ -44,6 +44,54 @@ func TestProviderLoad_ValidatesTags(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestProviderLoad_RejectsRecursiveConfigType(t *testing.T) {
+	type node struct {
+		Next *node `yaml:"next" default:"{}"`
+	}
+	provider, err := NewProvider()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target node
+	if err := provider.Load("", &target); err == nil {
+		t.Fatal("expected recursive configuration type to be rejected")
+	}
+}
+
+func TestValidateTaggedStruct_TerminatesOnObjectCycle(t *testing.T) {
+	type node struct {
+		Value string `yaml:"value" validate:"required"`
+		Next  *node  `yaml:"next"`
+	}
+
+	root := &node{Value: "ok"}
+	root.Next = root
+	if err := validateTaggedStruct(root); err != nil {
+		t.Fatalf("validateTaggedStruct: %v", err)
+	}
+}
+
+func TestProviderLoad_AllowsHiddenRecursiveType(t *testing.T) {
+	type node struct {
+		Next *node `config:"-" default:"{}"`
+	}
+	type root struct {
+		Hidden *node `config:"-" default:"{}"`
+	}
+
+	provider, err := NewProvider()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &root{}
+	if err := provider.Load("", cfg); err != nil {
+		t.Fatalf("Load hidden recursive type: %v", err)
+	}
+	if cfg.Hidden != nil {
+		t.Fatal("hidden recursive pointer was allocated")
+	}
+}
+
 func TestProviderLoad_ValidationBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

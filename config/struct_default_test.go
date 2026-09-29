@@ -151,3 +151,24 @@ func TestProviderLoad_TagDefaultsRejectNonFiniteFloat(t *testing.T) {
 	assert.Zero(t, cfg.Ratio)
 	assert.Nil(t, cfg.PointerRate)
 }
+
+func TestProviderLoad_SkipsHiddenRecursiveDefaults(t *testing.T) {
+	type node struct {
+		Next  *node  `config:"-" default:"{}"`
+		Value string `config:"-" default:"hidden"`
+	}
+	type child struct {
+		Value string `yaml:"value" default:"child"`
+	}
+	type root struct {
+		Hidden *node `config:"-" default:"{}"`
+		Left   child `yaml:"left"`
+		Right  child `yaml:"right"`
+	}
+
+	cfg := &root{}
+	loadDefaultsForTest(t, cfg)
+	assert.Nil(t, cfg.Hidden)
+	assert.Equal(t, "child", cfg.Left.Value)
+	assert.Equal(t, "child", cfg.Right.Value)
+}

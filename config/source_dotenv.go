@@ -26,7 +26,9 @@ func NewDotEnvSource(path string, opts ...DotEnvSourceOption) *DotEnvSource {
 		optional: false,
 	}
 	for _, opt := range opts {
-		opt(s)
+		if opt != nil {
+			opt(s)
+		}
 	}
 	return s
 }

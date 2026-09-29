@@ -25,7 +25,9 @@ func NewYAMLSource(path string, opts ...YAMLSourceOption) *YAMLSource {
 		optional: false,
 	}
 	for _, opt := range opts {
-		opt(s)
+		if opt != nil {
+			opt(s)
+		}
 	}
 	return s
 }

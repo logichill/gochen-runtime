@@ -53,6 +53,9 @@ func (p *Provider) Load(key string, target any, opts ...LoadOption) error {
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
 		return errors.NewCode(errors.InvalidInput, "target must be a pointer to struct")
 	}
+	if err := validateConfigType(rv.Elem().Type(), nil, map[reflect.Type]bool{}); err != nil {
+		return err
+	}
 
 	options := loadOptions{implicitEnvironment: true}
 	for _, opt := range opts {
@@ -95,6 +98,50 @@ func (p *Provider) Load(key string, target any, opts ...LoadOption) error {
 		}
 	}
 	return nil
+}
+
+// validateConfigType rejects recursive struct models before default expansion or
+// pointer allocation can turn a type cycle into unbounded traversal.
+func validateConfigType(t reflect.Type, path []string, active map[reflect.Type]bool) error {
+	if t == nil {
+		return nil
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || t == reflect.TypeOf(time.Duration(0)) {
+		return nil
+	}
+	if active[t] {
+		return errors.NewCode(errors.InvalidInput, "recursive configuration type").
+			WithContext("path", strings.Join(path, ".")).
+			WithContext("type", t.String())
+	}
+	active[t] = true
+	defer delete(active, t)
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !isConfigStructField(field) {
+			continue
+		}
+		name, _ := configFieldName(field)
+		if err := validateConfigType(field.Type, appendPath(path, name), active); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isConfigStructField reports whether a field participates in the same
+// traversal as binding, defaults, and tag validation.  Keeping this predicate
+// shared prevents a skipped field from re-entering recursion through another
+// phase of the load pipeline.
+func isConfigStructField(field reflect.StructField) bool {
+	if !field.IsExported() {
+		return false
+	}
+	_, ok := configFieldName(field)
+	return ok
 }
 
 func configPathSegments(key string) []string {

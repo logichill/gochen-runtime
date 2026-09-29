@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	"gochen/errors"
@@ -89,7 +88,7 @@ func (p *Provider) warnInvalid(key string, expected string, value any, msg strin
 	}
 }
 
-// Warnings returns warnings recorded by tolerant getters.
+// Warnings 返回宽松读取器记录的告警信息。
 func (p *Provider) Warnings() []ConfigWarning {
 	p.warnMu.Lock()
 	defer p.warnMu.Unlock()
@@ -104,14 +103,6 @@ func (p *Provider) invalidConfig(key string, expected string, value any) error {
 	return errors.NewCode(errors.Validation, "invalid configuration").
 		WithContext("key", key).
 		WithContext("expected", expected).
-		WithContext("actual", fmt.Sprintf("%T", value)).
-		WithContext("value", p.redactIfSensitive(key, value))
-}
-
-func (p *Provider) unsupportedSliceConfig(key string, typ reflect.Type, value any) error {
-	return errors.NewCode(errors.Validation, "unsupported slice element type").
-		WithContext("key", key).
-		WithContext("expected", typ.String()).
 		WithContext("actual", fmt.Sprintf("%T", value)).
 		WithContext("value", p.redactIfSensitive(key, value))
 }
