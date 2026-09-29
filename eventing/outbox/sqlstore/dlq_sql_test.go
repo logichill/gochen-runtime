@@ -30,7 +30,7 @@ func (tx rowsAffectedErrRetryTx) Query(context.Context, string, ...any) (db.IRow
 }
 
 func (tx rowsAffectedErrRetryTx) QueryRow(context.Context, string, ...any) db.IRow {
-	return retryStatusRow{status: tx.status}
+	return retryStatusRow(tx)
 }
 
 func (tx rowsAffectedErrRetryTx) Exec(context.Context, string, ...any) (sql.Result, error) {

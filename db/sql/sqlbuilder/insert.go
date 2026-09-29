@@ -22,13 +22,6 @@ type insertBuilder struct {
 	err error
 }
 
-// setErr 设置Err。
-func (b *insertBuilder) setErr(err error) {
-	if b.err == nil && err != nil {
-		b.err = err
-	}
-}
-
 // Columns 设置 INSERT 的列名列表。
 //
 // 参数：

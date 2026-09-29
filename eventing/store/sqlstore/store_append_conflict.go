@@ -33,21 +33,6 @@ func (s *SQLEventStore[ID]) getCurrentVersion(ctx context.Context, db db.IDataba
 	return current, nil
 }
 
-// isSameEvent 判断Same事件。
-func (s *SQLEventStore[ID]) isSameEvent(ctx context.Context, db db.IDatabase, eventID string, version uint64, aggregateID ID) bool {
-	var existingVersion uint64
-	var existingAggregateID any
-	row := db.QueryRow(ctx, fmt.Sprintf("SELECT aggregate_id, version FROM %s WHERE id = ?", s.tableName), eventID)
-	if row.Scan(&existingAggregateID, &existingVersion) != nil {
-		return false
-	}
-	typed, err := s.codec.Decode(existingAggregateID)
-	if err != nil {
-		return false
-	}
-	return existingVersion == version && typed == aggregateID
-}
-
 // isDuplicateKeyError 判断DuplicateKey错误。
 func isDuplicateKeyError(err error) bool {
 	return db.IsUniqueViolation(err)
@@ -276,33 +261,6 @@ func (s *SQLEventStore[ID]) getEventsByAggregateVersionRange(
 		return nil, err
 	}
 	return eventsByVersion, nil
-}
-
-func (s *SQLEventStore[ID]) getEventByAggregateVersion(ctx context.Context, db db.IDatabase, encodedAggregateID any, aggregateType string, version uint64) (persistedEvent[ID], bool, error) {
-	var existing persistedEvent[ID]
-	var existingAggregateID any
-	row := db.QueryRow(ctx, fmt.Sprintf("SELECT id, type, aggregate_id, aggregate_type, version, schema_version, timestamp, payload, metadata FROM %s WHERE aggregate_id = ? AND aggregate_type = ? AND version = ? LIMIT 1", s.tableName), encodedAggregateID, aggregateType, version)
-	if err := row.Scan(&existing.id, &existing.typ, &existingAggregateID, &existing.aggregateType, &existing.version, &existing.schemaVersion, &existing.timestamp, &existing.payloadJSON, &existing.metadataJSON); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return existing, false, nil
-		}
-		return existing, false, err
-	}
-	typed, err := s.codec.Decode(existingAggregateID)
-	if err != nil {
-		s.getLogger().Warn(ctx, "event aggregate id decode failed during aggregate version conflict resolution",
-			logging.Error(err),
-			logging.String("event_id", existing.id),
-			logging.String("event_type", existing.typ),
-			logging.Any("aggregate_id", existingAggregateID),
-			logging.String("aggregate_type", existing.aggregateType),
-			logging.Uint64("version", existing.version),
-		)
-		return existing, true, nil
-	}
-	existing.aggregateID = typed
-	existing.aggregateIDDecoded = true
-	return existing, true, nil
 }
 
 func (s *SQLEventStore[ID]) matchesPersistedEvent(existing persistedEvent[ID], aggregateID ID, p preparedEvent) bool {

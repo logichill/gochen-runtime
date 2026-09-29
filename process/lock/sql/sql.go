@@ -65,6 +65,9 @@ func NewSQLLockProvider(database db.IDatabase, cfg *SQLLockProviderConfig) (*SQL
 	}
 	if cfg == nil {
 		cfg = &SQLLockProviderConfig{}
+	} else {
+		cfgCopy := *cfg
+		cfg = &cfgCopy
 	}
 	if cfg.TableName == "" {
 		cfg.TableName = "distributed_locks"
@@ -253,11 +256,14 @@ func (p *SQLLockProvider) AcquireLease(ctx context.Context, key string) (lock.IL
 		return nil, errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
 	if err := p.ensureTable(ctx); err != nil {
+		if classified := classifyLockError(err, "ensure lock table failed", key); classified != nil {
+			return nil, classified
+		}
 		return nil, errors.NewCodeWithCause(errors.Database, "ensure lock table failed", err)
 	}
 
 	start := time.Now()
-	// Avoid per-iteration allocation from time.After in hot retry loops.
+	// 复用 poll timer，避免在热重试循环中用 time.After 产生逐次迭代的分配。
 	pollTimer := time.NewTimer(0)
 	if !pollTimer.Stop() {
 		select {
@@ -287,6 +293,9 @@ func (p *SQLLockProvider) AcquireLease(ctx context.Context, key string) (lock.IL
 			return p.newLease(key, leaseToken), nil
 		}
 		if !isDuplicateLockInsertError(insertErr) {
+			if classified := classifyLockError(insertErr, "lock acquire insert failed", key); classified != nil {
+				return nil, classified
+			}
 			return nil, errors.NewCodeWithCause(errors.Database, "lock acquire insert failed", insertErr).
 				WithContext("key", key)
 		}
@@ -297,16 +306,8 @@ func (p *SQLLockProvider) AcquireLease(ctx context.Context, key string) (lock.IL
 			p.owner, leaseToken, expires, key, now,
 		)
 		if uerr != nil {
-			if err := classifyAcquireContextError(ctx, key, start); err != nil {
-				return nil, err
-			}
-			if errors.Is(uerr, context.DeadlineExceeded) {
-				return nil, errors.NewCode(errors.Timeout, "lock acquire timeout").
-					WithContext("key", key).
-					WithContext("ms", time.Since(start).Milliseconds())
-			}
-			if errors.Is(uerr, context.Canceled) {
-				return nil, context.Canceled
+			if classified := classifyLockError(uerr, "lock acquire update failed", key); classified != nil {
+				return nil, classified
 			}
 			return nil, errors.NewCodeWithCause(errors.Database, "lock acquire update failed", uerr).
 				WithContext("key", key)
@@ -335,10 +336,9 @@ func (p *SQLLockProvider) AcquireLease(ctx context.Context, key string) (lock.IL
 		select {
 		case <-pollTimer.C:
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, errors.NewCode(errors.Timeout, "lock acquire timeout").WithContext("key", key).WithContext("ms", time.Since(start).Milliseconds())
-			}
-			return nil, ctx.Err()
+			// 与其它阶段共用同一分类器：等待期间超时必须带 Timeout 码、保留
+			// DeadlineExceeded cause，并补齐 key/ms 上下文，便于定位是哪把锁等超时。
+			return nil, classifyAcquireContextError(ctx, key, start)
 		}
 	}
 }
@@ -347,7 +347,7 @@ func classifyAcquireContextError(ctx context.Context, key string, start time.Tim
 	select {
 	case <-ctx.Done():
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return errors.NewCode(errors.Timeout, "lock acquire timeout").
+			return errors.NewCodeWithCause(errors.Timeout, "lock acquire timeout", ctx.Err()).
 				WithContext("key", key).
 				WithContext("ms", time.Since(start).Milliseconds())
 		}
@@ -355,6 +355,19 @@ func classifyAcquireContextError(ctx context.Context, key string, start time.Tim
 	default:
 		return nil
 	}
+}
+
+func classifyLockError(err error, message string, key string) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.NewCodeWithCause(errors.Timeout, message, err).WithContext("key", key)
+	}
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }
 
 func newLeaseToken() (string, error) {
@@ -447,8 +460,10 @@ func (p *SQLLockProvider) renewOnce(parent context.Context, key string, leaseTok
 		expires, key, p.owner, leaseToken,
 	)
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		// 与获取路径共用同一分类器：以返回错误链为准，恰好同时发生的取消
+		// 不得覆盖无关的驱动错误。
+		if classified := classifyLockError(err, "lock renewal failed", key); classified != nil {
+			return classified
 		}
 		p.logger.Warn(ctx, "lock renewal failed", logging.Error(err), logging.String("key", key))
 		return errors.NewCodeWithCause(errors.Database, "lock renewal failed", err).WithContext("key", key)

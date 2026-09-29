@@ -197,6 +197,9 @@ func TestPostgresIntrospector(t *testing.T) {
 	if !strings.Contains(queries, "ix.indpred is not null") {
 		t.Fatal("expected postgres introspector to expose partial index metadata")
 	}
+	if !strings.Contains(queries, "pg_get_indexdef(i.oid, k.ordinality::integer, false)") {
+		t.Fatal("expected postgres introspector to cast index ordinality for pg_get_indexdef")
+	}
 	if !strings.Contains(strings.Join(got.Warnings, "\n"), "idx_users_email_include") {
 		t.Fatalf("expected complex index warning, got %#v", got.Warnings)
 	}

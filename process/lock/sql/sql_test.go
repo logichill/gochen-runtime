@@ -4,6 +4,7 @@ import (
 	"context"
 	databasesql "database/sql"
 	stderrors "errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -308,11 +309,16 @@ func (r fakeSQLResult) LastInsertId() (int64, error) { return 0, nil }
 
 func (r fakeSQLResult) RowsAffected() (int64, error) { return int64(r), nil }
 
-type rowsAffectedErrResult struct{}
+type rowsAffectedErrResult struct {
+	err error
+}
 
 func (rowsAffectedErrResult) LastInsertId() (int64, error) { return 0, nil }
 
-func (rowsAffectedErrResult) RowsAffected() (int64, error) {
+func (r rowsAffectedErrResult) RowsAffected() (int64, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
 	return 0, stderrors.New("rows affected unsupported")
 }
 
@@ -620,6 +626,38 @@ func TestSQLLockProvider_AcquireLeaseReturnsDatabaseErrorForRowsAffectedFailure(
 	}
 }
 
+// TestSQLLockProvider_AcquireRowsAffectedErrorWinsOverCanceledContext 验证获取路径的
+// RowsAffected 错误优先于同时发生的取消：仍返回携带 key 上下文的 Database 错误。
+func TestSQLLockProvider_AcquireRowsAffectedErrorWinsOverCanceledContext(t *testing.T) {
+	p, err := NewSQLLockProvider(&rowsAffectedErrAcquireDB{}, &SQLLockProviderConfig{
+		Owner: "a",
+	})
+	if err != nil {
+		t.Fatalf("NewSQLLockProvider: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = p.AcquireLease(ctx, "k")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if gerrors.Code(err) != gerrors.Database {
+		t.Fatalf("code = %v, want Database: %v", gerrors.Code(err), err)
+	}
+	if gerrors.Is(err, context.Canceled) {
+		t.Fatalf("ctx cancellation masked the driver error: %v", err)
+	}
+	appErr, ok := gerrors.AsType[gerrors.IAppError](err)
+	if !ok {
+		t.Fatalf("error = %v, want AppError with details", err)
+	}
+	if appErr.Details()["key"] != "k" {
+		t.Fatalf("details[key] = %v, want k", appErr.Details()["key"])
+	}
+}
+
 func TestSQLLockProvider_AcquireLeaseMapsContextErrorFromUpdate(t *testing.T) {
 	p, err := NewSQLLockProvider(&ctxErrOnAcquireUpdateDB{}, &SQLLockProviderConfig{
 		Owner: "a",
@@ -639,6 +677,34 @@ func TestSQLLockProvider_AcquireLeaseMapsContextErrorFromUpdate(t *testing.T) {
 	}
 	if gerrors.Is(err, gerrors.Database) {
 		t.Fatalf("expected timeout classification, got database error: %v", err)
+	}
+}
+
+func TestSQLLockProvider_ContextErrorClassificationPreservesCause(t *testing.T) {
+	canceled := classifyLockError(context.Canceled, "lock canceled", "key")
+	if !stderrors.Is(canceled, context.Canceled) {
+		t.Fatalf("canceled error = %v, want context.Canceled cause", canceled)
+	}
+	if gerrors.Code(canceled) == gerrors.Timeout {
+		t.Fatalf("canceled error should not be classified as timeout: %v", canceled)
+	}
+
+	deadline := classifyLockError(context.DeadlineExceeded, "lock timeout", "key")
+	if !gerrors.Is(deadline, gerrors.Timeout) || !stderrors.Is(deadline, context.DeadlineExceeded) {
+		t.Fatalf("deadline error = %v, want timeout code and deadline cause", deadline)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	acquire := classifyAcquireContextError(ctx, "key", time.Now())
+	if !stderrors.Is(acquire, context.Canceled) {
+		t.Fatalf("acquire cancellation = %v, want context.Canceled", acquire)
+	}
+	deadlineCtx, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+	defer deadlineCancel()
+	acquire = classifyAcquireContextError(deadlineCtx, "key", time.Now())
+	if !gerrors.Is(acquire, gerrors.Timeout) || !stderrors.Is(acquire, context.DeadlineExceeded) {
+		t.Fatalf("acquire timeout = %v, want timeout code and deadline cause", acquire)
 	}
 }
 
@@ -1105,5 +1171,467 @@ func TestSQLLockProvider_RenewWithRetryGivesUpAfterPersistentTransientError(t *t
 	}
 	if database.renewCalls() != maxRenewAttempts {
 		t.Fatalf("expected %d attempts, got %d", maxRenewAttempts, database.renewCalls())
+	}
+}
+
+// TestSQLLockProvider_RenewDriverErrorWinsOverCanceledContext 验证续租 UPDATE 执行失败时
+// 以返回错误链为准：ctx 同时已取消时，无关的驱动错误仍归类 Database 并保留 cause。
+func TestSQLLockProvider_RenewDriverErrorWinsOverCanceledContext(t *testing.T) {
+	driverErr := stderrors.New("permission denied")
+	database := &programmableRenewDB{fallback: renewStep{err: driverErr}}
+	p := newRetryTestProvider(t, database)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := p.renewWithRetry(ctx, "k", "token")
+	if err == nil {
+		t.Fatal("expected renewal error")
+	}
+	if gerrors.Code(err) != gerrors.Database {
+		t.Fatalf("code = %v, want Database: %v", gerrors.Code(err), err)
+	}
+	if !gerrors.Is(err, driverErr) {
+		t.Fatalf("error = %v, want driver error as cause", err)
+	}
+	if gerrors.Is(err, gerrors.Timeout) {
+		t.Fatalf("driver error must not be classified as Timeout: %v", err)
+	}
+	if database.renewCalls() != 1 {
+		t.Fatalf("expected no retry after cancellation, got %d calls", database.renewCalls())
+	}
+}
+
+// TestSQLLockProvider_RenewContextErrorClassification 覆盖续租执行失败时的取消/超时分类：
+// 超时统一 Timeout 码并保留 DeadlineExceeded cause，取消保留 Canceled cause。
+func TestSQLLockProvider_RenewContextErrorClassification(t *testing.T) {
+	t.Run("deadline", func(t *testing.T) {
+		database := &programmableRenewDB{
+			fallback: renewStep{err: fmt.Errorf("driver: %w", context.DeadlineExceeded)},
+		}
+		p := newRetryTestProvider(t, database)
+
+		err := p.renewWithRetry(context.Background(), "k", "token")
+		if err == nil {
+			t.Fatal("expected renewal error")
+		}
+		if gerrors.Code(err) != gerrors.Timeout {
+			t.Fatalf("code = %v, want Timeout: %v", gerrors.Code(err), err)
+		}
+		if !gerrors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want context.DeadlineExceeded cause", err)
+		}
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		database := &programmableRenewDB{
+			fallback: renewStep{err: fmt.Errorf("driver: %w", context.Canceled)},
+		}
+		p := newRetryTestProvider(t, database)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := p.renewWithRetry(ctx, "k", "token")
+		if err == nil {
+			t.Fatal("expected renewal error")
+		}
+		if !gerrors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled cause", err)
+		}
+		if code := gerrors.Code(err); code == gerrors.Timeout || code == gerrors.Database {
+			t.Fatalf("canceled error misclassified as %v: %v", code, err)
+		}
+	})
+}
+
+// renewRowsAffectedErrDB 让续租 UPDATE 返回成功结果但读取 RowsAffected 失败。
+type renewRowsAffectedErrDB struct {
+	rowsErr error
+	calls   int
+}
+
+func (d *renewRowsAffectedErrDB) Query(context.Context, string, ...any) (db.IRows, error) {
+	return &fakeRows{columns: []string{"lock_key", "owner", "lease_token", "expires_at_ms"}}, nil
+}
+
+func (d *renewRowsAffectedErrDB) QueryRow(context.Context, string, ...any) db.IRow { return nil }
+
+func (d *renewRowsAffectedErrDB) Exec(_ context.Context, query string, _ ...any) (databasesql.Result, error) {
+	if strings.Contains(query, "UPDATE") && strings.Contains(query, "expires_at_ms = ?") {
+		d.calls++
+		return rowsAffectedErrResult{err: d.rowsErr}, nil
+	}
+	return fakeSQLResult(1), nil
+}
+
+func (d *renewRowsAffectedErrDB) Begin(context.Context) (db.ITransaction, error) {
+	return nil, stderrors.New("not implemented")
+}
+
+func (d *renewRowsAffectedErrDB) BeginTx(context.Context, *databasesql.TxOptions) (db.ITransaction, error) {
+	return nil, stderrors.New("not implemented")
+}
+
+func (d *renewRowsAffectedErrDB) Ping(context.Context) error { return nil }
+
+func (d *renewRowsAffectedErrDB) Close() error { return nil }
+
+// TestSQLLockProvider_RenewRowsAffectedErrorStaysDatabaseError 验证续租路径的 RowsAffected
+// 错误归类 Database 并保留驱动错误 cause，不得被误判为 Conflict（lease lost）；
+// ctx 同时取消时同样以驱动错误为准，且不触发重试之外的额外等待。
+func TestSQLLockProvider_RenewRowsAffectedErrorStaysDatabaseError(t *testing.T) {
+	t.Run("reported after bounded retries", func(t *testing.T) {
+		rowsErr := stderrors.New("rows affected unsupported")
+		database := &renewRowsAffectedErrDB{rowsErr: rowsErr}
+		p := newRetryTestProvider(t, database)
+
+		err := p.renewWithRetry(context.Background(), "k", "token")
+		if err == nil {
+			t.Fatal("expected renewal error")
+		}
+		if gerrors.Code(err) != gerrors.Database {
+			t.Fatalf("code = %v, want Database: %v", gerrors.Code(err), err)
+		}
+		if !gerrors.Is(err, rowsErr) {
+			t.Fatalf("error = %v, want rows affected driver error as cause", err)
+		}
+		if !strings.Contains(err.Error(), "rows affected") {
+			t.Fatalf("error = %v, want rows affected message", err)
+		}
+		if database.calls != maxRenewAttempts {
+			t.Fatalf("expected %d attempts, got %d", maxRenewAttempts, database.calls)
+		}
+	})
+
+	t.Run("driver error wins over canceled context", func(t *testing.T) {
+		rowsErr := stderrors.New("rows affected unsupported")
+		database := &renewRowsAffectedErrDB{rowsErr: rowsErr}
+		p := newRetryTestProvider(t, database)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := p.renewWithRetry(ctx, "k", "token")
+		if err == nil {
+			t.Fatal("expected renewal error")
+		}
+		if gerrors.Code(err) != gerrors.Database {
+			t.Fatalf("code = %v, want Database: %v", gerrors.Code(err), err)
+		}
+		if !gerrors.Is(err, rowsErr) {
+			t.Fatalf("error = %v, want rows affected driver error as cause", err)
+		}
+		if gerrors.Is(err, context.Canceled) {
+			t.Fatalf("ctx cancellation masked the driver error: %v", err)
+		}
+		if database.calls != 1 {
+			t.Fatalf("expected no retry after cancellation, got %d calls", database.calls)
+		}
+	})
+}
+
+// lockStageErrorDB 允许按阶段（建表 / 插入 / 更新）注入错误，用于验证
+// AcquireLease 各阶段的取消与超时分类一致。
+type lockStageErrorDB struct {
+	createErr  error
+	insertErr  error
+	updateErr  error
+	updateRows int64
+}
+
+func (d *lockStageErrorDB) Query(context.Context, string, ...any) (db.IRows, error) {
+	return &fakeRows{columns: []string{"lock_key", "owner", "lease_token", "expires_at_ms"}}, nil
+}
+
+func (d *lockStageErrorDB) QueryRow(context.Context, string, ...any) db.IRow { return nil }
+
+func (d *lockStageErrorDB) Exec(_ context.Context, query string, _ ...any) (databasesql.Result, error) {
+	switch {
+	case strings.Contains(query, "CREATE TABLE"):
+		if d.createErr != nil {
+			return nil, d.createErr
+		}
+		return fakeSQLResult(0), nil
+	case strings.Contains(query, "INSERT INTO"):
+		if d.insertErr != nil {
+			return nil, d.insertErr
+		}
+		return fakeSQLResult(1), nil
+	case strings.Contains(query, "UPDATE"):
+		if d.updateErr != nil {
+			return nil, d.updateErr
+		}
+		return fakeSQLResult(d.updateRows), nil
+	default:
+		return fakeSQLResult(0), nil
+	}
+}
+
+func (d *lockStageErrorDB) Begin(context.Context) (db.ITransaction, error) {
+	return nil, stderrors.New("not implemented")
+}
+
+func (d *lockStageErrorDB) BeginTx(context.Context, *databasesql.TxOptions) (db.ITransaction, error) {
+	return nil, stderrors.New("not implemented")
+}
+
+func (d *lockStageErrorDB) Ping(context.Context) error { return nil }
+
+func (d *lockStageErrorDB) Close() error { return nil }
+
+func duplicateLockInsertError() error {
+	return sqliteUniqueViolationLikeError{
+		Code:         19,
+		ExtendedCode: 2067,
+		msg:          "UNIQUE constraint failed: distributed_locks.lock_key",
+	}
+}
+
+// TestSQLLockProvider_StageContextErrorClassification 覆盖 ensure / insert / update
+// 三个阶段对原生与包装的取消、超时错误的分类：超时统一 Timeout 码并保留
+// DeadlineExceeded cause，取消保留 Canceled cause 且不得升级为 Timeout/Database。
+func TestSQLLockProvider_StageContextErrorClassification(t *testing.T) {
+	stages := []struct {
+		name     string
+		database func(injected error) db.IDatabase
+	}{
+		{
+			name: "ensure",
+			database: func(injected error) db.IDatabase {
+				return &lockStageErrorDB{createErr: injected}
+			},
+		},
+		{
+			name: "insert",
+			database: func(injected error) db.IDatabase {
+				return &lockStageErrorDB{insertErr: injected}
+			},
+		},
+		{
+			name: "update",
+			database: func(injected error) db.IDatabase {
+				return &lockStageErrorDB{insertErr: duplicateLockInsertError(), updateErr: injected}
+			},
+		},
+	}
+	injectedErrors := []struct {
+		name     string
+		err      error
+		wantCode gerrors.ErrorCode
+		wantIs   error
+	}{
+		{name: "raw_canceled", err: context.Canceled},
+		{name: "wrapped_canceled", err: fmt.Errorf("driver: %w", context.Canceled)},
+		{name: "raw_deadline", err: context.DeadlineExceeded, wantCode: gerrors.Timeout, wantIs: context.DeadlineExceeded},
+		{name: "wrapped_deadline", err: fmt.Errorf("driver: %w", context.DeadlineExceeded), wantCode: gerrors.Timeout, wantIs: context.DeadlineExceeded},
+	}
+
+	for _, stage := range stages {
+		for _, injected := range injectedErrors {
+			t.Run(stage.name+"/"+injected.name, func(t *testing.T) {
+				p, err := NewSQLLockProvider(stage.database(injected.err), &SQLLockProviderConfig{Owner: "a"})
+				if err != nil {
+					t.Fatalf("NewSQLLockProvider: %v", err)
+				}
+
+				_, err = p.AcquireLease(context.Background(), "k")
+				if err == nil {
+					t.Fatal("expected acquire error")
+				}
+				if !gerrors.Is(err, injected.err) {
+					t.Fatalf("error chain = %v, want injected error as cause", err)
+				}
+				if injected.wantIs != nil {
+					if gerrors.Code(err) != injected.wantCode {
+						t.Fatalf("code = %v, want %v: %v", gerrors.Code(err), injected.wantCode, err)
+					}
+					if !gerrors.Is(err, injected.wantIs) {
+						t.Fatalf("error = %v, want %v cause", err, injected.wantIs)
+					}
+					// 各阶段超时都必须携带锁 key，便于定位是哪把锁超时。
+					appErr, ok := gerrors.AsType[gerrors.IAppError](err)
+					if !ok || appErr.Details()["key"] != "k" {
+						t.Fatalf("timeout error = %v, want key context", err)
+					}
+					return
+				}
+				if !gerrors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled cause", err)
+				}
+				if code := gerrors.Code(err); code == gerrors.Timeout || code == gerrors.Database {
+					t.Fatalf("canceled error misclassified as %v: %v", code, err)
+				}
+			})
+		}
+	}
+}
+
+// TestSQLLockProvider_WaitStageContextErrorClassification 覆盖轮询等待阶段的分类：
+// 超时必须带 Timeout 码、保留 DeadlineExceeded cause 并携带 key/ms 上下文。
+func TestSQLLockProvider_WaitStageContextErrorClassification(t *testing.T) {
+	newProvider := func(t *testing.T) *SQLLockProvider {
+		t.Helper()
+		p, err := NewSQLLockProvider(&lockStageErrorDB{insertErr: duplicateLockInsertError()}, &SQLLockProviderConfig{
+			Owner:         "a",
+			PollInterval:  time.Second,
+			RenewInterval: -1,
+		})
+		if err != nil {
+			t.Fatalf("NewSQLLockProvider: %v", err)
+		}
+		return p
+	}
+
+	t.Run("deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		_, err := newProvider(t).AcquireLease(ctx, "k")
+		if err == nil {
+			t.Fatal("expected acquire timeout")
+		}
+		if gerrors.Code(err) != gerrors.Timeout {
+			t.Fatalf("code = %v, want Timeout: %v", gerrors.Code(err), err)
+		}
+		if !gerrors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error = %v, want context.DeadlineExceeded cause", err)
+		}
+		appErr, ok := gerrors.AsType[gerrors.IAppError](err)
+		if !ok {
+			t.Fatalf("error = %v, want AppError with details", err)
+		}
+		details := appErr.Details()
+		if details["key"] != "k" {
+			t.Fatalf("details[key] = %v, want k", details["key"])
+		}
+		if _, ok := details["ms"]; !ok {
+			t.Fatalf("details = %v, want ms context", details)
+		}
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		time.AfterFunc(20*time.Millisecond, cancel)
+
+		_, err := newProvider(t).AcquireLease(ctx, "k")
+		if err == nil {
+			t.Fatal("expected acquire cancellation")
+		}
+		if !gerrors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled cause", err)
+		}
+		if gerrors.Code(err) == gerrors.Timeout {
+			t.Fatalf("canceled error misclassified as Timeout: %v", err)
+		}
+	})
+}
+
+// TestSQLLockProvider_DriverErrorWinsOverCanceledContext 验证分类以返回错误链为准：
+// ctx 同时已取消时，无关的驱动错误仍必须归类为 Database 并保留 cause。
+func TestSQLLockProvider_DriverErrorWinsOverCanceledContext(t *testing.T) {
+	driverErr := stderrors.New("permission denied")
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stages := []struct {
+		name     string
+		database db.IDatabase
+	}{
+		{name: "ensure", database: &lockStageErrorDB{createErr: driverErr}},
+		{name: "insert", database: &lockStageErrorDB{insertErr: driverErr}},
+		{name: "update", database: &lockStageErrorDB{insertErr: duplicateLockInsertError(), updateErr: driverErr}},
+	}
+
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			p, err := NewSQLLockProvider(stage.database, &SQLLockProviderConfig{Owner: "a"})
+			if err != nil {
+				t.Fatalf("NewSQLLockProvider: %v", err)
+			}
+
+			_, err = p.AcquireLease(canceled, "k")
+			if err == nil {
+				t.Fatal("expected acquire error")
+			}
+			if gerrors.Code(err) != gerrors.Database {
+				t.Fatalf("code = %v, want Database: %v", gerrors.Code(err), err)
+			}
+			if !gerrors.Is(err, driverErr) {
+				t.Fatalf("error = %v, want driver error cause", err)
+			}
+			if gerrors.Is(err, gerrors.Timeout) {
+				t.Fatalf("driver error must not be classified as Timeout: %v", err)
+			}
+		})
+	}
+}
+
+// TestNewSQLLockProvider_DoesNotMutateConfig 验证成功与失败构造路径都不改写调用方配置：
+// 默认值归一化只发生在内部副本上。
+func TestNewSQLLockProvider_DoesNotMutateConfig(t *testing.T) {
+	database := setupTestDB(t)
+
+	// 失败路径：表名校验先于默认值填充，调用方对象必须保持原样。
+	invalid := &SQLLockProviderConfig{TableName: "bad-name;"}
+	if _, err := NewSQLLockProvider(database, invalid); err == nil {
+		t.Fatal("expected error for invalid table name")
+	}
+	if invalid.TableName != "bad-name;" || invalid.Owner != "" || invalid.TTL != 0 ||
+		invalid.PollInterval != 0 || invalid.RenewInterval != 0 || invalid.Logger != nil {
+		t.Fatalf("failed construction mutated caller config: %+v", invalid)
+	}
+
+	emptyOwner := &SQLLockProviderConfig{}
+	if _, err := NewSQLLockProvider(database, emptyOwner); err == nil {
+		t.Fatal("expected error for empty owner")
+	}
+	if emptyOwner.TableName != "" || emptyOwner.TTL != 0 || emptyOwner.Logger != nil {
+		t.Fatalf("failed construction mutated caller config: %+v", emptyOwner)
+	}
+
+	// 成功路径：内部完成归一化，输入对象仍为原始零值。
+	zero := &SQLLockProviderConfig{Owner: "a"}
+	p, err := NewSQLLockProvider(database, zero)
+	if err != nil {
+		t.Fatalf("NewSQLLockProvider: %v", err)
+	}
+	if zero.TableName != "" || zero.TTL != 0 || zero.PollInterval != 0 || zero.RenewInterval != 0 || zero.Logger != nil {
+		t.Fatalf("constructor mutated caller config: %+v", zero)
+	}
+	if p.tableName != "distributed_locks" || p.ttl != 30*time.Second ||
+		p.pollInterval != 50*time.Millisecond || p.renewInterval != 15*time.Second || p.logger == nil {
+		t.Fatalf("normalized values not applied: table=%q ttl=%v poll=%v renew=%v",
+			p.tableName, p.ttl, p.pollInterval, p.renewInterval)
+	}
+}
+
+// TestNewSQLLockProvider_ConcurrentSharedConfig 用同一配置指针并发构造，
+// 在 race 检测下验证构造器只读输入配置。
+func TestNewSQLLockProvider_ConcurrentSharedConfig(t *testing.T) {
+	database := setupTestDB(t)
+	shared := &SQLLockProviderConfig{Owner: "a"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p, err := NewSQLLockProvider(database, shared)
+			if err != nil {
+				t.Errorf("NewSQLLockProvider: %v", err)
+				return
+			}
+			if p.ttl != 30*time.Second || p.tableName != "distributed_locks" {
+				t.Errorf("normalized values not applied: ttl=%v table=%q", p.ttl, p.tableName)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if shared.TableName != "" || shared.TTL != 0 || shared.PollInterval != 0 ||
+		shared.RenewInterval != 0 || shared.Logger != nil {
+		t.Fatalf("concurrent construction mutated shared config: %+v", shared)
 	}
 }

@@ -98,7 +98,10 @@ func scanOneRow(rows db.IRows, v reflect.Value, orm *Orm) error {
 	}
 
 	// 按目标类型构建 structMeta
-	sm := orm.structMetaForValue(v.Addr().Interface())
+	sm, metaErr := orm.structMetaForValue(v.Addr().Interface())
+	if metaErr != nil {
+		return metaErr
+	}
 
 	if sm == nil {
 		if len(cols) != 1 {

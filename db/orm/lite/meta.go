@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"gochen/codec/casecodec"
+	"gochen/errors"
 )
 
 var (
@@ -42,47 +43,54 @@ func (sm *structMeta) insertableColumns() ([]string, []fieldInfo) {
 	return cols, fields
 }
 
-func (o *Orm) structMetaForValue(v any) *structMeta {
+func (o *Orm) structMetaForValue(v any) (*structMeta, error) {
 	t := reflect.TypeOf(v)
 	if t == nil {
-		return nil
+		return nil, nil
 	}
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
-		return nil
+		return nil, nil
 	}
 
 	o.mu.RLock()
 	if sm, ok := o.structMap[t]; ok {
 		o.mu.RUnlock()
-		return sm
+		return sm, nil
 	}
 	o.mu.RUnlock()
 
-	sm := buildStructMeta(t)
+	sm, err := buildStructMeta(t)
+	if err != nil {
+		return nil, err
+	}
 	o.mu.Lock()
-	// Re-check under write lock: another goroutine may have built and cached
-	// the same type while we were calling buildStructMeta above.
+	// 写锁内复查：构建期间可能已有其他 goroutine 构建并缓存了同一类型。
 	if existing, ok := o.structMap[t]; ok {
 		o.mu.Unlock()
-		return existing
+		return existing, nil
 	}
 	o.structMap[t] = sm
 	o.mu.Unlock()
-	return sm
+	return sm, nil
 }
 
 // buildStructMeta 构造StructMeta。
-func buildStructMeta(t reflect.Type) *structMeta {
+func buildStructMeta(t reflect.Type) (*structMeta, error) {
 	sm := &structMeta{
 		typ:          t,
 		columnToInfo: make(map[string]fieldInfo),
 	}
 
-	var walk func(reflect.Type, []int)
-	walk = func(cur reflect.Type, prefix []int) {
+	var walk func(reflect.Type, []int, map[reflect.Type]bool) error
+	walk = func(cur reflect.Type, prefix []int, path map[reflect.Type]bool) error {
+		if path[cur] {
+			return errors.NewCode(errors.InvalidInput, "recursive ORM struct type").WithContext("type", cur.String())
+		}
+		path[cur] = true
+		defer delete(path, cur)
 		for i := 0; i < cur.NumField(); i++ {
 			f := cur.Field(i)
 			// 跳过未导出字段
@@ -97,16 +105,21 @@ func buildStructMeta(t reflect.Type) *structMeta {
 				continue
 			}
 
+			// 命名指针类型可能指向自身（例如 type P *P）。在任何 helper 跟随指针链
+			// 之前先校验，避免畸形元数据让反射陷入死循环。
+			if _, err := derefDBFieldType(f.Type); err != nil {
+				return errors.Wrap(err, errors.InvalidInput, "invalid ORM field type").WithContext("field", f.Name)
+			}
+
 			writable := isWritableDBField(f.Type)
 			scannable := isScannableDBField(f.Type)
 
-			embeddedType := f.Type
-			for embeddedType.Kind() == reflect.Ptr {
-				embeddedType = embeddedType.Elem()
-			}
+			embeddedType, _ := derefDBFieldType(f.Type)
 			if f.Anonymous && embeddedType.Kind() == reflect.Struct && !writable && !scannable {
-				// 内嵌结构体（例如 entity.Entity），递归展开
-				walk(embeddedType, index)
+				// 内嵌结构体（例如 entity.Entity），递归展开；递归检测由 walk 自身完成
+				if err := walk(embeddedType, index, path); err != nil {
+					return err
+				}
 				continue
 			}
 
@@ -133,27 +146,26 @@ func buildStructMeta(t reflect.Type) *structMeta {
 				sm.columnToInfo[col] = info
 			}
 		}
+		return nil
 	}
 
-	walk(t, nil)
-	return sm
+	if err := walk(t, nil, make(map[reflect.Type]bool)); err != nil {
+		return nil, err
+	}
+	return sm, nil
 }
 
 func isWritableDBField(t reflect.Type) bool {
+	baseType, err := derefDBFieldType(t)
+	if err != nil || baseType == nil {
+		return false
+	}
+	t = baseType
 	if implementsDriverValuer(t) {
 		return true
 	}
 	if implementsSQLScanner(t) {
 		return false
-	}
-	for t.Kind() == reflect.Ptr {
-		t = t.Elem()
-		if implementsDriverValuer(t) {
-			return true
-		}
-		if implementsSQLScanner(t) {
-			return false
-		}
 	}
 	if isTimeType(t) {
 		return true
@@ -193,14 +205,13 @@ func implementsSQLScanner(t reflect.Type) bool {
 }
 
 func isScannableDBField(t reflect.Type) bool {
+	baseType, err := derefDBFieldType(t)
+	if err != nil || baseType == nil {
+		return false
+	}
+	t = baseType
 	if implementsSQLScanner(t) {
 		return true
-	}
-	for t.Kind() == reflect.Ptr {
-		t = t.Elem()
-		if implementsSQLScanner(t) {
-			return true
-		}
 	}
 	if isTimeType(t) {
 		return true
@@ -219,10 +230,27 @@ func isScannableDBField(t reflect.Type) bool {
 
 // isTimeType 判断时间类型。
 func isTimeType(t reflect.Type) bool {
-	for t.Kind() == reflect.Ptr {
+	baseType, err := derefDBFieldType(t)
+	if err != nil || baseType == nil {
+		return false
+	}
+	t = baseType
+	return t.PkgPath() == "time" && t.Name() == "Time"
+}
+
+// derefDBFieldType 剥离指针链，同时拒绝递归的命名指针类型。
+// 对 type P *P，reflect.Type.Elem 会返回同一类型，普通循环永不终止。
+func derefDBFieldType(t reflect.Type) (reflect.Type, error) {
+	seen := make(map[reflect.Type]struct{})
+	for t != nil && t.Kind() == reflect.Ptr {
+		if _, ok := seen[t]; ok {
+			return nil, errors.NewCode(errors.InvalidInput, "recursive ORM pointer type").
+				WithContext("type", t.String())
+		}
+		seen[t] = struct{}{}
 		t = t.Elem()
 	}
-	return t.PkgPath() == "time" && t.Name() == "Time"
+	return t, nil
 }
 
 // parseColumnTag 解析ColumnTag。

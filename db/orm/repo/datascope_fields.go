@@ -143,25 +143,6 @@ func assignInt64ConstraintField(value reflect.Value, field dataScopeField, targe
 	return nil
 }
 
-func readRequiredStringConstraintField(value reflect.Value, field dataScopeField, label string) (string, error) {
-	if field.column == "" {
-		return "", errors.NewCode(errors.InvalidInput, "configured authz column is required").
-			WithContext("label", label)
-	}
-	if !field.hasField() {
-		return "", errors.NewCode(errors.InvalidInput, "configured authz column has no matching string field on entity").
-			WithContext("label", label).
-			WithContext("column", field.column)
-	}
-	current, ok := readStringField(value, field.index)
-	if !ok {
-		return "", errors.NewCode(errors.InvalidInput, "configured authz field is not readable string").
-			WithContext("label", label).
-			WithContext("column", field.column)
-	}
-	return current, nil
-}
-
 func readRequiredInt64ConstraintField(value reflect.Value, field dataScopeField, label string) (int64, error) {
 	if field.column == "" {
 		return 0, errors.NewCode(errors.InvalidInput, "configured authz column is required").

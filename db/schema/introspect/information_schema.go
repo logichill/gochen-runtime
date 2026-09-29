@@ -94,7 +94,7 @@ SELECT i.relname AS index_name,
        CASE WHEN ix.indisunique THEN 0 ELSE 1 END AS non_unique,
        a.attname AS column_name,
        k.ordinality AS seq_in_index,
-       pg_get_indexdef(i.oid, k.ordinality, false) AS key_def,
+       pg_get_indexdef(i.oid, k.ordinality::integer, false) AS key_def,
        ix.indnkeyatts,
        ix.indnatts,
        ix.indpred IS NOT NULL AS has_predicate,
@@ -373,9 +373,7 @@ func qualifyPostgresTypeName(typeSchema string, currentSchema string, name strin
 
 func formatPostgresArrayType(udtName string, udtSchema string, currentSchema string) string {
 	udtName = strings.TrimSpace(udtName)
-	if strings.HasPrefix(udtName, "_") {
-		udtName = udtName[1:]
-	}
+	udtName = strings.TrimPrefix(udtName, "_")
 	if udtName == "" {
 		return "ARRAY"
 	}

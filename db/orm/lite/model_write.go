@@ -39,7 +39,10 @@ func (m *model) Create(ctx context.Context, entities ...any) error {
 
 	// 以第一个实体的类型构建字段映射
 	first := entities[0]
-	sm := m.orm.structMetaForValue(first)
+	sm, metaErr := m.orm.structMetaForValue(first)
+	if metaErr != nil {
+		return metaErr
+	}
 	if sm == nil {
 		return errors.NewCode(errors.InvalidInput, "basic.Model.Create: unsupported entity type").
 			WithContext("entity_type", fmt.Sprintf("%T", first))
@@ -163,7 +166,10 @@ func (m *model) buildSaveBuilder(entity any, opts ...orm.QueryOption) (sqlbuilde
 			WithContext("entity_type", fmt.Sprintf("%T", entity))
 	}
 
-	sm := m.orm.structMetaForValue(entity)
+	sm, metaErr := m.orm.structMetaForValue(entity)
+	if metaErr != nil {
+		return nil, metaErr
+	}
 	if sm == nil {
 		return nil, errors.NewCode(errors.InvalidInput, "basic.Model.Save: unsupported entity type").
 			WithContext("entity_type", fmt.Sprintf("%T", entity))

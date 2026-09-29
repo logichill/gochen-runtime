@@ -4,6 +4,8 @@ import (
 	"database/sql/driver"
 	"reflect"
 	"testing"
+
+	"gochen/errors"
 )
 
 type scannerMetaList []string
@@ -53,7 +55,10 @@ func TestBuildStructMeta_SnakeCaseHandlesInitialisms(t *testing.T) {
 		HTTPStatus     int
 	}
 
-	meta := buildStructMeta(reflectTypeOf[scopedEntity]())
+	meta, err := buildStructMeta(reflectTypeOf[scopedEntity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, column := range []string{"id", "managed_scope_id", "owner_id", "tenant_id", "http_status"} {
 		if _, ok := meta.columnToInfo[column]; !ok {
@@ -75,7 +80,10 @@ func TestBuildStructMeta_IncludesScannerValuerFields(t *testing.T) {
 		Raw         []string
 	}
 
-	meta := buildStructMeta(reflectTypeOf[roleEntity]())
+	meta, err := buildStructMeta(reflectTypeOf[roleEntity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, ok := meta.columnToInfo["permissions"]; !ok {
 		t.Fatalf("expected scanner/valuer permissions column in %#v", meta.columnToInfo)
@@ -96,7 +104,10 @@ func TestBuildStructMeta_ValuerOnlyFieldsAreWriteOnly(t *testing.T) {
 		Payload valuerOnlyMetaField `json:"payload" gorm:"type:text"`
 	}
 
-	meta := buildStructMeta(reflectTypeOf[writeOnlyEntity]())
+	meta, err := buildStructMeta(reflectTypeOf[writeOnlyEntity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cols, _ := meta.insertableColumns()
 	if !containsColumn(cols, "payload") {
@@ -113,7 +124,10 @@ func TestBuildStructMeta_ScannerOnlyFieldsAreReadOnly(t *testing.T) {
 		Payload scannerOnlyMetaField `json:"payload" gorm:"type:text"`
 	}
 
-	meta := buildStructMeta(reflectTypeOf[readOnlyEntity]())
+	meta, err := buildStructMeta(reflectTypeOf[readOnlyEntity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cols, _ := meta.insertableColumns()
 	if containsColumn(cols, "payload") {
@@ -132,7 +146,10 @@ func TestBuildStructMeta_GormTagWithoutColumnPreservesJSONName(t *testing.T) {
 		JSONOnly     string `json:"json_only"`
 	}
 
-	meta := buildStructMeta(reflectTypeOf[taggedEntity]())
+	meta, err := buildStructMeta(reflectTypeOf[taggedEntity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, column := range []string{"display", "db_name", "json_hidden", "json_only"} {
 		if _, ok := meta.columnToInfo[column]; !ok {
@@ -155,7 +172,10 @@ func TestBuildStructMeta_SkipsIgnoredEmbeddedStruct(t *testing.T) {
 		ID           int64
 	}
 
-	meta := buildStructMeta(reflectTypeOf[entity]())
+	meta, err := buildStructMeta(reflectTypeOf[entity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, ok := meta.columnToInfo["id"]; !ok {
 		t.Fatalf("expected id column in %#v", meta.columnToInfo)
@@ -174,7 +194,10 @@ func TestBuildStructMeta_ExpandsPointerEmbeddedStruct(t *testing.T) {
 		Name string
 	}
 
-	meta := buildStructMeta(reflectTypeOf[entity]())
+	meta, err := buildStructMeta(reflectTypeOf[entity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, column := range []string{"id", "name"} {
 		if _, ok := meta.columnToInfo[column]; !ok {
@@ -189,7 +212,10 @@ func TestBuildStructMeta_AnonymousScannerValuerFieldIsColumn(t *testing.T) {
 		EmbeddedScannerValuerMetaField `gorm:"column:payload"`
 	}
 
-	meta := buildStructMeta(reflectTypeOf[entity]())
+	meta, err := buildStructMeta(reflectTypeOf[entity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cols, _ := meta.insertableColumns()
 	if !containsColumn(cols, "payload") {
@@ -200,6 +226,30 @@ func TestBuildStructMeta_AnonymousScannerValuerFieldIsColumn(t *testing.T) {
 	}
 	if _, ok := meta.columnToInfo["raw"]; ok {
 		t.Fatalf("did not expect anonymous scanner/valuer internals to be expanded: %#v", meta.columnToInfo)
+	}
+}
+
+func TestBuildStructMeta_RejectsRecursiveEmbeddedStruct(t *testing.T) {
+	type Node struct {
+		*Node
+		Value string
+	}
+
+	_, err := buildStructMeta(reflectTypeOf[Node]())
+	if err == nil {
+		t.Fatal("expected recursive ORM struct type to be rejected")
+	}
+}
+
+func TestBuildStructMeta_RejectsRecursiveNamedPointer(t *testing.T) {
+	type P *P
+	type entity struct {
+		Value P
+	}
+
+	_, err := buildStructMeta(reflectTypeOf[entity]())
+	if !errors.Is(err, errors.InvalidInput) {
+		t.Fatalf("recursive pointer error = %v, want InvalidInput", err)
 	}
 }
 

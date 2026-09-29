@@ -61,13 +61,17 @@ func (t *Tx) Exec(ctx context.Context, query string, args ...any) (sql.Result, e
 
 // Begin 明确拒绝嵌套事务，调用方如需细粒度回滚应使用 savepoint。
 func (t *Tx) Begin(ctx context.Context) (db.ITransaction, error) {
-	_ = ctx
+	if ctx == nil {
+		return nil, errors.NewCode(errors.InvalidInput, "ctx is nil")
+	}
 	return nil, errors.NewCode(errors.Unsupported, "nested transactions are not supported")
 }
 
 // BeginTx 明确拒绝在现有事务内部再开启嵌套事务。
 func (t *Tx) BeginTx(ctx context.Context, opts *sql.TxOptions) (db.ITransaction, error) {
-	_ = ctx
+	if ctx == nil {
+		return nil, errors.NewCode(errors.InvalidInput, "ctx is nil")
+	}
 	_ = opts
 	return nil, errors.NewCode(errors.Unsupported, "nested transactions are not supported")
 }
@@ -150,6 +154,7 @@ func (t *Tx) Rollback() error {
 	return t.tx.Rollback()
 }
 
+// DialectName 返回事务使用的底层数据库方言名称。
 func (t *Tx) DialectName() string {
 	return string(t.dialect.Name())
 }

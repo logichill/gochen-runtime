@@ -439,7 +439,10 @@ func TestParseColumnTagTrimsColumnValue(t *testing.T) {
 		Payload string `gorm:"column: payload_col ;type:text"`
 	}
 
-	meta := buildStructMeta(reflectTypeOf[entity]())
+	meta, err := buildStructMeta(reflectTypeOf[entity]())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, ok := meta.columnToInfo["payload_col"]; !ok {
 		t.Fatalf("expected column 'payload_col' after trimming spaces; got %#v", meta.columnToInfo)
