@@ -91,12 +91,6 @@ func BindJSONBodyFields(c httpx.IContext, obj any) (JSONBodyFields, error) {
 	return JSONBodyFields(fields), nil
 }
 
-// parseJSONBodyObject 解析请求体为 JSON 对象。
-func parseJSONBodyObject(c httpx.IContext) (map[string]json.RawMessage, error) {
-	_, obj, err := readJSONBodyObject(c)
-	return obj, err
-}
-
 func readJSONBodyObject(c httpx.IContext) ([]byte, map[string]json.RawMessage, error) {
 	body, err := c.Body()
 	if err != nil {

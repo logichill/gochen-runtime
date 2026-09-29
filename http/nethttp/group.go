@@ -78,10 +78,3 @@ func (g *RouteGroup) add(method, path string, h httpx.Handler) httpx.IRouteGroup
 	g.server.markMuxDirtyLocked()
 	return g
 }
-
-// wrapWithMiddlewares 将 handler 包成执行给定中间件链后再调用 h 的形态。
-func (g *RouteGroup) wrapWithMiddlewares(h httpx.Handler, middlewares []httpx.Middleware) httpx.Handler {
-	return func(ctx httpx.IContext) error {
-		return g.server.executeMiddlewareChain(ctx, middlewares, h)
-	}
-}

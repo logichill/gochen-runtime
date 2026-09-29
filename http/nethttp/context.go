@@ -42,9 +42,7 @@ type Context struct {
 	method         string
 	path           string
 	query          url.Values
-	queryParsed    bool
 	headers        http.Header
-	headersCloned  bool
 	userAgent      string
 	baseRequest    *http.Request
 	paramsSnapshot atomic.Value // stores map[string]string
@@ -72,19 +70,17 @@ func NewBaseContext(w http.ResponseWriter, r *http.Request) (*Context, error) {
 	}
 
 	ctx := &Context{
-		request:       r,
-		writer:        w,
-		reqCtx:        reqCtx,
-		status:        http.StatusOK,
-		values:        make(map[string]any),
-		method:        r.Method,
-		path:          r.URL.Path,
-		query:         r.URL.Query(),
-		queryParsed:   true,
-		headers:       cloneHeader(r.Header),
-		headersCloned: true,
-		userAgent:     r.UserAgent(),
-		baseRequest:   r,
+		request:     r,
+		writer:      w,
+		reqCtx:      reqCtx,
+		status:      http.StatusOK,
+		values:      make(map[string]any),
+		method:      r.Method,
+		path:        r.URL.Path,
+		query:       r.URL.Query(),
+		headers:     cloneHeader(r.Header),
+		userAgent:   r.UserAgent(),
+		baseRequest: r,
 	}
 	ctx.paramsSnapshot.Store(map[string]string{})
 	ctx.writer = &contextResponseWriter{ResponseWriter: w, ctx: ctx}
@@ -600,36 +596,6 @@ func cloneHeader(header http.Header) http.Header {
 		return http.Header{}
 	}
 	return header.Clone()
-}
-
-func (c *Context) queryValuesLocked() url.Values {
-	if c == nil {
-		return url.Values{}
-	}
-	if !c.queryParsed {
-		if c.request == nil || c.request.URL == nil {
-			c.query = url.Values{}
-		} else {
-			c.query = c.request.URL.Query()
-		}
-		c.queryParsed = true
-	}
-	return c.query
-}
-
-func (c *Context) headersLocked() http.Header {
-	if c == nil {
-		return http.Header{}
-	}
-	if !c.headersCloned {
-		if c.request == nil {
-			c.headers = http.Header{}
-		} else {
-			c.headers = cloneHeader(c.request.Header)
-		}
-		c.headersCloned = true
-	}
-	return c.headers
 }
 
 func cloneValues(values url.Values) url.Values {

@@ -115,13 +115,6 @@ func (c *Container) ensureServiceTypeAvailableLocked(serviceType reflect.Type) e
 	return nil
 }
 
-func (c *Container) findServiceEntryByTypeLocked(serviceType reflect.Type) (*serviceEntry, bool) {
-	if entry, exists := c.typedServices[serviceType]; exists {
-		return entry, true
-	}
-	return nil, false
-}
-
 func (c *Container) findServiceEntryByKeyLocked(key string) (*serviceEntry, bool) {
 	for serviceType, entry := range c.typedServices {
 		if di.TypeKey(serviceType) == key {

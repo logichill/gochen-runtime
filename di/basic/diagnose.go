@@ -103,12 +103,6 @@ func (c *Container) Diagnose() *di.DiagnoseResult {
 	return result
 }
 
-// canResolveParameterLocked 检查参数类型是否可解析（调用时需持有读锁）。
-func (c *Container) canResolveParameterLocked(paramType reflect.Type) bool {
-	_, _, ok := c.findRegisteredServiceKeyLocked(paramType)
-	return ok
-}
-
 // findRegisteredServiceKeyLocked finds the first registered service key that
 // would be used by resolveParameter(). Caller must hold c.mutex RLock.
 func (c *Container) findRegisteredServiceKeyLocked(paramType reflect.Type) (key string, candidates []string, ok bool) {
