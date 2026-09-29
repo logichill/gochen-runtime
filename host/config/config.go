@@ -10,6 +10,7 @@ import (
 	"gochen-runtime/di/basic"
 	"gochen-runtime/host/capability"
 	"gochen-runtime/host/module"
+	"gochen-runtime/host/module/initcap"
 	"gochen-runtime/http"
 	"gochen/domain/eventsourced"
 	"gochen/httpx"
@@ -19,11 +20,18 @@ import (
 // Hook 定义生命周期回调函数。
 type Hook func(context.Context) error
 
+// DefaultShutdownTimeout 是停止与启动失败回滚阶段的默认清理预算。
+const DefaultShutdownTimeout = 10 * time.Second
+
 // ModuleHTTPConfig 定义模块级 HTTP 挂载配置。
+//
+// Prefix 为空时按模块 ID 使用默认前缀（例如模块 users 挂载到 /users）；
+// 需要显式挂载到 Host 根路径时使用 Prefix: "/"。
 type ModuleHTTPConfig struct {
-	Disabled    bool
-	Prefix      string
-	Middlewares []httpx.Middleware
+	Disabled                  bool
+	Prefix                    string
+	Middlewares               []httpx.Middleware
+	DisableDefaultMiddlewares bool
 }
 
 // Config 聚合模块 Host 与生命周期引擎的完整配置。
@@ -50,6 +58,7 @@ type Config struct {
 	CatalogRegistrars []capability.IModuleCatalogRegistrar
 
 	RouteMiddlewares         []httpx.Middleware
+	ModuleCapabilities       []initcap.Setter
 	DisableHealthRoute       bool
 	EnableMonitoringRoutes   bool
 	FailFastOnRouteConflicts bool
@@ -59,6 +68,7 @@ type Config struct {
 	Metadata                 map[string]string
 	StartupTimeout           time.Duration
 	ShutdownTimeout          time.Duration
+	ModuleHTTPDefaults       ModuleHTTPConfig
 	Logger                   logging.ILogger
 	OnBeforeInit             []Hook
 	OnAfterInit              []Hook
@@ -86,7 +96,7 @@ func Default() *Config {
 		Version:                  "0.0.0",
 		Metadata:                 make(map[string]string),
 		StartupTimeout:           30 * time.Second,
-		ShutdownTimeout:          10 * time.Second,
+		ShutdownTimeout:          DefaultShutdownTimeout,
 		Logger:                   logging.ComponentLogger("app.engine"),
 	}
 }
@@ -148,7 +158,7 @@ func Normalize(cfg *Config) *Config {
 		cfg.StartupTimeout = 30 * time.Second
 	}
 	if cfg.ShutdownTimeout <= 0 {
-		cfg.ShutdownTimeout = 10 * time.Second
+		cfg.ShutdownTimeout = DefaultShutdownTimeout
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = logging.ComponentLogger("app.engine")
@@ -377,6 +387,19 @@ func WithRouteMiddlewares(middlewares ...httpx.Middleware) Option {
 	}
 }
 
+// WithModuleCapabilities 向所有模块初始化阶段注入通用 capability。
+//
+// 具体能力的 key 和类型由提供方定义，Host 只负责沿模块初始化链路统一传递。
+func WithModuleCapabilities(capabilities ...initcap.Setter) Option {
+	return func(cfg *Config) {
+		for _, capability := range capabilities {
+			if capability != nil {
+				cfg.ModuleCapabilities = append(cfg.ModuleCapabilities, capability)
+			}
+		}
+	}
+}
+
 // WithDisableHealthRoute 控制是否关闭默认健康检查路由。
 func WithDisableHealthRoute(disable bool) Option {
 	return func(cfg *Config) { cfg.DisableHealthRoute = disable }
@@ -403,6 +426,15 @@ func WithModuleHTTP(moduleID string, moduleConfig ModuleHTTPConfig) Option {
 			cfg.ModuleHTTP = make(map[string]ModuleHTTPConfig)
 		}
 		cfg.ModuleHTTP[moduleID] = moduleConfig
+	}
+}
+
+// WithModuleHTTPDefaults 设置所有模块的默认 HTTP 挂载配置。
+//
+// 单个模块可通过 WithModuleHTTP 覆盖 Prefix、追加中间件，或关闭默认中间件。
+func WithModuleHTTPDefaults(moduleConfig ModuleHTTPConfig) Option {
+	return func(cfg *Config) {
+		cfg.ModuleHTTPDefaults = moduleConfig
 	}
 }
 

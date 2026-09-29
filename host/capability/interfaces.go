@@ -15,13 +15,23 @@ type IEventSubscriber interface {
 }
 
 // ITransport 表示 Host 负责启动/停止并注入模块的消息传输能力。
+//
+// Host 仅停止由本次启动取得的实例；可观测到启动前已运行的实例仍由原所有者管理。
+// 无法观测状态时，Start 成功即由 Host 接管；清理失败时保留所有权，供 Shutdown 重试。
 type ITransport interface {
 	IEventSubscriber
+	// Start 失败时，实现必须清理本次启动已创建的资源并保持可重试状态。
+	// Host 只会对同时实现完整 messaging.ITransport 且可观测到“本次启动从
+	// stopped 变为 running”的实现自动执行回滚；无法提供该状态观测的实现
+	// 启动失败后不会被 Host 无条件 Stop，以避免误停启动前已运行的传输层。
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
 
 // IProjectionRuntime 表示模块投影注册与启动所需的运行期能力。
+//
+// 注册必须返回绑定本次注册的释放函数，生命周期结束时调用；
+// Host 不按名字清理资源，避免误删其他所有者的同名注册。
 type IProjectionRuntime interface {
 	projection.IProjectionRegistrar
 	StartProjection(name string) error
@@ -66,22 +76,13 @@ type IProjectionResumer interface {
 	ResumeFromCheckpoint(ctx context.Context, name string) error
 }
 
-// IProjectionStopper 表示投影支持显式停止。
-type IProjectionStopper interface {
-	StopProjection(name string) error
-}
-
-// IProjectionUnregister 表示投影支持从 manager 中解除注册。
-type IProjectionUnregister interface {
-	UnregisterProjectionWithContext(ctx context.Context, name string) error
-}
-
 // IRuntimeComponent 定义需要由模块生命周期托管启动的运行期组件。
 type IRuntimeComponent interface {
 	Start(ctx context.Context) error
 }
 
-// IRuntimeStopper 表示运行期组件支持优雅停止。
+// IRuntimeStopper 表示运行期组件支持优雅停止。Stop 可能面对部分初始化；
+// 失败资源应由实现保留并允许框架后续重试。
 type IRuntimeStopper interface {
 	Stop(ctx context.Context) error
 }

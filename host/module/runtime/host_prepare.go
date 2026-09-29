@@ -59,13 +59,6 @@ func (s *Host) Prepare(ctx context.Context) error {
 	if err := s.sortModulesByDependencies(); err != nil {
 		return err
 	}
-	if err := s.registerModules(); err != nil {
-		return err
-	}
-	if err := s.registerModuleCatalogs(ctx); err != nil {
-		return err
-	}
-
 	for _, m := range s.modules {
 		if m == nil {
 			continue
@@ -74,6 +67,12 @@ func (s *Host) Prepare(ctx context.Context) error {
 		if err := m.Init(opts); err != nil {
 			return errors.Wrap(err, errors.Dependency, "failed to init module").WithContext("module", m.Name())
 		}
+	}
+	if err := s.registerModules(); err != nil {
+		return err
+	}
+	if err := s.registerModuleCatalogs(ctx); err != nil {
+		return err
 	}
 
 	return nil

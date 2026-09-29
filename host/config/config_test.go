@@ -27,3 +27,12 @@ func TestBuild_ExplicitSessionSettingOverridesSecurityLayer(t *testing.T) {
 		t.Fatal("expected explicit session setting to override Web default")
 	}
 }
+
+func TestWithModuleHTTPDefaultsAppliesToAllModuleGroups(t *testing.T) {
+	middleware := func(httpx.IContext, func() error) error { return nil }
+	cfg := Build(WithModuleHTTPDefaults(ModuleHTTPConfig{Middlewares: []httpx.Middleware{middleware}}))
+
+	if len(cfg.ModuleHTTPDefaults.Middlewares) != 1 || cfg.ModuleHTTPDefaults.Middlewares[0] == nil {
+		t.Fatalf("expected one default module middleware, got %#v", cfg.ModuleHTTPDefaults.Middlewares)
+	}
+}

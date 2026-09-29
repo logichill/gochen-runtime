@@ -5,6 +5,7 @@ import (
 
 	"gochen-runtime/di"
 	"gochen-runtime/host/capability"
+	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
 	"gochen/errors"
 )
@@ -17,7 +18,7 @@ func (m *explicitModule) registerOne(container module.IModuleContainer, reg Regi
 
 	serviceType, err := m.resolveRegistrationServiceType(reg)
 	if err != nil {
-		return wrapModuleErr(m.desc.ID, err, "resolve registration type").
+		return runtimeutil.WrapModuleErr(m.desc.ID, err, "resolve registration type", errors.Internal).
 			WithContext("index", index)
 	}
 
@@ -25,13 +26,13 @@ func (m *explicitModule) registerOne(container module.IModuleContainer, reg Regi
 	case module.SingletonLifetime:
 		if reg.Instance != nil {
 			if err := container.RegisterInstance(serviceType, di.NewInstance(reg.Instance)); err != nil {
-				return wrapModuleErr(m.desc.ID, err, "register instance").
+				return runtimeutil.WrapModuleErr(m.desc.ID, err, "register instance", errors.Internal).
 					WithContext("index", index).
 					WithContext("service_type", di.TypeKey(serviceType))
 			}
 		} else if !reg.Factory.IsZero() {
 			if err := container.RegisterSingleton(serviceType, reg.Factory); err != nil {
-				return wrapModuleErr(m.desc.ID, err, "register singleton").
+				return runtimeutil.WrapModuleErr(m.desc.ID, err, "register singleton", errors.Internal).
 					WithContext("index", index).
 					WithContext("service_type", di.TypeKey(serviceType))
 			}
@@ -44,7 +45,7 @@ func (m *explicitModule) registerOne(container module.IModuleContainer, reg Regi
 				WithContext("index", index)
 		} else if !reg.Factory.IsZero() {
 			if err := container.RegisterTransient(serviceType, reg.Factory); err != nil {
-				return wrapModuleErr(m.desc.ID, err, "register transient").
+				return runtimeutil.WrapModuleErr(m.desc.ID, err, "register transient", errors.Internal).
 					WithContext("index", index).
 					WithContext("service_type", di.TypeKey(serviceType))
 			}

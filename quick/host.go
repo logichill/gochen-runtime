@@ -4,11 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"gochen-runtime/host/config"
-	"gochen-runtime/host/engine"
 	"gochen-runtime/host/module"
-	"gochen-runtime/host/module/runtime"
-	"gochen-runtime/http/nethttp"
 	"gochen/errors"
 	"gochen/httpx"
 	"gochen/observe/logging"
@@ -126,47 +122,4 @@ func Module(name string, registrar func(httpx.IRouteGroup) error, opts ...Module
 		}
 		return m, nil
 	}
-}
-
-// Run 极简微服务启动入口：配置基础路由 /api/v1、HTTP 服务、注册模块并阻塞运行主循环直到信号停止。
-func Run(
-	ctx context.Context,
-	name string,
-	port int,
-	modules ...module.ModuleCtor,
-) error {
-	srv, err := Server(name, port, modules...)
-	if err != nil {
-		return err
-	}
-	return srv.Start(ctx)
-}
-
-// Server 快速创建可编排控制的微服务生命周期引擎实例。
-func Server(
-	name string,
-	port int,
-	modules ...module.ModuleCtor,
-) (*engine.Engine, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, errors.NewCode(errors.InvalidInput, "server name cannot be empty")
-	}
-	if port <= 0 || port > 65535 {
-		return nil, errors.NewCode(errors.InvalidInput, "server port must be in range 1-65535").
-			WithContext("port", port)
-	}
-
-	cfg := config.Build(
-		config.WithName(name),
-		config.WithPort(port),
-		config.WithAddress("0.0.0.0"),
-		config.WithBasePath("/api/v1"),
-		config.WithHTTPServer(nethttp.NewServer(nil)),
-		config.WithFailFastOnRouteConflicts(true),
-		config.WithModules(modules...),
-	)
-
-	app := runtime.NewHostConfig(cfg)
-	return engine.NewEngineConfig(app, cfg)
 }

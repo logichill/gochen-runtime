@@ -277,18 +277,20 @@ func resolveProjectionRuntime(injected capability.IProjectionRuntime, container 
 		return nil, nil
 	}
 
+	// 注册接口通过返回的释放函数表达实例所有权，
+	// 否则模块生命周期无法安全清理投影，宁可在此报错。
 	pmIfaceType := reflect.TypeOf((*projection.IProjectionRegistrar)(nil)).Elem()
-	if pmAny, err := container.Resolve(pmIfaceType); err == nil {
-		pm, ok := pmAny.(capability.IProjectionRuntime)
-		if ok && !runtimeutil.IsTypedNil(pm) {
-			return pm, nil
-		}
-		return nil, errors.NewCode(errors.Internal, "resolved projection registrar has invalid type").
-			WithContext("service_type", di.TypeKey(pmIfaceType)).
-			WithContext("type", runtimeutil.TypeString(pmAny))
+	pmAny, err := container.Resolve(pmIfaceType)
+	if err != nil {
+		return nil, nil
 	}
-
-	return nil, nil
+	pm, ok := pmAny.(capability.IProjectionRuntime)
+	if ok && !runtimeutil.IsTypedNil(pm) {
+		return pm, nil
+	}
+	return nil, errors.NewCode(errors.Internal, "resolved projection registrar has invalid type").
+		WithContext("service_type", di.TypeKey(pmIfaceType)).
+		WithContext("type", runtimeutil.TypeString(pmAny))
 }
 
 func registerInstanceByType(container di.IContainer, ifacePtr any, instance any) error {

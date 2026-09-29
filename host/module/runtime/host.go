@@ -10,6 +10,13 @@ import (
 	"gochen-runtime/host/module"
 )
 
+const (
+	routeRegistrationPending uint32 = iota
+	routeRegistrationInProgress
+	routeRegistrationComplete
+	routeRegistrationFailed
+)
+
 // Host 承载一组模块的轻量服务实现。
 type Host struct {
 	config    *config.Config
@@ -23,7 +30,9 @@ type Host struct {
 	metadataRegistry  capability.IMetadataRegistry
 
 	moduleStops       []module.ModuleStopFunc
+	transportOwned    bool // 本 Host 启动取得的 Transport；清理失败时保留所有权。
 	backgroundStarted atomic.Bool
+	routeRegistration atomic.Uint32
 
 	moduleIDs map[module.IModule]string
 }
@@ -58,5 +67,6 @@ func (s *Host) LoadConfig() error {
 	s.config = config.Normalize(s.config)
 	s.container = s.config.Container
 	s.runtime = nil
+	s.routeRegistration.Store(routeRegistrationPending)
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"gochen-runtime/db/orm/repo"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen-runtime/host/authz"
+	"gochen-runtime/host/config"
 	"gochen-runtime/quick"
 	"gochen/app/crud"
 	"gochen/auth/action"
@@ -126,7 +127,7 @@ func TestQuick_FullPipeline(t *testing.T) {
 
 	// 6. Server with dynamic free port
 	port := getFreePort(t)
-	srv, err := quick.Server("test-service", port, modCtor)
+	srv, err := quick.New(config.WithName("test-service"), config.WithPort(port)).Modules(modCtor).Build()
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
@@ -178,7 +179,7 @@ func TestQuick_EndToEnd_HTTPRoundTrip(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- quick.Run(ctx, "roundtrip-service", port, orderModule)
+		errCh <- quick.New(config.WithName("roundtrip-service"), config.WithPort(port)).Modules(orderModule).Run(ctx)
 	}()
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d/api/v1/items", port)
@@ -342,17 +343,7 @@ func TestQuick_InvalidInputs(t *testing.T) {
 	_, err = quick.ScopedRepo[*TestQuickEntity, int64](nil, "table", "   ")
 	require.Error(t, err)
 
-	// Server empty name
-	_, err = quick.Server("", 8080)
-	require.Error(t, err)
-
-	// Server invalid port (zero, negative, or > 65535)
-	_, err = quick.Server("test", 0)
-	require.Error(t, err)
-
-	_, err = quick.Server("test", -1)
-	require.Error(t, err)
-
-	_, err = quick.Server("test", 70000)
+	// Port above the valid range must fail before startup.
+	_, err = quick.New(config.WithPort(70000)).Build()
 	require.Error(t, err)
 }

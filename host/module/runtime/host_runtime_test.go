@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"gochen-runtime/di/basic"
 	"gochen-runtime/host/capability"
 	"gochen-runtime/host/config"
 	"gochen-runtime/host/internal/bootstrap"
 	"gochen-runtime/host/module"
+	"gochen-runtime/host/module/assembly"
+	"gochen-runtime/host/module/initcap"
 	"gochen-runtime/host/module/runtimecap"
 	"gochen/domain/eventsourced"
 	gerrors "gochen/errors"
@@ -25,6 +29,13 @@ type testModule struct {
 	startFn  func(context.Context) (module.ModuleStopFunc, error)
 	routesFn func(context.Context) error
 }
+
+type dependencyTestModule struct {
+	*testModule
+	deps []string
+}
+
+func (m *dependencyTestModule) DependsOn() []string { return append([]string(nil), m.deps...) }
 
 func (m *testModule) ID() string   { return m.id }
 func (m *testModule) Name() string { return m.name }
@@ -49,6 +60,7 @@ func (m *testModule) RegisterRoutes(ctx context.Context) error {
 
 type testTransport struct {
 	startErr              error
+	runningOnStartError   bool
 	stopErr               error
 	startCalls            int
 	stopCalls             int
@@ -65,7 +77,7 @@ func (t *testTransport) Subscribe(context.Context, string, messaging.IMessageHan
 }
 func (t *testTransport) Start(context.Context) error {
 	t.startCalls++
-	if t.startErr == nil {
+	if t.startErr == nil || t.runningOnStartError {
 		t.running = true
 	}
 	return t.startErr
@@ -101,6 +113,23 @@ type lifecycleServer struct {
 	httpx.IServer
 	stopErr   error
 	stopCalls int
+}
+
+type assemblyLifecycleComponent struct {
+	startErr   error
+	stopErr    error
+	startCount int
+	stopCount  int
+}
+
+func (c *assemblyLifecycleComponent) Start(context.Context) error {
+	c.startCount++
+	return c.startErr
+}
+
+func (c *assemblyLifecycleComponent) Stop(context.Context) error {
+	c.stopCount++
+	return c.stopErr
 }
 
 func (s *lifecycleServer) Stop(context.Context) error {
@@ -183,6 +212,116 @@ func TestPrepareNormalizesModuleHTTPConfigKeys(t *testing.T) {
 	}
 	if gotPrefix != "/custom" {
 		t.Fatalf("unexpected module HTTP prefix: %q", gotPrefix)
+	}
+}
+
+func TestPrepareDefaultsModuleHTTPPrefixToModuleID(t *testing.T) {
+	t.Parallel()
+
+	var gotPrefix string
+	middleware := func(httpx.IContext, func() error) error { return nil }
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			return &testModule{
+				id:   "Users",
+				name: "Users",
+				initFn: func(opts module.ModuleInitOptions) error {
+					httpOpt := runtimecap.HTTPFrom(opts)
+					if httpOpt == nil {
+						t.Fatal("expected module HTTP options")
+					}
+					gotPrefix = httpOpt.Prefix()
+					return nil
+				},
+			}, nil
+		},
+	}, config.WithHTTPServer(&testHTTPServer{}), config.WithBasePath("/api"), config.WithModuleHTTP(
+		"users",
+		config.ModuleHTTPConfig{Middlewares: []httpx.Middleware{middleware}},
+	))
+
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if gotPrefix != "/users" {
+		t.Fatalf("expected default module prefix %q, got %q", "/users", gotPrefix)
+	}
+}
+
+func TestPrepareInjectsSharedModuleCapabilitiesAndHTTPDefaults(t *testing.T) {
+	capabilityKey := initcap.NewKey[string]("test.shared")
+	defaultMiddleware := func(httpx.IContext, func() error) error { return nil }
+	moduleMiddleware := func(httpx.IContext, func() error) error { return nil }
+	var gotCapability string
+	var gotPrefix string
+	var gotMiddlewares []httpx.Middleware
+
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			return &testModule{
+				id:   "users",
+				name: "Users",
+				initFn: func(opts module.ModuleInitOptions) error {
+					gotCapability, _ = module.CapabilityFrom(opts, capabilityKey)
+					httpOpt := runtimecap.HTTPFrom(opts)
+					if httpOpt == nil {
+						t.Fatal("expected module HTTP options")
+					}
+					gotPrefix = httpOpt.Prefix()
+					gotMiddlewares = httpOpt.Middlewares()
+					return nil
+				},
+			}, nil
+		},
+	},
+		config.WithHTTPServer(&testHTTPServer{}),
+		config.WithModuleCapabilities(initcap.Set(capabilityKey, "shared")),
+		config.WithModuleHTTPDefaults(config.ModuleHTTPConfig{Middlewares: []httpx.Middleware{defaultMiddleware}}),
+		config.WithModuleHTTP("users", config.ModuleHTTPConfig{Middlewares: []httpx.Middleware{moduleMiddleware}}),
+	)
+
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if gotCapability != "shared" {
+		t.Fatalf("expected shared module capability, got %q", gotCapability)
+	}
+	if gotPrefix != "/users" {
+		t.Fatalf("expected module ID prefix %q, got %q", "/users", gotPrefix)
+	}
+	if len(gotMiddlewares) != 2 {
+		t.Fatalf("expected default and module middlewares, got %d", len(gotMiddlewares))
+	}
+}
+
+func TestPrepareUsesRootModuleHTTPPrefixWhenExplicitlyConfigured(t *testing.T) {
+	t.Parallel()
+
+	var gotPrefix string
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			return &testModule{
+				id:   "users",
+				name: "Users",
+				initFn: func(opts module.ModuleInitOptions) error {
+					httpOpt := runtimecap.HTTPFrom(opts)
+					if httpOpt == nil {
+						t.Fatal("expected module HTTP options")
+					}
+					gotPrefix = httpOpt.Prefix()
+					return nil
+				},
+			}, nil
+		},
+	}, config.WithHTTPServer(&testHTTPServer{}), config.WithBasePath("/api"), func(cfg *config.Config) {
+		cfg.ModuleHTTP["users"] = config.ModuleHTTPConfig{Prefix: "/"}
+	})
+
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if gotPrefix != "/" {
+		t.Fatalf("expected explicit root module prefix %q, got %q", "/", gotPrefix)
 	}
 }
 
@@ -311,6 +450,25 @@ func TestStartBackgroundRollsBackStartedModulesOnTransportFailure(t *testing.T) 
 	}
 }
 
+func TestStartBackgroundCleansPartiallyStartedTransportOnFailure(t *testing.T) {
+	startErr := errors.New("transport start failed after initialization")
+	transport := &testTransport{startErr: startErr, runningOnStartError: true}
+	host := &Host{
+		config:  &config.Config{},
+		runtime: &bootstrap.Runtime{Transport: transport},
+	}
+
+	if err := host.StartBackground(context.Background()); !gerrors.Is(err, startErr) {
+		t.Fatalf("StartBackground error = %v, want %v", err, startErr)
+	}
+	if transport.stopWithSnapshotCalls != 1 {
+		t.Fatalf("transport rollback snapshot calls = %d, want 1", transport.stopWithSnapshotCalls)
+	}
+	if transport.running {
+		t.Fatal("transport remained running after failed start rollback")
+	}
+}
+
 func TestStartBackgroundRetainsFailedRollbackForShutdownRetry(t *testing.T) {
 	startErr := errors.New("second module start failed")
 	stopErr := errors.New("first module rollback failed")
@@ -353,6 +511,41 @@ func TestStartBackgroundRetainsFailedRollbackForShutdownRetry(t *testing.T) {
 	}
 	if host.backgroundStarted.Load() || len(host.moduleStops) != 0 || stopCalls != 2 {
 		t.Fatalf("unexpected retry state: started=%v stops=%d calls=%d", host.backgroundStarted.Load(), len(host.moduleStops), stopCalls)
+	}
+}
+
+func TestStartBackgroundRollbackUsesIndependentCleanupBudget(t *testing.T) {
+	type ctxKey struct{}
+	var gotValue any
+	var gotDeadline bool
+	var gotCanceled bool
+	host := &Host{
+		config: &config.Config{ShutdownTimeout: 50 * time.Millisecond},
+		modules: []module.IModule{
+			&testModule{
+				id: "started", name: "started",
+				startFn: func(context.Context) (module.ModuleStopFunc, error) {
+					return func(ctx context.Context) error {
+						gotValue = ctx.Value(ctxKey{})
+						_, gotDeadline = ctx.Deadline()
+						gotCanceled = ctx.Err() != nil
+						return nil
+					}, nil
+				},
+			},
+			&testModule{id: "failed", name: "failed", startFn: func(context.Context) (module.ModuleStopFunc, error) {
+				return nil, errors.New("start failed")
+			}},
+		},
+	}
+	baseCtx, cancel := context.WithCancel(context.Background())
+	ctx := context.WithValue(baseCtx, ctxKey{}, "kept")
+	cancel()
+	if err := host.StartBackground(ctx); err == nil {
+		t.Fatal("expected start failure")
+	}
+	if gotValue != "kept" || !gotDeadline || gotCanceled {
+		t.Fatalf("rollback context lost value/deadline or inherited cancellation: value=%v deadline=%v canceled=%v", gotValue, gotDeadline, gotCanceled)
 	}
 }
 
@@ -425,6 +618,278 @@ func TestStartBackgroundFailureRollsBackStartedFlagAndAllowsRetry(t *testing.T) 
 	}
 }
 
+func TestStartBackgroundDoesNotReregisterRoutesAfterModuleFailure(t *testing.T) {
+	startErr := errors.New("module start failed")
+	failFirst := true
+	var group httpx.IRouteGroup
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			return &testModule{
+				id:   "users",
+				name: "users",
+				initFn: func(opts module.ModuleInitOptions) error {
+					httpOptions := runtimecap.HTTPFrom(opts)
+					if httpOptions == nil {
+						t.Fatal("expected module HTTP options")
+					}
+					group = httpOptions.MountGroup()
+					return nil
+				},
+				routesFn: func(context.Context) error {
+					group.GET("/retry", nil)
+					return nil
+				},
+				startFn: func(context.Context) (module.ModuleStopFunc, error) {
+					if failFirst {
+						failFirst = false
+						return nil, startErr
+					}
+					return nil, nil
+				},
+			}, nil
+		},
+	}, config.WithHTTPServer(&testHTTPServer{}))
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	if err := host.StartBackground(context.Background()); !gerrors.Is(err, startErr) {
+		t.Fatalf("first StartBackground error = %v, want %v", err, startErr)
+	}
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("retry StartBackground failed: %v", err)
+	}
+
+	rr, ok := host.runtime.HTTPServer.(httpx.IRouteRegistry)
+	if !ok {
+		t.Fatal("expected route registry")
+	}
+	if conflicts := rr.RouteConflicts(); len(conflicts) != 0 {
+		t.Fatalf("route conflicts after retry = %#v, want none", conflicts)
+	}
+}
+
+func TestStartBackgroundAssemblyCleansPartialRuntimeAndRetries(t *testing.T) {
+	startErr := errors.New("assembly component start failed")
+	component := &assemblyLifecycleComponent{startErr: startErr}
+	onStopCalls := 0
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			return assembly.NewModule(assembly.ModuleDescriptor{
+				ID:   "assembly-test",
+				Name: "assembly-test",
+				Registrations: []assembly.Registration{{
+					Lifetime:    module.SingletonLifetime,
+					ServiceType: reflect.TypeOf((*capability.IRuntimeComponent)(nil)).Elem(),
+					Instance:    component,
+					Roles:       []assembly.Role{assembly.RoleRuntimeComponent},
+				}},
+				OnStop: func(context.Context) error {
+					onStopCalls++
+					return nil
+				},
+			}), nil
+		},
+	}, config.WithShutdownTimeout(time.Second))
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+
+	if err := host.StartBackground(context.Background()); !errors.Is(err, startErr) {
+		t.Fatalf("StartBackground error = %v, want component start error", err)
+	}
+	if component.startCount != 1 || component.stopCount != 1 {
+		t.Fatalf("partial assembly component lifecycle = start:%d stop:%d, want 1/1", component.startCount, component.stopCount)
+	}
+	if onStopCalls != 0 {
+		t.Fatalf("OnStop must not run when the hook stage was never reached, got %d calls", onStopCalls)
+	}
+
+	component.startErr = nil
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("retry StartBackground failed: %v", err)
+	}
+	if component.startCount != 2 {
+		t.Fatalf("expected component start retry, got %d starts", component.startCount)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+	if component.stopCount != 2 {
+		t.Fatalf("expected successful run cleanup after retry, got %d stops", component.stopCount)
+	}
+	// 未配置 OnStart 时，启动走到钩子阶段同样视为已进入，OnStop 必须被调用一次。
+	if onStopCalls != 1 {
+		t.Fatalf("OnStop-only module must receive OnStop after a successful start, got %d calls", onStopCalls)
+	}
+}
+
+func TestStartBackgroundAssemblyRetainsCleanupErrorForRetry(t *testing.T) {
+	startErr := errors.New("assembly component start failed")
+	stopErr := errors.New("assembly component cleanup failed")
+	component := &assemblyLifecycleComponent{startErr: startErr, stopErr: stopErr}
+	var assembled module.IModule
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			assembled = assembly.NewModule(assembly.ModuleDescriptor{
+				ID:   "assembly-retry",
+				Name: "assembly-retry",
+				Registrations: []assembly.Registration{{
+					Lifetime:    module.SingletonLifetime,
+					ServiceType: reflect.TypeOf((*capability.IRuntimeComponent)(nil)).Elem(),
+					Instance:    component,
+					Roles:       []assembly.Role{assembly.RoleRuntimeComponent},
+				}},
+			})
+			return assembled, nil
+		},
+	}, config.WithShutdownTimeout(time.Second))
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	if err := host.StartBackground(context.Background()); !errors.Is(err, startErr) || !errors.Is(err, stopErr) {
+		t.Fatalf("StartBackground error = %v, want start and cleanup errors", err)
+	}
+	if component.stopCount != 1 {
+		t.Fatalf("cleanup attempts = %d, want one failed attempt", component.stopCount)
+	}
+	component.stopErr = nil
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("cleanup retry failed: %v", err)
+	}
+	if component.stopCount != 2 {
+		t.Fatalf("cleanup attempts after retry = %d, want 2", component.stopCount)
+	}
+	component.startErr = nil
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("start after cleanup retry failed: %v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("final shutdown failed: %v", err)
+	}
+}
+
+func TestHostStartsModulesByDependencyAndStopsInReverseOrder(t *testing.T) {
+	var starts []string
+	var stops []string
+	newModule := func(id string, deps ...string) module.ModuleCtor {
+		return func() (module.IModule, error) {
+			return &dependencyTestModule{
+				testModule: &testModule{
+					id: id, name: id,
+					startFn: func(context.Context) (module.ModuleStopFunc, error) {
+						starts = append(starts, id)
+						return func(context.Context) error {
+							stops = append(stops, id)
+							return nil
+						}, nil
+					},
+				},
+				deps: deps,
+			}, nil
+		}
+	}
+	host := NewHost([]module.ModuleCtor{newModule("dependent", "base"), newModule("base")})
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("StartBackground failed: %v", err)
+	}
+	if got, want := strings.Join(starts, ","), "base,dependent"; got != want {
+		t.Fatalf("start order = %q, want %q", got, want)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+	if got, want := strings.Join(stops, ","), "dependent,base"; got != want {
+		t.Fatalf("stop order = %q, want %q", got, want)
+	}
+}
+
+func TestAssemblyModuleOnStopMatchesEnteredOnStartAndIsNotRepeated(t *testing.T) {
+	onStartErr := errors.New("on start failed")
+	onStopCalls := 0
+	var assembled module.IModule
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			assembled = assembly.NewModule(assembly.ModuleDescriptor{
+				ID:   "hook-test",
+				Name: "hook-test",
+				OnStart: func(context.Context) error {
+					return onStartErr
+				},
+				OnStop: func(context.Context) error {
+					onStopCalls++
+					return nil
+				},
+			})
+			return assembled, nil
+		},
+	})
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	stop, err := assembled.Start(context.Background())
+	if !errors.Is(err, onStartErr) || stop == nil {
+		t.Fatalf("Start returned stop=%v err=%v, want hook error and stop closure", stop != nil, err)
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Fatalf("first stop failed: %v", err)
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Fatalf("second stop failed: %v", err)
+	}
+	if onStopCalls != 1 {
+		t.Fatalf("OnStop calls = %d, want exactly 1", onStopCalls)
+	}
+}
+
+func TestAssemblyModuleRejectsDirectRestartWhileOnStopIsPending(t *testing.T) {
+	onStopErr := errors.New("on stop failed")
+	onStopCalls := 0
+	assembled := assembly.NewModule(assembly.ModuleDescriptor{
+		ID:   "pending-stop",
+		Name: "pending-stop",
+		OnStart: func(context.Context) error {
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			onStopCalls++
+			if onStopCalls == 1 {
+				return onStopErr
+			}
+			return nil
+		},
+	})
+	host := NewHost([]module.ModuleCtor{func() (module.IModule, error) {
+		return assembled, nil
+	}})
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+
+	stop, err := assembled.Start(context.Background())
+	if err != nil || stop == nil {
+		t.Fatalf("Start returned stop=%v err=%v, want a usable stop closure", stop != nil, err)
+	}
+	if err := stop(context.Background()); !errors.Is(err, onStopErr) {
+		t.Fatalf("first Stop error = %v, want %v", err, onStopErr)
+	}
+	if _, err := assembled.Start(context.Background()); !errors.Is(err, gerrors.Conflict) {
+		t.Fatalf("Start during pending OnStop = %v, want Conflict", err)
+	}
+	if err := stop(context.Background()); err != nil {
+		t.Fatalf("cleanup retry failed: %v", err)
+	}
+	finalStop, err := assembled.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start after cleanup failed: %v", err)
+	}
+	if err := finalStop(context.Background()); err != nil {
+		t.Fatalf("final cleanup failed: %v", err)
+	}
+}
+
 func TestShutdownRetainsFailedModuleStopsAndSkipsTransportClose(t *testing.T) {
 	t.Parallel()
 
@@ -439,6 +904,9 @@ func TestShutdownRetainsFailedModuleStopsAndSkipsTransportClose(t *testing.T) {
 		moduleStops: []module.ModuleStopFunc{
 			func(context.Context) error { return stopErr },
 		},
+	}
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("StartBackground failed: %v", err)
 	}
 
 	err := host.Shutdown(context.Background())
@@ -518,6 +986,9 @@ func TestShutdownIgnoresAlreadyStoppedTransportConflict(t *testing.T) {
 			Transport:  transport,
 		},
 	}
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("StartBackground failed: %v", err)
+	}
 
 	if err := host.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown returned error: %v", err)
@@ -539,6 +1010,9 @@ func TestShutdownIgnoresAlreadyStoppedStopOnlyTransport(t *testing.T) {
 			Transport:  transport,
 		},
 	}
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("StartBackground failed: %v", err)
+	}
 
 	if err := host.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown returned error: %v", err)
@@ -559,6 +1033,9 @@ func TestShutdownReturnsTransportStopError(t *testing.T) {
 			Transport:  transport,
 		},
 	}
+	if err := host.StartBackground(context.Background()); err != nil {
+		t.Fatalf("StartBackground failed: %v", err)
+	}
 
 	err := host.Shutdown(context.Background())
 	if err == nil {
@@ -569,5 +1046,41 @@ func TestShutdownReturnsTransportStopError(t *testing.T) {
 	}
 	if transport.stopCalls != 1 {
 		t.Fatalf("expected Stop once, got %d", transport.stopCalls)
+	}
+}
+
+func TestShutdownHonorsCallerContext(t *testing.T) {
+	t.Parallel()
+
+	newHost := func(gotErr *error) *Host {
+		return &Host{
+			moduleStops: []module.ModuleStopFunc{
+				func(ctx context.Context) error {
+					*gotErr = ctx.Err()
+					return nil
+				},
+			},
+		}
+	}
+
+	var canceledErr error
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := newHost(&canceledErr).Shutdown(canceledCtx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+	if !errors.Is(canceledErr, context.Canceled) {
+		t.Fatalf("canceled ctx error = %v, want context.Canceled", canceledErr)
+	}
+
+	var expiredErr error
+	expiredCtx, expire := context.WithTimeout(context.Background(), time.Millisecond)
+	defer expire()
+	<-expiredCtx.Done()
+	if err := newHost(&expiredErr).Shutdown(expiredCtx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+	if !errors.Is(expiredErr, context.DeadlineExceeded) {
+		t.Fatalf("expired ctx error = %v, want context.DeadlineExceeded", expiredErr)
 	}
 }

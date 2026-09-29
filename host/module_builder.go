@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"reflect"
+	"strings"
 
 	"gochen-runtime/di"
 	"gochen-runtime/host/module"
@@ -125,7 +126,7 @@ func (b *Builder) OnStart(fn func(ctx context.Context) error) *Builder {
 	return b
 }
 
-// OnStop 设置模块停止钩子。
+// OnStop 设置模块停止钩子。仅当启动已走到钩子阶段时调用，语义见 assembly.ModuleDescriptor.OnStop。
 func (b *Builder) OnStop(fn func(ctx context.Context) error) *Builder {
 	b.onStop = fn
 	return b
@@ -157,6 +158,9 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 		Middlewares: append([]httpx.Middleware(nil), builder.middlewares...),
 		OnStart:     builder.onStart,
 		OnStop:      builder.onStop,
+	}
+	if strings.TrimSpace(desc.Name) == "" {
+		desc.Name = strings.TrimSpace(desc.ID)
 	}
 
 	if err := validateAggregateConfigs(builder.id, builder.aggregates); err != nil {

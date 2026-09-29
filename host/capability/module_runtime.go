@@ -17,6 +17,11 @@ type binding struct {
 	resolve ResolveFunc
 }
 
+type projectionRegistration struct {
+	name    string
+	release messaging.UnsubscribeFunc
+}
+
 // ModuleRuntime 承载模块 role 对应的运行期启停逻辑。
 type ModuleRuntime struct {
 	moduleID string
@@ -26,9 +31,9 @@ type ModuleRuntime struct {
 	projections       []binding
 	runtimeComponents []binding
 
-	unsubscribes    []messaging.UnsubscribeFunc
-	projectionNames []string
-	runtimeStops    []IRuntimeStopper
+	unsubscribes      []messaging.UnsubscribeFunc
+	projectionRecords []projectionRegistration
+	runtimeStops      []IRuntimeStopper
 }
 
 // NewModuleRuntime 创建模块运行期生命周期对象。
@@ -64,12 +69,20 @@ func (m *ModuleRuntime) AddRuntimeComponent(index int, resolve ResolveFunc) {
 }
 
 // Start 启动模块的事件/投影/runtime component 生命周期。
+// 启动失败时保留已取得的资源并直接返回；调用方必须随后调用 Stop 完成回滚。
 func (m *ModuleRuntime) Start(ctx context.Context, onStart func(context.Context) error) error {
 	if ctx == nil {
 		return errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
+	if len(m.unsubscribes) > 0 || len(m.projectionRecords) > 0 || len(m.runtimeStops) > 0 {
+		return errors.NewCode(errors.Conflict, "module has resources pending cleanup").WithContext("module", m.moduleID)
+	}
 
-	subscriber, subscriberSource := m.runtime.EffectiveSubscriberWithSource()
+	var subscriber IEventSubscriber
+	var subscriberSource SubscriberSource
+	if m.runtime != nil {
+		subscriber, subscriberSource = m.runtime.EffectiveSubscriberWithSource()
+	}
 	if len(m.eventHandlers) > 0 && subscriber == nil {
 		return errors.NewCode(errors.InvalidInput, "event handlers configured but no event bus/transport").
 			WithContext("module", m.moduleID).
@@ -82,22 +95,14 @@ func (m *ModuleRuntime) Start(ctx context.Context, onStart func(context.Context)
 		return err
 	}
 	if err := m.startProjections(ctx); err != nil {
-		err = m.withSubscriptionCleanupErrors(ctx, err)
-		_ = m.stopProjections(ctx)
 		return err
 	}
 	if err := m.startRuntimeComponents(ctx); err != nil {
-		err = m.withSubscriptionCleanupErrors(ctx, err)
-		_ = m.stopProjections(ctx)
-		_ = m.stopRuntimeComponents(ctx)
 		return err
 	}
 	if onStart != nil {
 		if err := onStart(ctx); err != nil {
-			err = m.withSubscriptionCleanupErrors(ctx, err)
-			_ = m.stopProjections(ctx)
-			_ = m.stopRuntimeComponents(ctx)
-			return wrapModuleErr(m.moduleID, err, "OnStart")
+			return runtimeutil.WrapModuleErr(m.moduleID, err, "OnStart", errors.Internal)
 		}
 	}
 
@@ -118,7 +123,9 @@ func (m *ModuleRuntime) Stop(ctx context.Context, onStop func(context.Context) e
 
 	if onStop != nil {
 		if err := onStop(ctx); err != nil {
-			errs = append(errs, wrapModuleErr(m.moduleID, err, "OnStop"))
+			errs = append(errs, runtimeutil.WrapModuleErr(m.moduleID, err, "OnStop", errors.Internal))
+			// 模块自有依赖可能是重试 OnStop 所必需的，在钩子成功前保留它们。
+			return joinModuleStopErrors(m.moduleID, errs)
 		}
 	}
 
@@ -131,19 +138,27 @@ func (m *ModuleRuntime) Stop(ctx context.Context, onStop func(context.Context) e
 	}
 
 	if len(errs) > 0 {
-		return errors.NewCode(errors.Internal, "module stop errors").
-			WithContext("module", m.moduleID).
-			WithContext("errors", errs)
+		return joinModuleStopErrors(m.moduleID, errs)
 	}
 	return nil
+}
+
+func joinModuleStopErrors(moduleID string, errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	// 各清理错误只经 Join 链暴露一次，外层 AppError 仅提供统一错误码与模块上下文。
+	return errors.Join(
+		errors.NewCode(errors.Internal, "module stop errors").WithContext("module", moduleID),
+		errors.Join(errs...),
+	)
 }
 
 func (m *ModuleRuntime) startEventHandlers(ctx context.Context, subscriber IEventSubscriber, subscriberSource SubscriberSource) error {
 	for _, item := range m.eventHandlers {
 		inst, err := item.resolve()
 		if err != nil {
-			return wrapModuleErr(m.moduleID, err, "resolve event handler").
-				WithContext("index", item.index)
+			return runtimeutil.WrapModuleErr(m.moduleID, err, "resolve event handler", errors.Internal).WithContext("index", item.index)
 		}
 
 		handler, ok := inst.(messaging.IMessageHandler)
@@ -155,20 +170,18 @@ func (m *ModuleRuntime) startEventHandlers(ctx context.Context, subscriber IEven
 
 		messageTypes := getHandlerMessageTypes(handler)
 		if len(messageTypes) == 0 {
-			err := errors.NewCode(errors.InvalidInput, "event handler resolved no valid message types").
+			return errors.NewCode(errors.InvalidInput, "event handler resolved no valid message types").
 				WithContext("module", m.moduleID).
 				WithContext("index", item.index)
-			return m.withSubscriptionCleanupErrors(ctx, err)
 		}
 
 		for _, messageType := range messageTypes {
 			unsub, err := subscriber.Subscribe(ctx, messageType, handler)
 			if err != nil {
-				startErr := wrapModuleErr(m.moduleID, err, "subscribe handler").
+				return runtimeutil.WrapModuleErr(m.moduleID, err, "subscribe handler", errors.Internal).
 					WithContext("index", item.index).
 					WithContext("message_type", messageType).
 					WithContext("subscriber_source", string(subscriberSource))
-				return m.withSubscriptionCleanupErrors(ctx, startErr)
 			}
 			m.unsubscribes = append(m.unsubscribes, unsub)
 		}
@@ -177,27 +190,18 @@ func (m *ModuleRuntime) startEventHandlers(ctx context.Context, subscriber IEven
 	return nil
 }
 
-func (m *ModuleRuntime) withSubscriptionCleanupErrors(ctx context.Context, err error) error {
-	cleanupErrs := m.cleanupSubscriptions(ctx)
-	if len(cleanupErrs) == 0 {
-		return err
-	}
-	if appErr, ok := errors.AsType[*errors.AppError](err); ok && appErr != nil {
-		return appErr.WithContext("cleanup_errors", cleanupErrs)
-	}
-	return errors.Wrap(err, errors.Code(err), "module start error").WithContext("cleanup_errors", cleanupErrs)
-}
-
 func (m *ModuleRuntime) cleanupSubscriptions(ctx context.Context) []error {
 	var errs []error
+	remaining := make([]messaging.UnsubscribeFunc, 0, len(m.unsubscribes))
 	for _, unsub := range m.unsubscribes {
 		if unsub != nil {
 			if err := unsub(ctx); err != nil {
-				errs = append(errs, wrapModuleErr(m.moduleID, err, "unsubscribe handler"))
+				errs = append(errs, runtimeutil.WrapModuleErr(m.moduleID, err, "unsubscribe handler", errors.Internal))
+				remaining = append(remaining, unsub)
 			}
 		}
 	}
-	m.unsubscribes = nil
+	m.unsubscribes = remaining
 	return errs
 }
 
@@ -213,101 +217,77 @@ func (m *ModuleRuntime) startProjections(ctx context.Context) error {
 	}
 
 	resumer, _ := any(m.runtime.ProjectionRuntime).(IProjectionResumer)
-	stopper, _ := any(m.runtime.ProjectionRuntime).(IProjectionStopper)
-	unregister, _ := any(m.runtime.ProjectionRuntime).(IProjectionUnregister)
-	canCleanup := stopper != nil || unregister != nil
 
-	names := make([]string, 0, len(m.projections))
+	m.projectionRecords = make([]projectionRegistration, 0, len(m.projections))
 	for _, item := range m.projections {
 		inst, err := item.resolve()
 		if err != nil {
-			if canCleanup && len(names) > 0 {
-				m.projectionNames = append([]string(nil), names...)
-				_ = m.stopProjections(ctx)
-			}
-			return wrapModuleErr(m.moduleID, err, "resolve projection").
+			return runtimeutil.WrapModuleErr(m.moduleID, err, "resolve projection", errors.Internal).
 				WithContext("index", item.index)
 		}
 
 		p, ok := inst.(interface{ Name() string })
 		if !ok || runtimeutil.IsTypedNil(p) {
-			if canCleanup && len(names) > 0 {
-				m.projectionNames = append([]string(nil), names...)
-				_ = m.stopProjections(ctx)
-			}
 			return errors.NewCode(errors.Internal, "projection does not expose projection name").
 				WithContext("module", m.moduleID).
 				WithContext("index", item.index)
 		}
 
-		if err := m.runtime.ProjectionRuntime.RegisterProjectionAny(ctx, inst); err != nil {
-			if canCleanup && len(names) > 0 {
-				m.projectionNames = append([]string(nil), names...)
-				_ = m.stopProjections(ctx)
-			}
-			return wrapModuleErr(m.moduleID, err, "register projection").
+		release, registerErr := m.runtime.ProjectionRuntime.RegisterProjectionAny(ctx, inst)
+		// 失败注册也可能需要清理；释放函数已绑定本次注册的身份。
+		if release != nil {
+			m.projectionRecords = append(m.projectionRecords, projectionRegistration{name: p.Name(), release: release})
+		}
+		if registerErr != nil {
+			return runtimeutil.WrapModuleErr(m.moduleID, registerErr, "register projection", errors.Internal).
+				WithContext("index", item.index).
+				WithContext("projection", p.Name())
+		}
+		if release == nil {
+			return errors.NewCode(errors.Internal, "projection runtime returned no release function").
+				WithContext("module", m.moduleID).
 				WithContext("index", item.index).
 				WithContext("projection", p.Name())
 		}
 
-		names = append(names, p.Name())
-
 		if err := m.runtime.ProjectionRuntime.StartProjection(p.Name()); err != nil {
-			if canCleanup && len(names) > 0 {
-				m.projectionNames = append([]string(nil), names...)
-				_ = m.stopProjections(ctx)
-			}
-			return wrapModuleErr(m.moduleID, err, "start projection").
+			return runtimeutil.WrapModuleErr(m.moduleID, err, "start projection", errors.Internal).
 				WithContext("index", item.index).
 				WithContext("projection", p.Name())
 		}
 		if resumer != nil {
 			if err := resumer.ResumeFromCheckpoint(ctx, p.Name()); err != nil {
-				if canCleanup && len(names) > 0 {
-					m.projectionNames = append([]string(nil), names...)
-					_ = m.stopProjections(ctx)
-				}
-				return wrapModuleErr(m.moduleID, err, "resume projection from checkpoint").
+				return runtimeutil.WrapModuleErr(m.moduleID, err, "resume projection from checkpoint", errors.Internal).
 					WithContext("index", item.index).
 					WithContext("projection", p.Name())
 			}
 		}
 	}
-
-	m.projectionNames = names
 	return nil
 }
 
 func (m *ModuleRuntime) stopProjections(ctx context.Context) []error {
-	if m == nil || m.runtime == nil || m.runtime.ProjectionRuntime == nil || len(m.projectionNames) == 0 {
-		return nil
-	}
-	stopper, _ := any(m.runtime.ProjectionRuntime).(IProjectionStopper)
-	unregister, _ := any(m.runtime.ProjectionRuntime).(IProjectionUnregister)
-	if stopper == nil && unregister == nil {
-		m.projectionNames = nil
+	if m == nil || m.runtime == nil || m.runtime.ProjectionRuntime == nil || len(m.projectionRecords) == 0 {
 		return nil
 	}
 
 	var errs []error
-	for i := len(m.projectionNames) - 1; i >= 0; i-- {
-		name := m.projectionNames[i]
-		if name == "" {
-			continue
-		}
-		if unregister != nil {
-			if err := unregister.UnregisterProjectionWithContext(ctx, name); err != nil && !errors.Is(err, errors.NotFound) {
-				errs = append(errs, wrapModuleErr(m.moduleID, err, "unregister projection").WithContext("projection", name))
-			}
-			continue
-		}
-		if stopper != nil {
-			if err := stopper.StopProjection(name); err != nil {
-				errs = append(errs, wrapModuleErr(m.moduleID, err, "stop projection").WithContext("projection", name))
-			}
+	remaining := make([]projectionRegistration, 0, len(m.projectionRecords))
+	for i := len(m.projectionRecords) - 1; i >= 0; i-- {
+		registration := m.projectionRecords[i]
+		// 已释放的注册由释放函数幂等处理；所有错误均表示仍需重试。
+		err := registration.release(ctx)
+		if err != nil {
+			errs = append(errs, runtimeutil.WrapModuleErr(m.moduleID, err, "unregister projection", errors.Internal).
+				WithContext("projection", registration.name))
+			remaining = append(remaining, registration)
 		}
 	}
-	m.projectionNames = nil
+	// 保留失败项并按原逆序遍历顺序恢复，供下一次 Stop 重试。
+	for i, j := 0, len(remaining)-1; i < j; i, j = i+1, j-1 {
+		remaining[i], remaining[j] = remaining[j], remaining[i]
+	}
+	m.projectionRecords = remaining
 	return errs
 }
 
@@ -322,28 +302,32 @@ func (m *ModuleRuntime) startRuntimeComponents(ctx context.Context) error {
 		inst, err := item.resolve()
 		if err != nil {
 			m.runtimeStops = append([]IRuntimeStopper(nil), started...)
-			_ = m.stopRuntimeComponents(ctx)
-			return wrapModuleErr(m.moduleID, err, "resolve runtime component").
-				WithContext("index", item.index)
+			return runtimeutil.WrapModuleErr(m.moduleID, err, "resolve runtime component", errors.Internal).WithContext("index", item.index)
 		}
 
 		component, ok := inst.(IRuntimeComponent)
 		if !ok || runtimeutil.IsTypedNil(component) {
 			m.runtimeStops = append([]IRuntimeStopper(nil), started...)
-			_ = m.stopRuntimeComponents(ctx)
 			return errors.NewCode(errors.Internal, "runtime component does not implement IRuntimeComponent").
 				WithContext("module", m.moduleID).
 				WithContext("index", item.index)
 		}
 
+		stopper, hasStopper := inst.(IRuntimeStopper)
+		if !hasStopper || runtimeutil.IsTypedNil(stopper) {
+			stopper = nil
+		}
 		if err := component.Start(ctx); err != nil {
+			// Start 可能已获取资源后才失败：若组件提供 Stop，则保留它，
+			// 由同一生命周期所有者完成部分清理，并支持对失败的 Stop 重试。
 			m.runtimeStops = append([]IRuntimeStopper(nil), started...)
-			_ = m.stopRuntimeComponents(ctx)
-			return wrapModuleErr(m.moduleID, err, "start runtime component").
-				WithContext("index", item.index)
+			if stopper != nil {
+				m.runtimeStops = append(m.runtimeStops, stopper)
+			}
+			return runtimeutil.WrapModuleErr(m.moduleID, err, "start runtime component", errors.Internal).WithContext("index", item.index)
 		}
 
-		if stopper, ok := inst.(IRuntimeStopper); ok && !runtimeutil.IsTypedNil(stopper) {
+		if stopper != nil {
 			started = append(started, stopper)
 		}
 	}
@@ -358,17 +342,22 @@ func (m *ModuleRuntime) stopRuntimeComponents(ctx context.Context) []error {
 	}
 
 	var errs []error
+	remaining := make([]IRuntimeStopper, 0, len(m.runtimeStops))
 	for i := len(m.runtimeStops) - 1; i >= 0; i-- {
 		stopper := m.runtimeStops[i]
 		if stopper == nil || runtimeutil.IsTypedNil(stopper) {
 			continue
 		}
 		if err := stopper.Stop(ctx); err != nil {
-			errs = append(errs, wrapModuleErr(m.moduleID, err, "stop runtime component").
+			errs = append(errs, runtimeutil.WrapModuleErr(m.moduleID, err, "stop runtime component", errors.Internal).
 				WithContext("index", i))
+			remaining = append(remaining, stopper)
 		}
 	}
-	m.runtimeStops = nil
+	for i, j := 0, len(remaining)-1; i < j; i, j = i+1, j-1 {
+		remaining[i], remaining[j] = remaining[j], remaining[i]
+	}
+	m.runtimeStops = remaining
 	return errs
 }
 
@@ -408,16 +397,4 @@ func uniqStrings(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func wrapModuleErr(moduleID string, err error, message string) errors.IAppError {
-	if err == nil {
-		return nil
-	}
-
-	var appErr *errors.AppError
-	if errors.As(err, &appErr) && appErr != nil {
-		return appErr.Wrap(message).WithContext("module", moduleID)
-	}
-	return errors.Wrap(err, errors.Internal, message).WithContext("module", moduleID)
 }

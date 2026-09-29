@@ -8,4 +8,5 @@
 - `infra/`：SQL Outbox、Projection Checkpoint、Snapshot 与 SQL Builder
 - `process/`：Saga 编排、Workflow 流程引擎
 - `quick/`：Quick 开箱即用门面
+- `quick/modules`：无配置模块 HTTP 服务，演示默认前缀及分组继承（持续运行，Ctrl-C 退出）
 - `e2e/order_fulfillment`：综合端到端履约示例

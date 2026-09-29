@@ -62,6 +62,8 @@ type IRouteModule interface {
 }
 
 // ModuleStopFunc 定义模块启动后的停止函数（用于回滚与优雅关闭）。
+// 只有已进入 Start 的模块才会收到调用；实现必须容忍部分初始化，并在失败
+// 时保留未清理资源以支持后续重试，已成功清理的资源不得重复处理。
 type ModuleStopFunc func(ctx context.Context) error
 
 // ModuleInitOptions 定义模块初始化所需的运行环境与可选能力。

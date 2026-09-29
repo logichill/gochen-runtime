@@ -14,6 +14,7 @@ import (
 	"gochen-runtime/db/orm/repo"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen-runtime/host/authz"
+	"gochen-runtime/host/config"
 	"gochen-runtime/quick"
 	"gochen/contextx"
 	"gochen/db"
@@ -105,9 +106,9 @@ func main() {
 			o.GetID(), o.Title, o.Amount, o.GetTenantID(), o.OrgID, o.GetVersion())
 	}
 
-	// 4. 模块声明与微服务生命周期启动 (通过 quick.Module 与 quick.Server)
+	// 4. 模块声明与微服务生命周期启动 (通过 quick.Module 与 quick.New)
 	orderModule := quick.Module("order", quick.RESTRegistrar[*Order, int64](securedApp))
-	server, err := quick.Server("order-service", freePort(), orderModule)
+	server, err := quick.New(config.WithName("order-service"), config.WithPort(freePort())).Modules(orderModule).Build()
 	if err != nil {
 		log.Fatalf("failed to create quick server: %v", err)
 	}

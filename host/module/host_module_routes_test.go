@@ -172,7 +172,7 @@ func TestHost_ModuleInitAndStart_HTTPOptionsAndMiddlewares(t *testing.T) {
 		config.WithContainer(container),
 		config.WithHTTPServer(httpServer),
 		config.WithRouteMiddlewares(mwGlobal1, mwGlobal2),
-		config.WithModuleHTTP("iam", config.ModuleHTTPConfig{Prefix: "/iam", Middlewares: []httpx.Middleware{mwModule}}),
+		config.WithModuleHTTP("iam", config.ModuleHTTPConfig{Middlewares: []httpx.Middleware{mwModule}}),
 	)
 
 	if err := srv.Prepare(context.Background()); err != nil {

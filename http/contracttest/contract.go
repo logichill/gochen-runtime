@@ -38,6 +38,7 @@ func Run(t *testing.T, factory Factory) {
 		return srv
 	}
 	t.Run("Context", func(t *testing.T) { runContext(t, newServer) })
+	t.Run("ModuleMounts", func(t *testing.T) { runModules(t, newServer) })
 	for _, scope := range []string{"global", "group"} {
 		t.Run("MiddlewareShortCircuit/"+scope, func(t *testing.T) {
 			srv := newServer(t)

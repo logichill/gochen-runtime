@@ -8,6 +8,7 @@ import (
 	"gochen-runtime/host/capability"
 	"gochen-runtime/host/config"
 	"gochen-runtime/host/module"
+	"gochen-runtime/host/module/initcap"
 	"gochen-runtime/host/module/runtimecap"
 	"gochen/errors"
 	"gochen/httpx"
@@ -53,16 +54,20 @@ func (s *Host) makeModuleInitOptions(m module.IModule) module.ModuleInitOptions 
 		resolver = s.container
 		moduleContainer = s.container
 	}
-	opts := module.NewModuleInitOptions(
-		registry,
-		resolver,
-		moduleContainer,
+	capabilities := []initcap.Setter{
 		runtimecap.HTTP(httpOpt),
 		runtimecap.ModuleRegistry(s.moduleRegistry),
 		runtimecap.MetadataRegistry(s.metadataRegistry),
 		runtimecap.EventBus(eventBus),
 		runtimecap.ProjectionRuntime(projectionRuntime),
 		runtimecap.Transport(transport),
+	}
+	capabilities = append(capabilities, s.config.ModuleCapabilities...)
+	opts := module.NewModuleInitOptions(
+		registry,
+		resolver,
+		moduleContainer,
+		capabilities...,
 	)
 	return opts
 }
@@ -127,24 +132,33 @@ func (s *Host) makeHTTPOptions(m module.IModule, baseGroup httpx.IRouteGroup) *r
 			id = strings.TrimSpace(m.ID())
 		}
 	}
+	defaults := s.config.ModuleHTTPDefaults
 	cfg, ok := s.config.ModuleHTTP[id]
+	if defaults.Disabled && !ok {
+		return nil
+	}
 	if ok && cfg.Disabled {
 		return nil
 	}
 
-	prefix := ""
-	if ok {
+	prefix := defaults.Prefix
+	if ok && cfg.Prefix != "" {
 		prefix = cfg.Prefix
 	} else if id != "" {
-		prefix = "/" + id
+		if prefix == "" {
+			prefix = "/" + id
+		}
 	}
 	if prefix != "" && !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
 	}
 
 	var mws []httpx.Middleware
+	if !(ok && cfg.DisableDefaultMiddlewares) && len(defaults.Middlewares) > 0 {
+		mws = append(mws, defaults.Middlewares...)
+	}
 	if ok && len(cfg.Middlewares) > 0 {
-		mws = cfg.Middlewares
+		mws = append(mws, cfg.Middlewares...)
 	}
 
 	return runtimecap.NewModuleHTTPOptions(baseGroup, prefix, mws...)

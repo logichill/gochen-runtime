@@ -3,6 +3,7 @@ package assembly
 import (
 	"context"
 
+	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
 	"gochen-runtime/host/module/runtimecap"
 	"gochen/errors"
@@ -33,7 +34,7 @@ func (m *explicitModule) RegisterRoutes(ctx context.Context) error {
 	for i, reg := range m.routeRegistrarRegs {
 		inst, err := m.resolveFromReg(reg)
 		if err != nil {
-			return wrapModuleErr(m.desc.ID, err, "resolve route registrar").
+			return runtimeutil.WrapModuleErr(m.desc.ID, err, "resolve route registrar", errors.Internal).
 				WithContext("index", i)
 		}
 
@@ -43,13 +44,8 @@ func (m *explicitModule) RegisterRoutes(ctx context.Context) error {
 				WithContext("module", m.desc.ID).
 				WithContext("index", i)
 		}
-		if err := registrar.RegisterRoutes(group); err != nil {
-			var appErr *errors.AppError
-			if errors.As(err, &appErr) && appErr != nil {
-				return appErr.Wrap("register routes").WithContext("module", m.desc.ID).WithContext("index", i)
-			}
-			return errors.Wrap(err, errors.Dependency, "register routes").
-				WithContext("module", m.desc.ID).
+		if err := registrar.RegisterRoutes(group.Group("")); err != nil {
+			return runtimeutil.WrapModuleErr(m.desc.ID, err, "register routes", errors.Dependency).
 				WithContext("index", i)
 		}
 	}
@@ -75,9 +71,25 @@ func (m *explicitModule) Start(ctx context.Context) (module.ModuleStopFunc, erro
 	if ctx == nil {
 		return nil, errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
+	if m.onStopPending {
+		return nil, errors.NewCode(errors.Conflict, "module has pending OnStop cleanup").
+			WithContext("module", m.desc.ID)
+	}
 	if m.runtime != nil {
-		if err := m.runtime.Start(ctx, m.desc.OnStart); err != nil {
-			return nil, err
+		// 启动走到钩子阶段即视为已进入：无论是否配置 OnStart 都先标记，
+		// 确保钩子中途失败或仅配置 OnStop 的模块都能收到配对的 OnStop。
+		onStart := func(ctx context.Context) error {
+			if m.desc.OnStop != nil {
+				m.onStopPending = true
+			}
+			if m.desc.OnStart == nil {
+				return nil
+			}
+			return m.desc.OnStart(ctx)
+		}
+		if err := m.runtime.Start(ctx, onStart); err != nil {
+			// 返回完整停止闭包，使 Host 能接管部分启动后的资源并重试清理。
+			return m.stop, err
 		}
 	}
 	return m.stop, nil
@@ -89,15 +101,33 @@ func (m *explicitModule) stop(ctx context.Context) error {
 		return errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
 	if m.runtime == nil {
-		if m.desc.OnStop != nil {
-			if err := m.desc.OnStop(ctx); err != nil {
-				return wrapModuleErr(m.desc.ID, err, "OnStop")
-			}
+		if !m.onStopPending || m.desc.OnStop == nil {
+			return nil
 		}
+		if err := m.desc.OnStop(ctx); err != nil {
+			return runtimeutil.WrapModuleErr(m.desc.ID, err, "OnStop", errors.Internal)
+		}
+		m.onStopPending = false
 		return nil
 	}
-	return m.runtime.Stop(ctx, m.desc.OnStop)
+
+	var onStop func(context.Context) error
+	hookSucceeded := false
+	if m.onStopPending && m.desc.OnStop != nil {
+		onStop = func(ctx context.Context) error {
+			err := m.desc.OnStop(ctx)
+			if err == nil {
+				hookSucceeded = true
+			}
+			return err
+		}
+	}
+	err := m.runtime.Stop(ctx, onStop)
+	if hookSucceeded {
+		m.onStopPending = false
+	}
+	return err
 }
 
-// Ensure explicitModule implements IRouteModule
+// 确保 explicitModule 实现 IRouteModule
 var _ module.IRouteModule = (*explicitModule)(nil)

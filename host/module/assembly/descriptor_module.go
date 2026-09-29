@@ -2,8 +2,10 @@ package assembly
 
 import (
 	"gochen-runtime/host/capability"
+	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
 	"gochen-runtime/host/module/runtimecap"
+	"gochen/errors"
 )
 
 // NewModule 从描述符创建模块（显式路径入口）。
@@ -23,6 +25,7 @@ type explicitModule struct {
 	// 分类存储带角色的注册项（Init 阶段填充）
 	routeRegistrarRegs []Registration
 	runtime            *capability.ModuleRuntime
+	onStopPending      bool
 }
 
 func (m *explicitModule) ID() string {
@@ -45,7 +48,7 @@ func (m *explicitModule) Init(opts module.ModuleInitOptions) error {
 	// 1. 准备容器与模块运行时状态。
 	container, err := module.ResolveModuleContainer(opts)
 	if err != nil {
-		return wrapModuleErr(m.desc.ID, err, "resolve container")
+		return runtimeutil.WrapModuleErr(m.desc.ID, err, "resolve container", errors.Internal)
 	}
 	m.container = container
 	m.runtime = capability.NewModuleRuntime(
@@ -63,7 +66,7 @@ func (m *explicitModule) Init(opts module.ModuleInitOptions) error {
 
 	if m.desc.OnInit != nil {
 		if err := m.desc.OnInit(opts); err != nil {
-			return wrapModuleErr(m.desc.ID, err, "module init hook")
+			return runtimeutil.WrapModuleErr(m.desc.ID, err, "module init hook", errors.Internal)
 		}
 	}
 

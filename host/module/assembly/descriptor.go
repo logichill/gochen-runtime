@@ -76,6 +76,7 @@ type ModuleDescriptor struct {
 	// OnStart 启动钩子（可选）。
 	OnStart func(ctx context.Context) error
 
-	// OnStop 停止钩子（可选）。
+	// OnStop 停止钩子（可选）。启动走到钩子阶段（事件、投影、运行期组件均已启动，
+	// 无论是否配置 OnStart）后才会调用；更早失败的启动不会触发 OnStop。
 	OnStop func(ctx context.Context) error
 }

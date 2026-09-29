@@ -45,13 +45,25 @@ func main() {
 		),
 		hostconfig.WithHTTPServer(httpServer),
 		hostconfig.WithBasePath("/api/v1"),
-		hostconfig.WithModuleHTTP("iam", hostconfig.ModuleHTTPConfig{Prefix: "/iam"}),
 		hostconfig.WithFailFastOnRouteConflicts(true),
 	); err != nil {
 		os.Exit(1)
 	}
 }
 ```
+
+模块未配置 `WithModuleHTTP` 时也会按模块 ID 自动挂载到 `/<moduleID>`；只有需要中间件、禁用路由、根挂载或自定义前缀时才配置它。`Prefix: "/"` 表示显式根挂载。
+
+跨模块的初始化能力和 HTTP 默认中间件应在 Host 组合根统一注入：
+
+```go
+hostconfig.WithModuleCapabilities(provider.ModuleCapability(config)),
+hostconfig.WithModuleHTTPDefaults(hostconfig.ModuleHTTPConfig{
+	Middlewares: moduleMiddlewares,
+}),
+```
+
+模块只读取自己声明的 capability；Host 会把通用配置传给每个模块，并为未覆盖的模块沿用 ID 前缀。
 
 ## 生命周期
 
@@ -66,6 +78,8 @@ func main() {
 7. 收到退出信号后逆序停止模块并关闭外围资源。
 
 模块投影注册后，Host 会先调用 `StartProjection`，再在 manager 提供该能力时调用 `ResumeFromCheckpoint` 主动追赶持久化 backlog；启动失败会按既有清理顺序停止已注册投影。
+
+Host 仅停止由自身启动取得的 Transport；可观测到启动前已运行的实例仍由原所有者负责停止。模块或 Transport 清理失败时，Host 保留待清理资源供 `Shutdown` 重试，清理完成前拒绝再次启动。
 
 ## 约束
 

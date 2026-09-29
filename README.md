@@ -2,6 +2,21 @@
 
 `gochen-runtime` 是 Gochen 框架的**官方默认物理驱动与 Host 标准运行时**。
 
+无需配置文件即可启动模块 HTTP 服务：
+
+```go
+app := quick.New()
+app.Modules(quick.Module("hello", func(g httpx.IRouteGroup) error {
+    g.GET("/ping", func(c httpx.IContext) error { return c.String(200, "pong") })
+    return nil
+}))
+if err := app.Run(context.Background()); err != nil {
+    log.Fatal(err)
+}
+```
+
+导入 `gochen-runtime/quick`、`gochen/httpx` 及标准库 `context`、`log`。默认路径为 `/api/v1/hello/ping`，端口 8080。使用 `app.Group(prefix).Use(middlewares...)` 为模块共享前缀和中间件，只有特殊路径才用 `Mount(prefix, ctor)`。完整可运行示例：`go run ./examples/quick/modules`。
+
 基于 Go 标准库打造，零重型第三方依赖（Zero Bloat），为企业级应用提供一等公民的生产级运行时闭环。
 
 ---

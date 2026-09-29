@@ -6,6 +6,7 @@ import (
 	"gochen/errors"
 	"gochen/eventing"
 	"gochen/eventing/projection"
+	"gochen/messaging"
 )
 
 // TestProjectionBase 提供通用的测试投影基类。
@@ -35,36 +36,50 @@ func (p *TestProjectionBase) Status() projection.ProjectionStatus {
 	return projection.ProjectionStatus{Name: p.ProjectionName, Status: "stopped"}
 }
 
-// MockProjectionManager 模拟投影管理器。
+// MockProjectionManager 模拟投影管理器，释放函数只清理其绑定的注册。
 type MockProjectionManager struct {
 	Registered []string
 	Started    []string
-	Stopped    []string
-	Log        *[]string
+
+	// Released 记录释放的投影名，按调用顺序。
+	Released []string
+	Log      *[]string
+
+	tokens map[string]any
 }
 
 // NewMockProjectionManager 创建空 MockProjectionManager。
 func NewMockProjectionManager() *MockProjectionManager {
-	return &MockProjectionManager{}
+	return &MockProjectionManager{tokens: make(map[string]any)}
 }
 
-// RegisterProjectionAny 注册任意类型投影。
-func (m *MockProjectionManager) RegisterProjectionAny(ctx context.Context, p any) error {
+// RegisterProjectionAny 注册投影，并返回绑定本次注册的释放函数。
+func (m *MockProjectionManager) RegisterProjectionAny(_ context.Context, p any) (messaging.UnsubscribeFunc, error) {
 	proj, ok := p.(projection.IProjection[int64])
-	if !ok {
-		return errors.NewCode(errors.InvalidInput, "projection type mismatch")
+	if !ok || proj == nil {
+		return nil, errors.NewCode(errors.InvalidInput, "projection type mismatch")
 	}
-	return m.RegisterProjectionWithContext(ctx, proj)
-}
-
-// RegisterProjectionWithContext 注册投影。
-func (m *MockProjectionManager) RegisterProjectionWithContext(_ context.Context, p projection.IProjection[int64]) error {
-	name := p.Name()
+	name := proj.Name()
+	if m.tokens == nil {
+		m.tokens = make(map[string]any)
+	}
+	token := &mockProjectionToken{name: name}
+	m.tokens[name] = token
 	m.Registered = append(m.Registered, name)
 	if m.Log != nil {
 		*m.Log = append(*m.Log, "projection:register:"+name)
 	}
-	return nil
+	return func(context.Context) error {
+		if m.tokens[name] != token {
+			return nil
+		}
+		delete(m.tokens, name)
+		m.Released = append(m.Released, name)
+		if m.Log != nil {
+			*m.Log = append(*m.Log, "projection:release:"+name)
+		}
+		return nil
+	}, nil
 }
 
 // StartProjection 启动指定投影。
@@ -76,11 +91,6 @@ func (m *MockProjectionManager) StartProjection(name string) error {
 	return nil
 }
 
-// StopProjection 停止指定投影。
-func (m *MockProjectionManager) StopProjection(name string) error {
-	m.Stopped = append(m.Stopped, name)
-	if m.Log != nil {
-		*m.Log = append(*m.Log, "projection:stop:"+name)
-	}
-	return nil
+type mockProjectionToken struct {
+	name string
 }

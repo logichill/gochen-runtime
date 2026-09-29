@@ -85,7 +85,6 @@ func main() {
 		config.WithHTTPServer(server),
 		config.WithCatalogRegistrar(authz.NewCatalogRegistrar(registry)),
 		config.WithBasePath("/api/v1"),
-		config.WithModuleHTTP("catalog", config.ModuleHTTPConfig{Prefix: "/catalog"}),
 		config.WithModules(NewCatalogModule),
 		config.WithFailFastOnRouteConflicts(true),
 	); err != nil {

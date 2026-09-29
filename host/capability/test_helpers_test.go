@@ -66,11 +66,6 @@ func newMockProjectionManager() *mockProjectionManager {
 	return testutil.NewMockProjectionManager()
 }
 
-type unregisteringProjectionManager struct {
-	testutil.MockProjectionManager
-	unregistered []string
-}
-
 type resumingProjectionManager struct {
 	testutil.MockProjectionManager
 	resumed   []string
@@ -82,19 +77,28 @@ func (m *resumingProjectionManager) ResumeFromCheckpoint(_ context.Context, name
 	return m.resumeErr
 }
 
-func (m *unregisteringProjectionManager) UnregisterProjectionWithContext(_ context.Context, name string) error {
-	m.unregistered = append(m.unregistered, name)
-	if m.Log != nil {
-		*m.Log = append(*m.Log, "projection:unregister:"+name)
-	}
-	return nil
-}
-
 type testRuntimeComponent struct {
 	startedWith string
 	startCount  int
 	stopCount   int
 	log         *[]string
+}
+
+type partialStartComponent struct {
+	startErr   error
+	stopErr    error
+	startCount int
+	stopCount  int
+}
+
+func (c *partialStartComponent) Start(context.Context) error {
+	c.startCount++
+	return c.startErr
+}
+
+func (c *partialStartComponent) Stop(context.Context) error {
+	c.stopCount++
+	return c.stopErr
 }
 
 func (c *testRuntimeComponent) Start(context.Context) error {
