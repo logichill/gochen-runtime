@@ -57,7 +57,7 @@ func NewStaticHandler(root string) http.Handler {
 		}
 
 		resolvedPath, err := filepath.EvalSymlinks(fullAbs)
-		if err != nil || !isWithinRoot(rootResolved, resolvedPath) {
+		if err != nil || !isAllowedStaticTarget(rootResolved, resolvedPath) {
 			http.NotFound(w, r)
 			return
 		}
@@ -86,7 +86,7 @@ func NewStaticHandler(root string) http.Handler {
 
 			indexPath := filepath.Join(resolvedPath, "index.html")
 			resolvedIndexPath, err := filepath.EvalSymlinks(indexPath)
-			if err != nil || !isWithinRoot(rootResolved, resolvedIndexPath) {
+			if err != nil || !isAllowedStaticTarget(rootResolved, resolvedIndexPath) {
 				http.NotFound(w, r)
 				return
 			}
@@ -125,6 +125,18 @@ func NewStaticHandler(root string) http.Handler {
 		// ServeContent 支持 Range/If-Modified-Since 等，且不会产生目录列表。
 		http.ServeContent(w, r, servedName, servedInfo.ModTime(), io.NewSectionReader(f, 0, servedInfo.Size()))
 	})
+}
+
+// isAllowedStaticTarget 对符号链接解析后的路径执行与请求路径相同的隐藏文件限制。
+func isAllowedStaticTarget(root, target string) bool {
+	if !isWithinRoot(root, target) {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || !hasDisallowedHiddenSegment(filepath.ToSlash(rel))
 }
 
 func cleanStaticRelPath(raw string) (string, bool) {
