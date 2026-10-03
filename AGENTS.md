@@ -1,24 +1,22 @@
 # AGENTS 准则（Gochen Runtime）
 
-本仓库为 Gochen Runtime（module `gochen-runtime`），是 Core 契约的物理驱动层——SQL 实现、net/http server、config、host 容器、DI、api/rest。
+本仓库为 Gochen Runtime（module `gochen-runtime`），是 Core 契约的物理驱动层；局部约定见本文件与 `api/rest/.agents/CONTEXT.md`。
 
-- 本仓库 `gochen-runtime`（Runtime）：局部约定见本文件与 `api/rest/.agents/CONTEXT.md`
 - `../gochen`（Core，module `gochen`）：领域、应用、认证、事件、消息、策略、流程与 HTTP 抽象
 - 开发规范 `SPEC.md`、文档门户 `docs/` 与架构设计记录统一位于 `gochen` 仓库，**本仓库同样受其约束**
 
 ## 通用准则
 
-- 这是 golang 项目，需要在遵守 `gochen` 仓库 `SPEC.md` 的基础上遵守 golang 编码规范
-- 执行任何重构都不要保留兼容层代码，保持项目的干净清爽
+- Go 项目：遵守 Go 编码规范。
+- 重构不保留兼容层代码，保持项目的干净清爽。
 - 执行代码创建/修改后要执行 go fmt
-- 默认验证：本仓库内执行 `go build ./... && go vet ./... && go test -count=1 ./...`（sqlite 为纯内存测试驱动）；全量入口见 `Makefile`（`make build && make vet && make test && make examples-smoke`）
-- 禁止把验证退化为 workspace 级一把梭——那会掩盖 Core 侧的零依赖不变量
+- 默认验证：本仓库内执行 `go build ./... && go vet ./... && go test -count=1 ./...`（sqlite 为纯内存测试驱动）；全量入口见 `Makefile`（`make build && make vet && make test && make examples-smoke`）。禁止退化为 workspace 级一把梭，否则会掩盖 Core 的零依赖不变量。
 
 ## 命名铁律
 
 - **repo 名 = module path = 目录名**，三者必须一致（当前：`gochen` / `gochen-runtime`）。
-- module path **禁止使用 Go 标准库顶级包名**。新增 module 前必须核对 `go list std | grep -x '<候选名>'` 为空——本模块曾命名为 `runtime`，导致 `runtime/{debug,metrics,pprof,trace,cgo,race,coverage}` 7 个子包名永久不可用（实测为 `ambiguous import` 硬编译失败），且 `runtime/di` 会被工具与人眼误判为标准库。
-- 本仓库内**不建议新建**与标准库 `runtime` 子包同名的顶级目录（`debug` / `metrics` / `pprof` / `trace` 等）——module 改名后已无编译冲突，但这些名字语义模糊，应选用更具体的命名。
+- module path **禁止使用 Go 标准库顶级包名**；新增 module 前核对 `go list std | grep -x '<候选名>'` 为空。本模块曾名为 `runtime`，`runtime/{debug,metrics,pprof,trace,cgo,race,coverage}` 7 个子包名因此永久不可用（`ambiguous import` 硬编译失败），`runtime/di` 还会被工具与人眼误判为标准库。
+- 本仓库内**不建议新建**与标准库 `runtime` 子包同名的顶级目录（`debug`/`metrics`/`pprof`/`trace` 等）：改名后已无编译冲突，但语义模糊，应取更具体的命名。
 
 ## 模块边界与依赖
 
