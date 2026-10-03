@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	runtimehttp "gochen-runtime/http"
+	"gochen-runtime/http/nethttp"
 	"gochen/errors"
 	"gochen/httpx"
 	"gochen/observe/logging"
@@ -100,6 +101,9 @@ func CORS(cfg *CORSConfig) httpx.Middleware {
 	maxAge := strconv.Itoa(c.MaxAge)
 
 	return func(ctx httpx.IContext, next func() error) error {
+		if !allowAllOrigins {
+			varyByOrigin(ctx)
+		}
 		origin := ctx.Header("Origin")
 		// 仅将满足 W3C CORS 预检条件的 OPTIONS 请求视为 preflight：
 		// - method=OPTIONS
@@ -115,8 +119,6 @@ func CORS(cfg *CORSConfig) httpx.Middleware {
 				ctx.SetHeader("Access-Control-Allow-Origin", "*")
 				corsAllowed = true
 			} else {
-				// allowlist 模式下，无论当前 Origin 是否命中，都声明 Vary，避免共享缓存复用错误响应。
-				ctx.SetHeader("Vary", "Origin")
 				if _, ok := allowedOrigins[origin]; ok {
 					ctx.SetHeader("Access-Control-Allow-Origin", origin)
 					corsAllowed = true
@@ -146,6 +148,24 @@ func CORS(cfg *CORSConfig) httpx.Middleware {
 
 		return next()
 	}
+}
+
+// allowlist 响应始终随 Origin 变化，包括未携带 Origin 的请求。
+func varyByOrigin(ctx httpx.IContext) {
+	if writer, ok := nethttp.ResponseWriterOf(ctx); ok && writer != nil {
+		header := writer.Header()
+		for _, value := range header.Values("Vary") {
+			for _, name := range strings.Split(value, ",") {
+				name = strings.TrimSpace(name)
+				if name == "*" || strings.EqualFold(name, "Origin") {
+					return
+				}
+			}
+		}
+		header.Add("Vary", "Origin")
+		return
+	}
+	ctx.SetHeader("Vary", "Origin")
 }
 
 func contains(list []string, item string) bool {

@@ -3,11 +3,32 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	runtimehttp "gochen-runtime/http"
 	"gochen-runtime/http/nethttp"
 )
+
+func TestCORS_PreservesCacheVariationWithoutOrigin(t *testing.T) {
+	for _, origin := range []string{"", "https://a.example", "https://b.example"} {
+		t.Run(origin, func(t *testing.T) {
+			ctx, rec := newNetHTTPContext(t, http.MethodGet, origin)
+			rec.Header().Add("Vary", "Accept-Encoding")
+			rec.Header().Add("Vary", "Accept-Language")
+			mw := CORS(&CORSConfig{AllowOrigins: []string{"https://a.example"}})
+			if err := mw(ctx, func() error { return ctx.String(http.StatusOK, "ok") }); err != nil {
+				t.Fatal(err)
+			}
+			vary := strings.Join(rec.Header().Values("Vary"), ",")
+			for _, want := range []string{"Accept-Encoding", "Accept-Language", "Origin"} {
+				if !strings.Contains(vary, want) {
+					t.Errorf("Vary = %q, missing %s", vary, want)
+				}
+			}
+		})
+	}
+}
 
 func newNetHTTPContext(t *testing.T, method string, origin string) (*nethttp.Context, *httptest.ResponseRecorder) {
 	t.Helper()
