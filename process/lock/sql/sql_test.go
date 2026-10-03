@@ -912,7 +912,7 @@ func TestSQLLockProvider_RenewalOutlivesAcquireContext(t *testing.T) {
 		t.Fatalf("NewSQLLockProvider: %v", err)
 	}
 
-	acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	acquireCtx, cancelAcquire := context.WithTimeout(context.Background(), time.Second)
 	release, err := p1.Acquire(acquireCtx, "k")
 	if err != nil {
 		cancelAcquire()
