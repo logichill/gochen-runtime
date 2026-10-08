@@ -3,17 +3,18 @@ package sqlbuilder
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
-	"gochen/db/dialect"
+
 	"gochen/errors"
 )
 
 type insertBuilder struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 
 	table   string
 	columns []string

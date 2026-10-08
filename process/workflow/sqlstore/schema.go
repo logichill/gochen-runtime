@@ -3,8 +3,8 @@ package sqlstore
 import (
 	"context"
 	"fmt"
+	coredialect "gochen/db/dialect"
 
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -26,7 +26,7 @@ func (s *SQLStore) schemaStatements() []string {
 	instances := s.quotedInstanceTable()
 
 	switch s.dialect.Name() {
-	case dialect.NameSQLite:
+	case coredialect.NameSQLite:
 		return []string{
 			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 				definition_id TEXT NOT NULL,
@@ -55,7 +55,7 @@ func (s *SQLStore) schemaStatements() []string {
 				s.instanceTable, instances),
 		}
 
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		return []string{
 			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 				definition_id VARCHAR(255) NOT NULL,
@@ -84,7 +84,7 @@ func (s *SQLStore) schemaStatements() []string {
 				s.instanceTable, instances),
 		}
 
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return []string{
 			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 				definition_id VARCHAR(191) NOT NULL,

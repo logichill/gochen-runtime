@@ -1,13 +1,14 @@
 package sqlstore
 
 import (
+	coredialect "gochen/db/dialect"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/internal/sqlsafe"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
-	"gochen/eventing/outbox"
+
 	"gochen/observe/logging"
 )
 
@@ -61,7 +62,7 @@ func DefaultCleanupPolicy() CleanupPolicy {
 		RetentionDays:  7,
 		BatchSize:      defaultCleanupBatchSize,
 		ArchiveEnabled: false,
-		OutboxTable:    outbox.DefaultOutboxTable,
+		OutboxTable:    DefaultOutboxTable,
 		ArchiveTable:   defaultArchiveTable,
 		DryRun:         false,
 	}
@@ -70,7 +71,7 @@ func DefaultCleanupPolicy() CleanupPolicy {
 // CleanupService 负责批量删除或归档已发布的 Outbox 记录。
 type CleanupService struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 	policy  CleanupPolicy
 	log     logging.ILogger
 }
@@ -111,7 +112,7 @@ func NewCleanupService(
 		policy.BatchSize = defaultCleanupBatchSize
 	}
 	if policy.OutboxTable == "" {
-		policy.OutboxTable = outbox.DefaultOutboxTable
+		policy.OutboxTable = DefaultOutboxTable
 	}
 	if policy.ArchiveTable == "" {
 		policy.ArchiveTable = defaultArchiveTable

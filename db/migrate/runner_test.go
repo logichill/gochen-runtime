@@ -13,9 +13,9 @@ import (
 	"testing/fstest"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/db"
-	"gochen/db/dialect"
 	goerrors "gochen/errors"
 
 	_ "modernc.org/sqlite"
@@ -682,6 +682,72 @@ func TestRunnerStatusDoesNotCreateStateTable(t *testing.T) {
 	assertTableExists(t, database, defaultStateTable, false)
 }
 
+// TestRunnerStatusSurfacesNonMissingTableErrors 回归 R2b-F04：readStatus 曾按
+// 宽泛的错误文本判定"状态表不存在"——任何带 "does not exist" 的驱动错误
+// （列缺失、连错库、其它 relation 缺失）都被吞成"空状态"，Status 静默返回零值，
+// 上层会误判为尚未迁移而重复执行迁移。
+func TestRunnerStatusSurfacesNonMissingTableErrors(t *testing.T) {
+	t.Parallel()
+
+	newStatusRunner := func(t *testing.T, driverErr error) *Runner {
+		t.Helper()
+		source, err := NewFS(fstest.MapFS{
+			"000001_create_users.up.sql": {Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY);`)},
+		}, ".")
+		if err != nil {
+			t.Fatalf("NewFS failed: %v", err)
+		}
+		database := &statusErrorDB{
+			IDatabase: openSQLiteDB(t, filepath.Join(t.TempDir(), "runner.db")),
+			err:       driverErr,
+		}
+		runner, err := NewRunner(database, source)
+		if err != nil {
+			t.Fatalf("NewRunner failed: %v", err)
+		}
+		return runner
+	}
+
+	cases := []struct {
+		name      string
+		driverErr error
+		wantErr   bool
+	}{
+		{"mysql missing state table", errors.New("Error 1146 (42S02): Table 'review.schema_migrations' doesn't exist"), false},
+		{"table name in column error", errors.New(`pq: column "schema_migrations" does not exist`), true},
+		{"table name prefix", errors.New(`pq: relation "schema_migrations_backup" does not exist`), true},
+		{"sqlite missing state table", errors.New("no such table: schema_migrations"), false},
+		{"postgres missing state table", errors.New(`pq: relation "schema_migrations" does not exist`), false},
+		{"postgres schema qualified missing state table", errors.New(`pq: relation "public.schema_migrations" does not exist`), false},
+		{"column drift must surface", errors.New(`pq: column "dirty" does not exist`), true},
+		{"wrong database must surface", errors.New(`pq: database "ghost" does not exist`), true},
+		{"foreign missing relation must surface", errors.New(`pq: relation "other_table" does not exist`), true},
+		{"other driver error must surface", errors.New(`pq: permission denied for table schema_migrations`), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := newStatusRunner(t, tc.driverErr)
+			status, err := runner.Status(context.Background())
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Status error = %v, want empty status without error", err)
+				}
+				if status.Type != defaultMigrationType || status.Version != 0 || status.Dirty {
+					t.Fatalf("unexpected empty status: %#v", status)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Status swallowed driver error %q and returned %#v", tc.driverErr, status)
+			}
+			if !strings.Contains(err.Error(), tc.driverErr.Error()) {
+				t.Fatalf("Status error %v does not preserve driver error %v", err, tc.driverErr)
+			}
+		})
+	}
+}
+
 func TestRunnerRejectsUnsafeStateTable(t *testing.T) {
 	t.Parallel()
 
@@ -1193,3 +1259,21 @@ func (d *beginFailDB) Begin(context.Context) (db.ITransaction, error) {
 func (d *beginFailDB) BeginTx(context.Context, *sql.TxOptions) (db.ITransaction, error) {
 	return nil, fmt.Errorf("begin failed")
 }
+
+// statusErrorDB 把 QueryRow 的 Scan 替换成注入的驱动错误，用于验证
+// readStatus 的错误分类（本机无 PostgreSQL/MySQL 驱动时的同一注入方法）。
+type statusErrorDB struct {
+	db.IDatabase
+	err error
+}
+
+func (d *statusErrorDB) QueryRow(context.Context, string, ...any) db.IRow {
+	return statusErrorRow{err: d.err}
+}
+
+type statusErrorRow struct {
+	err error
+}
+
+func (r statusErrorRow) Scan(...any) error { return r.err }
+func (r statusErrorRow) Err() error        { return r.err }

@@ -13,8 +13,8 @@ import (
 	"gochen/testkit/assert"
 	"gochen/testkit/require"
 
+	"gochen-runtime/db/dialect"
 	"gochen/db"
-	"gochen/db/dialect"
 	gerrors "gochen/errors"
 	"gochen/eventing"
 	"gochen/eventing/outbox"

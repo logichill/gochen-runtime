@@ -50,7 +50,7 @@ func TestHandlerExposesMonitoringWhenEnabled(t *testing.T) {
 		return monitoring.HealthStatusUnhealthy, "boom", errors.New("postgres://user:secret@example/db")
 	}))
 	reg.Metrics.RecordEventSaved(2, 3*time.Millisecond)
-	h := NewHandlerWithRoutes(reg, monitoring.FullRouteSet())
+	h := NewHandlerWithRoutes(reg, FullRouteSet())
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()

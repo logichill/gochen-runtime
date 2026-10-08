@@ -94,6 +94,10 @@ type QueryOptions struct {
 
 // BodyOptions 定义请求体绑定与校验配置。
 type BodyOptions struct {
+	// MaxBatchSize 限制当前 HTTP 路由的批量元素数；<= 0 使用默认值 1000。
+	// Application 的业务上限独立生效，REST 不能放宽它。
+	MaxBatchSize int
+
 	// Validator 是协议边界的请求体验证函数，仅校验绑定后的 HTTP payload。
 	// 领域不变量与应用策略分别由 domain.IValidatable 和 validate.IValidator 负责。
 	Validator func(any) error
@@ -159,6 +163,8 @@ type RouteConfig[ID comparable] struct {
 
 const defaultMaxPageSize = 1000
 
+const defaultMaxBatchSize = 1000
+
 const defaultPageSizeValue = 10
 
 const defaultMaxBodySize = httpx.DefaultMaxBodySizeBytes
@@ -180,7 +186,8 @@ func DefaultRouteConfig[ID comparable]() *RouteConfig[ID] {
 			DefaultPageSize:  defaultPageSizeValue,
 		},
 		Body: BodyOptions{
-			MaxBodySize: defaultMaxBodySize,
+			MaxBatchSize: defaultMaxBatchSize,
+			MaxBodySize:  defaultMaxBodySize,
 		},
 		HTTP: HTTPOptions{
 			CORS: &middleware.CORSConfig{},

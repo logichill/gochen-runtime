@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen/auth/governance"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -46,7 +47,7 @@ func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot g
 		return errors.Wrap(err, errors.InvalidInput, "marshal policy snapshot metadata failed")
 	}
 
-	if dialect.FromDatabase(s.db).Name() == dialect.NameUnknown {
+	if dialect.FromDatabase(s.db).Name() == coredialect.NameUnknown {
 		return s.savePolicySnapshotCompat(ctx, snapshot, string(metaJSON))
 	}
 	query, args := s.buildUpsertQuery(snapshot, string(metaJSON))
@@ -59,14 +60,14 @@ func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot g
 func (s *PolicySnapshotStore) buildUpsertQuery(snapshot governance.PolicySnapshot, metadataJSON string) (string, []any) {
 	args := []any{snapshot.Key, snapshot.Version, snapshot.Timestamp, metadataJSON}
 	switch dialect.FromDatabase(s.db).Name() {
-	case dialect.NameSQLite, dialect.NamePostgres:
+	case coredialect.NameSQLite, coredialect.NamePostgres:
 		return fmt.Sprintf(`INSERT INTO %s (snapshot_key, version, timestamp, metadata)
 			VALUES (?, ?, ?, ?)
 			ON CONFLICT (snapshot_key) DO UPDATE SET
 				version = excluded.version,
 				timestamp = excluded.timestamp,
 				metadata = excluded.metadata`, s.tableName), args
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return fmt.Sprintf(`INSERT INTO %s (snapshot_key, version, timestamp, metadata)
 			VALUES (?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE

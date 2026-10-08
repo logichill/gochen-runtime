@@ -18,9 +18,7 @@ import (
 	"gochen/contextx"
 	"gochen/db/tx"
 	"gochen/domain/audited"
-	"gochen/domain/crud"
 	"gochen/httpx"
-	"gochen/validate"
 )
 
 func TestRouteBuilder_RegisterRejectsNilGroup(t *testing.T) {
@@ -30,93 +28,6 @@ func TestRouteBuilder_RegisterRejectsNilGroup(t *testing.T) {
 	}
 	if !errors.Is(err, errors.InvalidInput) {
 		t.Fatalf("expected InvalidInput, got %v", err)
-	}
-}
-
-// TestRestfulBuilderAppliesServiceConfig 验证 RestfulBuilderAppliesServiceConfig。
-func TestRestfulBuilderAppliesServiceConfig(t *testing.T) {
-	repo := &noopRepository{}
-	validator := &trackingValidator{err: errors.New("validator hit")}
-
-	svc, err := appcrud.NewApplication(repo, nil, nil)
-	if err != nil {
-		t.Fatalf("new application: %v", err)
-	}
-	builder, err := NewApiBuilder[*fakeEntity, int64](svc, WithValidator[*fakeEntity, int64](validator))
-	if err != nil {
-		t.Fatalf("NewApiBuilder returned error: %v", err)
-	}
-	if builder.routeConfig.Body.Validator != nil {
-		t.Fatal("WithValidator must not configure HTTP body validation")
-	}
-
-	builder.Service(func(cfg *appcrud.ServiceConfig) {
-		cfg.MaxBatchSize = 77
-	})
-
-	group := testutil.NewMockRouteGroup()
-	if err := builder.Build(group); err != nil {
-		t.Fatalf("build failed: %v", err)
-	}
-
-	if got := svc.Config().MaxBatchSize; got != 77 {
-		t.Fatalf("expected MaxBatchSize 77, got %d", got)
-	}
-
-	if err := svc.Validate(&fakeEntity{}); !errors.Is(err, validator.err) {
-		t.Fatalf("expected validator error, got %v", err)
-	}
-
-	if validator.called != 1 {
-		t.Fatalf("expected validator to be called once, got %d", validator.called)
-	}
-}
-
-type applicationWithoutOptionalConfiguration struct {
-	appcrud.IApplication[*fakeEntity, int64]
-}
-
-func TestApiBuilder_FailsWhenConfiguredCapabilityIsUnsupported(t *testing.T) {
-	base := newStubAppService(nil)
-	tests := []struct {
-		name      string
-		configure func(*ApiBuilder[*fakeEntity, int64])
-	}{
-		{
-			name: "service config",
-			configure: func(builder *ApiBuilder[*fakeEntity, int64]) {
-				builder.Service(func(cfg *appcrud.ServiceConfig) { cfg.MaxBatchSize = 7 })
-			},
-		},
-		{
-			name: "validator",
-			configure: func(builder *ApiBuilder[*fakeEntity, int64]) {
-				builder.validator = &trackingValidator{}
-			},
-		},
-		{
-			name: "hooks",
-			configure: func(builder *ApiBuilder[*fakeEntity, int64]) {
-				builder.Hooks(func(hooks *appcrud.Hooks[*fakeEntity, int64]) {
-					hooks.BeforeCreate = func(context.Context, *fakeEntity) error { return nil }
-				})
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service := &applicationWithoutOptionalConfiguration{IApplication: base}
-			builder, err := NewApiBuilder[*fakeEntity, int64](service)
-			if err != nil {
-				t.Fatalf("NewApiBuilder returned error: %v", err)
-			}
-			tt.configure(builder)
-			err = builder.Build(testutil.NewMockRouteGroup())
-			if !errors.Is(err, errors.FailedPrecondition) {
-				t.Fatalf("expected FailedPrecondition, got %v", err)
-			}
-		})
 	}
 }
 
@@ -446,7 +357,7 @@ func (stubAuditStore) ListAuditRecordsByEntity(context.Context, string, int, int
 // TestApiBuilder_FailsFastWhenEntityIsAuditedButServiceNotAudited 验证 ApiBuilder FailsFastWhenEntityIsAuditedButServiceNotAudited。
 func TestApiBuilder_FailsFastWhenEntityIsAuditedButServiceNotAudited(t *testing.T) {
 	repo := auditedNoopRepo{}
-	svc, err := appcrud.NewApplication(&repo, nil, nil)
+	svc, err := appcrud.NewApplication(&repo, nil)
 	if err != nil {
 		t.Fatalf("new application: %v", err)
 	}
@@ -465,7 +376,7 @@ func TestApiBuilder_FailsFastWhenEntityIsAuditedButServiceNotAudited(t *testing.
 // TestApiBuilder_RegistersAuditedRoutesWhenEntityIsAudited 验证 ApiBuilder RegistersAuditedRoutesWhenEntityIsAudited。
 func TestApiBuilder_RegistersAuditedRoutesWhenEntityIsAudited(t *testing.T) {
 	repo := auditedNoopRepo{}
-	auditedApp, err := appaudited.NewApplication(&repo, nil, nil, stubAuditStore{})
+	auditedApp, err := appaudited.NewApplication(&repo, stubAuditStore{}, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}
@@ -497,8 +408,6 @@ func TestApiBuilder_RegistersAuditedRoutesWhenEntityIsAudited(t *testing.T) {
 }
 
 type stubAppService struct {
-	cfg       *appcrud.ServiceConfig
-	validator validate.IValidator
 	order     *[]string
 	lastQuery *query.QueryRequest
 	lastPage  *query.PaginationOptions
@@ -517,12 +426,10 @@ type stubAppService struct {
 	lastUpdated             *fakeEntity
 	lastDeletedID           int64
 	loadedEntity            *fakeEntity
-	repository              crud.IRepository[*fakeEntity, int64]
 }
 
 func newStubAppService(order *[]string) *stubAppService {
 	return &stubAppService{
-		cfg:   cloneServiceConfig(appcrud.DefaultServiceConfig()),
 		order: order,
 	}
 }
@@ -615,15 +522,6 @@ func (s *stubAppService) Count(context.Context) (int64, error) { return 0, nil }
 // - err：错误信息（nil 表示成功）
 func (s *stubAppService) Exists(context.Context, int64) (bool, error) { return true, nil }
 
-// Repository result：测试返回值（类型：crud.IRepository[*fakeEntity, int64]）。
-//
-// 返回：
-func (s *stubAppService) Repository() crud.IRepository[*fakeEntity, int64] { return s.repository }
-
-func (s *stubAppService) QueryRepository() (crud.IQueryRepository[*fakeEntity, int64], bool) {
-	return nil, false
-}
-
 // ListByQuery _：上下文（用于取消、超时与链路信息）。
 //
 // 参数：
@@ -710,40 +608,6 @@ func (s *stubAppService) DeleteAll(context.Context, []int64) error {
 	s.deleteAllCalls++
 	return nil
 }
-
-// Validate 校验输入是否满足约束。
-//
-// 参数：
-// - entity：实体对象
-//
-// 返回：
-// - err：错误信息（nil 表示成功）
-func (s *stubAppService) Validate(entity *fakeEntity) error {
-	if s.cfg != nil && s.cfg.AutoValidate && s.validator != nil {
-		return s.validator.Validate(entity)
-	}
-	return nil
-}
-
-// Config 返回当前值。
-//
-// 返回：
-// - result：返回的实例（类型：*appcrud.ServiceConfig）
-func (s *stubAppService) Config() *appcrud.ServiceConfig { return s.cfg }
-
-// UpdateConfig 更新配置。
-//
-// 参数：
-// - cfg：配置
-func (s *stubAppService) UpdateConfig(cfg *appcrud.ServiceConfig) {
-	s.cfg = cloneServiceConfig(cfg)
-}
-
-// SetValidator 设置当前值。
-//
-// 参数：
-// - v：校验器（用于请求体/业务校验；会注入到 application 与 API 层）（类型：validate.IValidator）
-func (s *stubAppService) SetValidator(v validate.IValidator) { s.validator = v }
 
 func formatFakeID(id int64) string {
 	if id == 0 {
@@ -990,77 +854,5 @@ func TestRouteBuilder_DeleteBatchRejectsEmptyIDs(t *testing.T) {
 	}
 	if svc.deleteAllCalls != 0 {
 		t.Fatalf("expected DeleteAll not to be called on empty ids, got %d", svc.deleteAllCalls)
-	}
-}
-
-type hookAwareStub struct {
-	*stubAppService
-	hooks *appcrud.Hooks[*fakeEntity, int64]
-}
-
-// SetHooks 设置当前值。
-//
-// 参数：
-// - h：处理函数/回调（类型：*appcrud.Hooks[*fakeEntity, int64]）
-func (s *hookAwareStub) SetHooks(h *appcrud.Hooks[*fakeEntity, int64]) { s.hooks = h }
-
-// TestRestfulBuilderAppliesHooks 验证 RestfulBuilderAppliesHooks。
-func TestRestfulBuilderAppliesHooks(t *testing.T) {
-	svc := &hookAwareStub{stubAppService: newStubAppService(nil)}
-	builder, err := NewApiBuilder[*fakeEntity, int64](svc, nil)
-	if err != nil {
-		t.Fatalf("NewApiBuilder returned error: %v", err)
-	}
-
-	var fluent IApiBuilder[*fakeEntity, int64] = builder
-	fluent.Hooks(func(h *appcrud.Hooks[*fakeEntity, int64]) {
-		h.BeforeCreate = func(ctx context.Context, entity *fakeEntity) error { return nil }
-	})
-
-	group := testutil.NewMockRouteGroup()
-	if err := builder.Build(group); err != nil {
-		t.Fatalf("build failed: %v", err)
-	}
-	if svc.hooks == nil || svc.hooks.BeforeCreate == nil {
-		t.Fatalf("expected hooks to be applied to service")
-	}
-}
-
-// TestServiceConfigOverride 验证 ServiceConfigOverride。
-func TestServiceConfigOverride(t *testing.T) {
-	var order []string
-	svc := newStubAppService(&order)
-	// 默认配置
-	def := svc.Config()
-	if def == nil {
-		t.Fatalf("default service config should not be nil")
-	}
-	// 设置一个明显的值以便断言
-	def.AutoValidate = false
-	def.MaxBatchSize = 10
-	svc.UpdateConfig(def)
-
-	builder, err := NewApiBuilder[*fakeEntity, int64](svc, nil)
-	if err != nil {
-		t.Fatalf("NewApiBuilder returned error: %v", err)
-	}
-	// 通过 Service() 覆盖配置
-	builder.Service(func(cfg *appcrud.ServiceConfig) {
-		cfg.AutoValidate = true
-		cfg.MaxBatchSize = 99
-	})
-
-	group := testutil.NewMockRouteGroup()
-	if err := builder.Build(group); err != nil {
-		t.Fatalf("build failed: %v", err)
-	}
-
-	// 验证已应用覆盖配置
-	cfg := svc.Config()
-	if cfg == nil {
-		t.Fatalf("service config should not be nil after build")
-	}
-	if !cfg.AutoValidate || cfg.MaxBatchSize != 99 {
-		t.Fatalf("service config override not applied, got: AutoValidate=%v, MaxBatchSize=%d", cfg.AutoValidate, cfg.MaxBatchSize)
 	}
 }

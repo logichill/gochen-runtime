@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen/codec"
 	"gochen/codec/idcodec"
-	"gochen/db/dialect"
 	"gochen/errors"
 
 	"gochen-runtime/db/sql/sqlbuilder"
@@ -31,7 +31,7 @@ const defaultClaimLease = 5 * time.Minute
 // SimpleSQLOutboxRepository 提供一个简单直接的 SQL Outbox 仓储实现。
 type SimpleSQLOutboxRepository[ID comparable] struct {
 	db          db.IDatabase
-	eventStore  store.ITransactionalEventStore[ID]
+	eventStore  IEventAppenderWithDB[ID]
 	outboxTable string
 	logger      logging.ILogger
 	codec       codec.ICodec[ID, any]
@@ -63,14 +63,14 @@ func WithOutboxTable(tableName string) SQLOutboxRepositoryOption {
 }
 
 func buildSQLOutboxRepositoryOptions(opts []SQLOutboxRepositoryOption) (sqlOutboxRepositoryOptions, error) {
-	resolved := sqlOutboxRepositoryOptions{outboxTable: outbox.DefaultOutboxTable}
+	resolved := sqlOutboxRepositoryOptions{outboxTable: DefaultOutboxTable}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&resolved)
 		}
 	}
 	if resolved.outboxTable == "" {
-		resolved.outboxTable = outbox.DefaultOutboxTable
+		resolved.outboxTable = DefaultOutboxTable
 	}
 	if err := validateTableName(resolved.outboxTable); err != nil {
 		return sqlOutboxRepositoryOptions{}, errors.Wrap(err, errors.InvalidInput, "invalid outbox table name").
@@ -80,19 +80,19 @@ func buildSQLOutboxRepositoryOptions(opts []SQLOutboxRepositoryOption) (sqlOutbo
 }
 
 // NewSimpleSQLOutboxRepository 为 `int64` 聚合 ID 创建一个简化 SQL Outbox 仓储。
-func NewSimpleSQLOutboxRepository(db db.IDatabase, eventStore store.ITransactionalEventStore[int64], logger logging.ILogger, opts ...SQLOutboxRepositoryOption) (*SimpleSQLOutboxRepository[int64], error) {
+func NewSimpleSQLOutboxRepository(db db.IDatabase, eventStore IEventAppenderWithDB[int64], logger logging.ILogger, opts ...SQLOutboxRepositoryOption) (*SimpleSQLOutboxRepository[int64], error) {
 	return NewSimpleSQLOutboxRepositoryWithCodec[int64](db, eventStore, idcodec.NewInt64[int64](), logger, opts...)
 }
 
 // NewSimpleSQLOutboxRepositoryWithConfig 创建带 outbox.OutboxConfig 的 int64 SQL Outbox 仓储。
-func NewSimpleSQLOutboxRepositoryWithConfig(db db.IDatabase, eventStore store.ITransactionalEventStore[int64], logger logging.ILogger, cfg outbox.OutboxConfig, opts ...SQLOutboxRepositoryOption) (*SimpleSQLOutboxRepository[int64], error) {
+func NewSimpleSQLOutboxRepositoryWithConfig(db db.IDatabase, eventStore IEventAppenderWithDB[int64], logger logging.ILogger, cfg outbox.OutboxConfig, opts ...SQLOutboxRepositoryOption) (*SimpleSQLOutboxRepository[int64], error) {
 	return NewSimpleSQLOutboxRepositoryWithCodecAndConfig[int64](db, eventStore, idcodec.NewInt64[int64](), logger, cfg, opts...)
 }
 
 // NewSimpleSQLOutboxRepositoryWithCodec 创建可自定义聚合 ID 编解码方式的 SQL Outbox 仓储。
 func NewSimpleSQLOutboxRepositoryWithCodec[ID comparable](
 	db db.IDatabase,
-	eventStore store.ITransactionalEventStore[ID],
+	eventStore IEventAppenderWithDB[ID],
 	idCodec codec.ICodec[ID, any],
 	logger logging.ILogger,
 	opts ...SQLOutboxRepositoryOption,
@@ -103,7 +103,7 @@ func NewSimpleSQLOutboxRepositoryWithCodec[ID comparable](
 // NewSimpleSQLOutboxRepositoryWithCodecAndConfig 创建带 outbox.OutboxConfig 的 SQL Outbox 仓储。
 func NewSimpleSQLOutboxRepositoryWithCodecAndConfig[ID comparable](
 	db db.IDatabase,
-	eventStore store.ITransactionalEventStore[ID],
+	eventStore IEventAppenderWithDB[ID],
 	idCodec codec.ICodec[ID, any],
 	logger logging.ILogger,
 	cfg outbox.OutboxConfig,

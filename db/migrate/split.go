@@ -3,7 +3,7 @@ package migrate
 import (
 	"strings"
 
-	"gochen/db/sqlscan"
+	"gochen-runtime/db/sqlscan"
 )
 
 // SplitStatements 把常见 SQL migration 文件拆成按顺序执行的语句。

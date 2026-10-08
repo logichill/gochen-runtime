@@ -1,9 +1,9 @@
 package sqlstore
 
 import (
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safesql"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 

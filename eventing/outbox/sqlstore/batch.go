@@ -36,7 +36,7 @@ func NewBatchOperations(db db.IDatabase) outbox.IBatchRepository {
 // NewBatchOperationsWithTable 创建批量Operations并带表。
 func NewBatchOperationsWithTable(db db.IDatabase, tableName string) outbox.IBatchRepository {
 	if tableName == "" {
-		tableName = outbox.DefaultOutboxTable
+		tableName = DefaultOutboxTable
 	}
 	return &BatchOperations{db: db, tableName: tableName}
 }

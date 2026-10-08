@@ -1,17 +1,18 @@
 package lite
 
 import (
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
 	"gochen-runtime/db/sql/sqlbuilder"
-	"gochen/db/dialect"
+
 	"gochen/db/orm"
 	"gochen/errors"
 )
 
 // buildTableExpr 执行对应操作。
-func buildTableExpr(d dialect.IDialect, base string, joins []orm.Join) (string, error) {
+func buildTableExpr(d coredialect.IDialect, base string, joins []orm.Join) (string, error) {
 	base = strings.TrimSpace(base)
 	if base == "" {
 		return "", errors.NewCode(errors.InvalidInput, "table name cannot be empty")
@@ -108,7 +109,7 @@ func buildOrderBy(orders []orm.OrderBy) ([]sqlbuilder.Order, error) {
 // qo.Select 中的安全列先各自经 IsSafeIdentifier 校验并按方言 quote，再与 raw
 // 表达式合并走 SelectExprUnsafe；这样安全列不会借 raw 通道绕过校验扩大注入面，
 // 而调用方显式声明的 raw 表达式仍按原样透传。
-func newSelectBuilder(sql sqlbuilder.ISQL, d dialect.IDialect, qo orm.QueryOptions) (sqlbuilder.ISelectBuilder, error) {
+func newSelectBuilder(sql sqlbuilder.ISQL, d coredialect.IDialect, qo orm.QueryOptions) (sqlbuilder.ISelectBuilder, error) {
 	if len(qo.SelectRaw) > 0 {
 		columns := make([]string, 0, len(qo.Select)+len(qo.SelectRaw))
 		for _, col := range qo.Select {

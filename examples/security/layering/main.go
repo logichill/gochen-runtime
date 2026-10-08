@@ -79,7 +79,7 @@ func (c *operatorChecker) RequireAction(ctx context.Context, code string) error 
 
 func newPlainApp() (crud.IApplication[*Order, int64], error) {
 	repo := testkit.NewMemoryRepository[*Order, int64](testkit.NewInt64Sequence(1))
-	return crud.NewApplication[*Order, int64](repo, nil, nil)
+	return crud.NewApplication[*Order, int64](repo, nil)
 }
 
 func mustContext(operator string) context.Context {
@@ -152,9 +152,9 @@ func main() {
 	err = secured.Create(context.Background(), &Order{Customer: "anon"})
 	log.Printf("L1 action: anonymous create -> unauthorized=%v", errors.Is(err, errors.Unauthorized))
 
-	// 装饰不丢失底层可选能力：IQueryRepository 断言仍然成立。
-	_, ok := secured.Repository().(domcrud.IQueryRepository[*Order, int64])
-	log.Printf("L1 action: optional IQueryRepository preserved=%v", ok)
+	// 安全外壳保留批量用例，底层仓储只由组合根持有。
+	_, ok := secured.(crud.IBatchWriter[*Order, int64])
+	log.Printf("L1 action: optional IBatchWriter preserved=%v", ok)
 
 	// ---------- L2 Isolated：Repo 构造期显式声明，Application 代码零改动 ----------
 	demoIsolation()
@@ -182,7 +182,7 @@ func demoIsolation() {
 	)
 
 	// 注意：Application 的构造与调用方式与 L0 完全一致——业务层对隔离零感知。
-	app, err := crud.NewApplication[*TenantOrder, int64](repo, nil, nil)
+	app, err := crud.NewApplication[*TenantOrder, int64](repo, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func demoCrossIsolation() {
 		// audit 传 nil 会在构造期直接失败——无法留痕的阀门与"干脆不声明隔离"没区别。
 		testkit.WithMemoryCrossIsolationReads[*TenantOrder, int64](audit),
 	)
-	app, err := crud.NewApplication[*TenantOrder, int64](repo, nil, nil)
+	app, err := crud.NewApplication[*TenantOrder, int64](repo, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -292,11 +292,10 @@ func demoCrossIsolation() {
 
 	// 缺构造期声明：同一份凭据落到没声明阀门的仓储上完全惰性，
 	// 因此凭据泄漏到无关请求上不会把别的表也打开。
-	strictApp, err := crud.NewApplication[*TenantOrder, int64](
-		testkit.NewMemoryRepository[*TenantOrder, int64](
-			testkit.NewInt64Sequence(1),
-			testkit.WithMemoryIsolation[*TenantOrder, int64](),
-		), nil, nil)
+	strictApp, err := crud.NewApplication[*TenantOrder, int64](testkit.NewMemoryRepository[*TenantOrder, int64](
+		testkit.NewInt64Sequence(1),
+		testkit.WithMemoryIsolation[*TenantOrder, int64](),
+	), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -353,7 +352,7 @@ func demoScoped() {
 		testkit.NewInt64Sequence(1),
 		testkit.WithMemoryScope[*ScopedOrder, int64]("order"),
 	)
-	plainApp, err := crud.NewApplication[*ScopedOrder, int64](repo, nil, nil)
+	plainApp, err := crud.NewApplication[*ScopedOrder, int64](repo, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

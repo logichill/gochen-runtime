@@ -52,7 +52,7 @@ func newRepo(declared bool) *scopeAwareRepo {
 
 func newApp(t *testing.T, repo domcrud.IRepository[*order, int64]) crud.IApplication[*order, int64] {
 	t.Helper()
-	app, err := crud.NewApplication[*order, int64](repo, nil, nil)
+	app, err := crud.NewApplication[*order, int64](repo, nil)
 	require.NoError(t, err)
 	return app
 }
@@ -181,10 +181,10 @@ func TestProfilePreservesOptionalCapabilities(t *testing.T) {
 	}.Build(newApp(t, newRepo(true)))
 	require.NoError(t, err)
 
-	_, ok := secured.Repository().(domcrud.IQueryRepository[*order, int64])
+	_, ok := secured.(crud.IBatchWriter[*order, int64])
 	require.True(t, ok)
-	_, ok = secured.QueryRepository()
-	require.True(t, ok)
+	_, ok = secured.(crud.IRepositoryProvider[*order, int64])
+	require.False(t, ok)
 }
 
 // 非法权限码必须在装配期暴露。

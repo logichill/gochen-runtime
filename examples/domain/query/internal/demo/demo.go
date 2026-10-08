@@ -342,7 +342,7 @@ func PaginateUsers(users []*User, offset, limit int) []*User {
 // NewApplication 复用通用 CRUD application，
 // 目的是证明“查询主线”并不要求额外写一个特殊 app service。
 func NewApplication(repo *QueryableUserRepo) *crud.Application[*User, int64] {
-	app, err := crud.NewApplication[*User, int64](repo, nil, nil)
+	app, err := crud.NewApplication[*User, int64](repo, nil)
 	Must(err)
 	return app
 }

@@ -3,9 +3,10 @@ package sqlbuilder
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
 
+	"gochen-runtime/db/dialect"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -110,7 +111,7 @@ type IUpsertBuilder interface {
 
 type sqlImpl struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 }
 
 // New 基于数据库适配器创建一组 SQL builder。

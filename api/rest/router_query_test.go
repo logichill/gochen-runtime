@@ -407,7 +407,7 @@ func TestRouteBuilder_CORSPreflightMethodsByPath_NilConfigReturnsEmpty(t *testin
 func TestRouteBuilder_AuditedCORSRegistersRestoreAndPurgePreflight(t *testing.T) {
 	repo := auditedNoopRepo{}
 	store := &recordingAuditStoreArgs{}
-	app, err := appaudited.NewApplication(&repo, nil, nil, store)
+	app, err := appaudited.NewApplication(&repo, store, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestRouteBuilder_AuditedCORSRegistersRestoreAndPurgePreflight(t *testing.T)
 	}
 
 	purgeRepo := &auditedUpdateRepo{}
-	purgeApp, err := appaudited.NewApplication[*auditedUpdateEntity, int64](purgeRepo, nil, nil, noopAuditStore{})
+	purgeApp, err := appaudited.NewApplication[*auditedUpdateEntity, int64](purgeRepo, noopAuditStore{}, nil)
 	if err != nil {
 		t.Fatalf("new audited purge app: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestRouteBuilder_QueryMultiSortOrderPreserved(t *testing.T) {
 func TestRouteBuilder_AuditTrailPaginationApplied(t *testing.T) {
 	repo := auditedNoopRepo{}
 	store := &recordingAuditStoreArgs{}
-	app, err := appaudited.NewApplication(&repo, nil, nil, store)
+	app, err := appaudited.NewApplication(&repo, store, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}

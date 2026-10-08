@@ -1,5 +1,7 @@
 package capability
 
+import "gochen-runtime/host/internal/runtimeutil"
+
 // SubscriberSource 表示模块事件订阅能力来源。
 type SubscriberSource string
 
@@ -34,14 +36,17 @@ func (r *Runtime) EffectiveSubscriber() IEventSubscriber {
 }
 
 // EffectiveSubscriberWithSource 返回事件订阅能力及其来源。
+//
+// 说明：判定须同时排除 typed-nil（接口非 nil、底层值为 nil），
+// 否则 nil 接收者会被当作有效订阅者，在 Subscribe 时 panic。
 func (r *Runtime) EffectiveSubscriberWithSource() (IEventSubscriber, SubscriberSource) {
 	if r == nil {
 		return nil, SubscriberSourceNone
 	}
-	if r.Subscriber != nil {
+	if !runtimeutil.IsTypedNil(r.Subscriber) {
 		return r.Subscriber, SubscriberSourceEventBus
 	}
-	if r.Transport != nil {
+	if !runtimeutil.IsTypedNil(r.Transport) {
 		return r.Transport, SubscriberSourceTransport
 	}
 	return nil, SubscriberSourceNone

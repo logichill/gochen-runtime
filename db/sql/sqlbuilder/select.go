@@ -2,17 +2,18 @@ package sqlbuilder
 
 import (
 	"context"
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
-	"gochen/db/dialect"
+
 	"gochen/errors"
 )
 
 type selectBuilder struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 
 	cols          []string
 	colsUnsafe    bool
@@ -83,7 +84,7 @@ func (b *selectBuilder) Where(cond string, args ...any) ISelectBuilder {
 			b.setErr(err)
 			return b
 		}
-		b.where = append(b.where, expanded)
+		b.where = append(b.where, groupWhereCondition(expanded, b.dialect))
 		b.args = append(b.args, flat...)
 	}
 	return b
@@ -108,12 +109,12 @@ func (b *selectBuilder) Or(cond string, args ...any) ISelectBuilder {
 		return b
 	}
 	if len(b.where) == 0 {
-		b.where = append(b.where, expandedCond)
+		b.where = append(b.where, groupWhereCondition(expandedCond, b.dialect))
 		b.args = append(b.args, flat...)
 		return b
 	}
 	last := b.where[len(b.where)-1]
-	b.where[len(b.where)-1] = "(" + last + " OR " + expandedCond + ")"
+	b.where[len(b.where)-1] = "(" + last + " OR " + groupWhereCondition(expandedCond, b.dialect) + ")"
 	b.args = append(b.args, flat...)
 	return b
 }

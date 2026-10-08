@@ -4,14 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 	"testing"
 	"time"
 
 	"gochen/testkit/require"
 
+	"gochen-runtime/db/dialect"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/eventing/outbox"
 )
@@ -100,7 +101,7 @@ func TestMetricsCollectorWithTablesQuotesSchemaQualifiedNames(t *testing.T) {
 	ctx := context.Background()
 	database := setupTestDB(t)
 	d := dialect.FromDatabase(database)
-	require.Equal(t, dialect.NameSQLite, d.Name())
+	require.Equal(t, coredialect.NameSQLite, d.Name())
 
 	_, err := database.Exec(ctx, `ATTACH DATABASE ':memory:' AS metrics_schema`)
 	require.NoError(t, err)
@@ -175,14 +176,14 @@ func TestMetricsCollectorCollectsAvgPublishDelayWithoutDialectFunction(t *testin
 
 func TestAvgPublishDelayNanosExprCoversDialects(t *testing.T) {
 	tests := []struct {
-		name dialect.Name
+		name coredialect.Name
 		want string
 		ok   bool
 	}{
-		{dialect.NameSQLite, "julianday", true},
-		{dialect.NameMySQL, "TIMESTAMPDIFF", true},
-		{dialect.NamePostgres, "EXTRACT(EPOCH", true},
-		{dialect.Name("unknown"), "", false},
+		{coredialect.NameSQLite, "julianday", true},
+		{coredialect.NameMySQL, "TIMESTAMPDIFF", true},
+		{coredialect.NamePostgres, "EXTRACT(EPOCH", true},
+		{coredialect.Name("unknown"), "", false},
 	}
 
 	for _, tt := range tests {
@@ -357,6 +358,33 @@ func TestParseSQLTimeStringLayouts(t *testing.T) {
 			require.True(t, ok)
 		})
 	}
+}
+
+// TestMetricsCollectorHighRetryCountRespectsThresholdBoundary 回归 R2d-F01：
+// 高频重试的判定必须严格大于阈值（retry_count > defaultHighRetryCountThreshold），
+// 边界值 retry_count == 3 不计入，retry_count == 4 计入。
+func TestMetricsCollectorHighRetryCountRespectsThresholdBoundary(t *testing.T) {
+	ctx := context.Background()
+	database := setupTestDB(t)
+	setupDLQTable(t, database, "event_outbox_dlq")
+
+	now := time.Now().UTC()
+	_, err := database.Exec(ctx, `
+		INSERT INTO event_outbox (aggregate_id, aggregate_type, event_id, event_type, event_data, status, retry_count, created_at)
+		VALUES
+			(?, ?, ?, ?, ?, ?, ?, ?),
+			(?, ?, ?, ?, ?, ?, ?, ?),
+			(?, ?, ?, ?, ?, ?, ?, ?)
+	`, int64(1), "TestAggregate", "retry-2", "TestEvent", "{}", "pending", 2, now,
+		int64(2), "TestAggregate", "retry-3", "TestEvent", "{}", "pending", 3, now,
+		int64(3), "TestAggregate", "retry-4", "TestEvent", "{}", "pending", 4, now)
+	require.NoError(t, err)
+
+	collector := NewMetricsCollector(database)
+	metrics, err := collector.Collect(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 4, metrics.MaxRetryCount)
+	require.Equal(t, int64(1), metrics.HighRetryCount)
 }
 
 func TestMetricsCollectorHealthStatusRejectsNilMetrics(t *testing.T) {

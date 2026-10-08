@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"gochen-runtime/di/basic"
+	monitoringhttp "gochen-runtime/eventing/monitoring"
 	"reflect"
 	"strings"
 
@@ -94,7 +95,9 @@ func prepareMessaging(rt *Runtime, cfg Config) error {
 		return errors.NewCode(errors.Internal, "runtime container is nil")
 	}
 
-	if cfg.Transport != nil {
+	// 注入的 typed-nil（接口非 nil、底层值为 nil）按“未提供”归一化：
+	// 否则会被当作有效能力保留并登记，后续订阅/启动在 nil 接收者上 panic。
+	if !runtimeutil.IsTypedNil(cfg.Transport) {
 		rt.Transport = cfg.Transport
 		if fullTransport, ok := rt.Transport.(messaging.ITransport); ok && !runtimeutil.IsTypedNil(fullTransport) {
 			if err := registerInstanceByType(rt.Container, (*messaging.ITransport)(nil), fullTransport); err != nil {
@@ -112,7 +115,7 @@ func prepareMessaging(rt *Runtime, cfg Config) error {
 		}
 	}
 
-	if cfg.EventBus != nil {
+	if !runtimeutil.IsTypedNil(cfg.EventBus) {
 		rt.EventBus = cfg.EventBus
 		if eb, ok := rt.EventBus.(bus.IEventBus); ok && !runtimeutil.IsTypedNil(eb) {
 			if err := registerInstanceByType(rt.Container, (*bus.IEventBus)(nil), eb); err != nil {
@@ -186,21 +189,21 @@ func prepareBaseGroup(httpServer httpx.IServer, cfg Config) (httpx.IRouteGroup, 
 	}
 	group.Use(baseMws...)
 
-	registerMonitoringRoutes(group, monitoring.HostRouteSet(!cfg.DisableHealthRoute, cfg.EnableMonitoringRoutes))
+	registerMonitoringRoutes(group, monitoringhttp.HostRouteSet(!cfg.DisableHealthRoute, cfg.EnableMonitoringRoutes))
 
 	return group, nil
 }
 
-func registerMonitoringRoutes(group httpx.IRouteGroup, set monitoring.RouteSet) {
+func registerMonitoringRoutes(group httpx.IRouteGroup, set monitoringhttp.RouteSet) {
 	if group == nil {
 		return
 	}
 
 	reg := monitoring.DefaultRegistry()
-	for _, route := range monitoring.Routes(set) {
+	for _, route := range monitoringhttp.Routes(set) {
 		route := route
 		group.GET(route.Path, func(ctx httpx.IContext) error {
-			code, body := monitoring.HandleRoute(ctx.RequestContext(), reg, route)
+			code, body := monitoringhttp.HandleRoute(ctx.RequestContext(), reg, route)
 			return ctx.JSON(code, httpx.JSONValue(body))
 		})
 	}

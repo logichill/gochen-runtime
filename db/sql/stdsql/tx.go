@@ -3,11 +3,12 @@ package stdsql
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
 	"strings"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -15,7 +16,7 @@ import (
 type Tx struct {
 	db        *sql.DB
 	tx        *sql.Tx
-	dialect   dialect.IDialect
+	dialect   coredialect.IDialect
 	bindLimit int
 }
 

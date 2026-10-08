@@ -79,7 +79,7 @@ func main() {
 	baseRepo := testkit.NewAuditedMemoryRepository[*Article, int64](testkit.NewInt64Sequence(1))
 	repo := &ArticleRepo{AuditedMemoryRepository: baseRepo}
 	// 使用 audited application 作为 CRUD+审计的组合入口；同时演示如何在 audited service 之上扩展领域能力。
-	app, err := appaudited.NewApplication(repo, nil, nil, repo)
+	app, err := appaudited.NewApplication(repo, repo, nil)
 	if err != nil {
 		log.Fatalf("failed to build audited application: %v", err)
 	}

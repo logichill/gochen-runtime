@@ -3,18 +3,19 @@ package sqlbuilder
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
 	"sort"
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
-	"gochen/db/dialect"
+
 	"gochen/errors"
 )
 
 type updateBuilder struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 
 	table     string
 	setCols   []string
@@ -150,7 +151,7 @@ func (b *updateBuilder) Where(cond string, args ...any) IUpdateBuilder {
 			b.setErr(err)
 			return b
 		}
-		b.whereExpr = append(b.whereExpr, expanded)
+		b.whereExpr = append(b.whereExpr, groupWhereCondition(expanded, b.dialect))
 		b.whereArgs = append(b.whereArgs, flat...)
 	}
 	return b

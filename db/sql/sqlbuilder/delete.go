@@ -3,17 +3,18 @@ package sqlbuilder
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
 	"gochen/db"
-	"gochen/db/dialect"
+
 	"gochen/errors"
 )
 
 type deleteBuilder struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 
 	table string
 	where []string
@@ -45,16 +46,19 @@ func (b *deleteBuilder) Where(cond string, args ...any) IDeleteBuilder {
 			b.setErr(err)
 			return b
 		}
-		b.where = append(b.where, expanded)
+		b.where = append(b.where, groupWhereCondition(expanded, b.dialect))
 		b.args = append(b.args, flat...)
 	}
 	return b
 }
 
-// Limit 设置 DELETE 的最大影响行数（仅对支持的方言生效）。
+// Limit 设置 DELETE 的最大影响行数。
+//
+// 方言不支持 `DELETE ... LIMIT`（如 SQLite / PostgreSQL）时 Build/Exec 返回
+// Unsupported 错误，而不是静默丢弃 LIMIT。
 //
 // 参数：
-// - n：最大影响行数（n<0 会 panic）
+// - n：最大影响行数（n<0 时 Build/Exec 返回 InvalidInput 错误，不会 panic）
 func (b *deleteBuilder) Limit(n int) IDeleteBuilder {
 	if b.err != nil {
 		return b
@@ -91,7 +95,15 @@ func (b *deleteBuilder) Build() (string, []any, error) {
 		sb.WriteString(strings.Join(b.where, " AND "))
 	}
 
-	if b.limit > 0 && b.dialect.SupportsDeleteLimit() {
+	if b.limit > 0 {
+		// LIMIT 不能静默丢弃：调用方传 limit 是为了"最多删 N 行"，
+		// 悄悄去掉会把防护性删除放大成"删除全部匹配行"，且没有任何提示。
+		if !b.dialect.SupportsDeleteLimit() {
+			return "", nil, errors.NewCode(errors.Unsupported,
+				"deleteBuilder: DELETE ... LIMIT is not supported by the current dialect").
+				WithContext("dialect", string(b.dialect.Name())).
+				WithContext("limit", b.limit)
+		}
 		sb.WriteString(" LIMIT ?")
 		args = append(args, b.limit)
 	}

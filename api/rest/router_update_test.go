@@ -42,7 +42,7 @@ func TestBuildAllowHeaderDoesNotMutateInput(t *testing.T) {
 // TestRouteBuilder_Update_RejectsMismatchedBodyID 验证 RouteBuilder Update RejectsMismatchedBodyID。
 func TestRouteBuilder_Update_RejectsMismatchedBodyID(t *testing.T) {
 	repo := &capturingRepository{}
-	svc, err := appcrud.NewApplication[*fakeEntity, int64](repo, nil, nil)
+	svc, err := appcrud.NewApplication[*fakeEntity, int64](repo, nil)
 	if err != nil {
 		t.Fatalf("new application: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRouteBuilder_Update_RejectsMismatchedBodyID(t *testing.T) {
 // TestRouteBuilder_Update_KeepsPathIDWhenBodyOmitsID 验证 RouteBuilder Update KeepsPathIDWhenBodyOmitsID。
 func TestRouteBuilder_Update_KeepsPathIDWhenBodyOmitsID(t *testing.T) {
 	repo := &capturingRepository{}
-	svc, err := appcrud.NewApplication[*fakeEntity, int64](repo, nil, nil)
+	svc, err := appcrud.NewApplication[*fakeEntity, int64](repo, nil)
 	if err != nil {
 		t.Fatalf("new application: %v", err)
 	}
@@ -347,7 +347,7 @@ func (noopAuditStore) ListAuditRecordsByEntity(context.Context, string, int, int
 // TestRouteBuilder_AuditedUpdate_RequiresVersion 验证 RouteBuilder AuditedUpdate RequiresVersion。
 func TestRouteBuilder_AuditedUpdate_RequiresVersion(t *testing.T) {
 	repo := &auditedUpdateRepo{}
-	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, nil, nil, noopAuditStore{})
+	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, noopAuditStore{}, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestRouteBuilder_AuditedUpdate_RequiresVersion(t *testing.T) {
 // TestRouteBuilder_AuditedUpdate_RejectsMismatchedVersion 验证 RouteBuilder AuditedUpdate RejectsMismatchedVersion。
 func TestRouteBuilder_AuditedUpdate_RejectsMismatchedVersion(t *testing.T) {
 	repo := &auditedUpdateRepo{}
-	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, nil, nil, noopAuditStore{})
+	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, noopAuditStore{}, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestRouteBuilder_AuditedUpdate_RejectsMismatchedVersion(t *testing.T) {
 // TestRouteBuilder_AuditedUpdate_RejectsAuditFields 验证 RouteBuilder AuditedUpdate RejectsAuditFields。
 func TestRouteBuilder_AuditedUpdate_RejectsAuditFields(t *testing.T) {
 	repo := &auditedUpdateRepo{}
-	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, nil, nil, noopAuditStore{})
+	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, noopAuditStore{}, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestRouteBuilder_AuditedUpdate_RejectsAuditFields(t *testing.T) {
 // TestRouteBuilder_AuditedUpdate_SucceedsWithMatchingVersion 验证 RouteBuilder AuditedUpdate SucceedsWithMatchingVersion。
 func TestRouteBuilder_AuditedUpdate_SucceedsWithMatchingVersion(t *testing.T) {
 	repo := &auditedUpdateRepo{}
-	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, nil, nil, noopAuditStore{})
+	app, err := appaudited.NewApplication[*auditedUpdateEntity, int64](repo, noopAuditStore{}, nil)
 	if err != nil {
 		t.Fatalf("new audited app: %v", err)
 	}

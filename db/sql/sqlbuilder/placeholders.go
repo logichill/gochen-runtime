@@ -1,11 +1,11 @@
 package sqlbuilder
 
 import (
+	coredialect "gochen/db/dialect"
 	"reflect"
 	"strings"
 
-	"gochen/db/dialect"
-	"gochen/db/sqlscan"
+	"gochen-runtime/db/sqlscan"
 	"gochen/errors"
 )
 
@@ -18,7 +18,10 @@ import (
 // - - 空 slice/array（包括 `IN ?` 与 `NOT IN ?`）统一生成 "0=1"；这里刻意保持
 // - -   “空集合即无匹配”的 builder 级语义，避免直接调用方在遗漏前置校验时因 `NOT IN ?`
 // - -   意外退化为恒真条件而放大查询范围，同时也避免 SQL 语法错误。
-func expandPlaceholders(cond string, args []any, d dialect.IDialect) (string, []any, error) {
+func expandPlaceholders(cond string, args []any, d coredialect.IDialect) (string, []any, error) {
+	if err := validateCondition(cond, d); err != nil {
+		return "", nil, err
+	}
 	if cond == "" || len(args) == 0 {
 		return cond, args, nil
 	}
@@ -39,18 +42,16 @@ func expandPlaceholders(cond string, args []any, d dialect.IDialect) (string, []
 	prevScanner := sqlscan.NewPrevTokenScanner(cond)
 	for i := 0; i < len(cond); i++ {
 		ch := cond[i]
-		if d.PlaceholderStyle() == dialect.PlaceholderPostgres {
-			if next, ok := sqlscan.ScanPostgresPlaceholderIgnored(cond, i); ok {
-				builder.WriteString(cond[i:next])
-				i = next - 1
-				continue
-			}
+		if next, ok := scanConditionIgnored(cond, i, d); ok {
+			builder.WriteString(cond[i:next])
+			i = next - 1
+			continue
 		}
 		if ch != '?' {
 			builder.WriteByte(ch)
 			continue
 		}
-		if d.PlaceholderStyle() == dialect.PlaceholderPostgres && sqlscan.IsPostgresJSONQuestionOperator(cond, &prevScanner, i) {
+		if d.PlaceholderStyle() == coredialect.PlaceholderPostgres && sqlscan.IsPostgresJSONQuestionOperator(cond, &prevScanner, i) {
 			builder.WriteByte(ch)
 			continue
 		}
@@ -112,18 +113,40 @@ func placeholderAlreadyParenthesized(cond string, placeholderIndex int) bool {
 	return prev >= 0 && next < len(cond) && cond[prev] == '(' && cond[next] == ')'
 }
 
-func tryFlattenSliceArg(arg any) ([]any, bool) {
+// CountConditionArgs 按切片展开规则保守统计条件的绑定参数预算。
+// 具体 []byte 保持单参数；其他切片和数组按长度计数，空集合至少预留一个参数。
+// GORM 的 IN (?) 会绑定 nil，且不会像本包 builder 一样折叠整个条件并丢弃其余参数。
+func CountConditionArgs(args []any) int {
+	count := 0
+	for _, arg := range args {
+		if values, ok := sliceArgValue(arg); ok {
+			count += max(1, values.Len())
+		} else {
+			count++
+		}
+	}
+	return count
+}
+
+func sliceArgValue(arg any) (reflect.Value, bool) {
 	// 排除字符串与 []byte
 	switch arg.(type) {
 	case string, []byte:
-		return nil, false
+		return reflect.Value{}, false
 	}
 
 	v := reflect.ValueOf(arg)
 	if v.Kind() != reflect.Slice && v.Kind() != reflect.Array {
+		return reflect.Value{}, false
+	}
+	return v, true
+}
+
+func tryFlattenSliceArg(arg any) ([]any, bool) {
+	v, ok := sliceArgValue(arg)
+	if !ok {
 		return nil, false
 	}
-
 	l := v.Len()
 	out := make([]any, 0, l)
 	for i := 0; i < l; i++ {

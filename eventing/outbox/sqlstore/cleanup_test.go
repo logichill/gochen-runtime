@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -379,6 +380,105 @@ func TestCleanupService_UsesConfiguredOutboxTable(t *testing.T) {
 	var count int
 	require.NoError(t, database.QueryRow(ctx, `SELECT COUNT(1) FROM custom_event_outbox`).Scan(&count))
 	require.Equal(t, 0, count)
+}
+
+type archiveWarnCapturingLogger struct {
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *archiveWarnCapturingLogger) Debug(context.Context, string, ...logging.Field) {}
+func (l *archiveWarnCapturingLogger) Info(context.Context, string, ...logging.Field)  {}
+func (l *archiveWarnCapturingLogger) Warn(_ context.Context, msg string, _ ...logging.Field) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, msg)
+}
+func (l *archiveWarnCapturingLogger) Error(context.Context, string, ...logging.Field) {}
+func (l *archiveWarnCapturingLogger) WithFields(...logging.Field) logging.ILogger     { return l }
+func (l *archiveWarnCapturingLogger) WithField(string, any) logging.ILogger           { return l }
+
+// TestCleanupService_ArchiveOldRecords_KeepsEventsWhenArchiveIDIsReused 回归 R2d-F03：
+// outbox 表为 id INTEGER PRIMARY KEY（无 AUTOINCREMENT）且表清空后 rowid 复用，
+// 新事件的 id 与归档表中的历史事件 id 冲突时，归档 INSERT OR IGNORE 会被静默忽略；
+// 修复前的无条件 DELETE 会把新事件从 outbox 删除且不进入归档（静默数据丢失）。
+// 修复后该行必须保留在 outbox，仅对确认归档成功的行执行删除并记录告警。
+func TestCleanupService_ArchiveOldRecords_KeepsEventsWhenArchiveIDIsReused(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+
+	_, err := database.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS reuse_cleanup_outbox (
+			id INTEGER PRIMARY KEY,
+			aggregate_id INTEGER NOT NULL,
+			aggregate_type TEXT NOT NULL,
+			event_id TEXT NOT NULL UNIQUE,
+			event_type TEXT NOT NULL,
+			event_data TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			claim_token TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			published_at DATETIME NULL,
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NULL,
+			lease_until DATETIME NULL,
+			next_retry_at DATETIME NULL
+		)
+	`)
+	require.NoError(t, err)
+
+	logger := &archiveWarnCapturingLogger{}
+	service, err := NewCleanupService(database, CleanupPolicy{
+		RetentionDays:  1,
+		BatchSize:      10,
+		ArchiveEnabled: true,
+		OutboxTable:    "reuse_cleanup_outbox",
+		ArchiveTable:   "reuse_cleanup_archive",
+	}, logger)
+	require.NoError(t, err)
+
+	insertEvent := func(eventID string) {
+		t.Helper()
+		publishedAt := time.Now().AddDate(0, 0, -10)
+		_, err := database.Exec(ctx, `
+			INSERT INTO reuse_cleanup_outbox (
+				aggregate_id, aggregate_type, event_id, event_type, event_data,
+				status, claim_token, created_at, published_at, retry_count, last_error, lease_until, next_retry_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			1001, "Agg", eventID, "TestEvent", `{"ok":true}`,
+			outbox.OutboxStatusPublished, "", publishedAt, publishedAt, 0, "", nil, nil,
+		)
+		require.NoError(t, err)
+	}
+
+	insertEvent("reuse-event-1")
+	result, err := service.Cleanup(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), result.ArchivedCount)
+
+	// 表清空后写入新事件，SQLite 复用 rowid=1，而归档表 id=1 已被历史事件占用。
+	insertEvent("reuse-event-2")
+	var reusedID int64
+	require.NoError(t, database.QueryRow(ctx, `SELECT id FROM reuse_cleanup_outbox WHERE event_id = 'reuse-event-2'`).Scan(&reusedID))
+	require.Equal(t, int64(1), reusedID, "test precondition: sqlite reuses rowid after the table was emptied")
+
+	result, err = service.Cleanup(ctx)
+	require.NoError(t, err)
+
+	var outboxCount, archiveCount int64
+	require.NoError(t, database.QueryRow(ctx, `SELECT COUNT(*) FROM reuse_cleanup_outbox WHERE event_id = 'reuse-event-2'`).Scan(&outboxCount))
+	require.NoError(t, database.QueryRow(ctx, `SELECT COUNT(*) FROM reuse_cleanup_archive WHERE event_id = 'reuse-event-2'`).Scan(&archiveCount))
+	require.Equal(t, int64(0), archiveCount, "event must not be reported as archived while its id is occupied by a different archived event")
+	require.Equal(t, int64(1), outboxCount, "event with reused id must stay in outbox instead of being silently dropped")
+	require.Equal(t, int64(0), result.ArchivedCount, "ArchivedCount must reflect rows actually moved")
+
+	var staleCount int64
+	require.NoError(t, database.QueryRow(ctx, `SELECT COUNT(*) FROM reuse_cleanup_archive WHERE id = 1 AND event_id = 'reuse-event-1'`).Scan(&staleCount))
+	require.Equal(t, int64(1), staleCount, "previously archived rows must be preserved")
+
+	require.NotEmpty(t, logger.warns, "skipping an unarchived outbox row must not be silent")
+	require.Contains(t, logger.warns[len(logger.warns)-1], "skipped")
 }
 
 func queryInt64List(t *testing.T, database db.IDatabase, ctx context.Context, query string, args ...any) []int64 {

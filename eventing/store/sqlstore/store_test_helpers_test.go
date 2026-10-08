@@ -16,7 +16,8 @@ import (
 func setupTestDB(tb testing.TB) db.IDatabase {
 	tb.Helper()
 
-	database, err := stdsql.New(db.DBConfig{Driver: "sqlite", Database: ":memory:"})
+	// SQLite :memory: 数据库属于单条连接，限制连接数避免并发请求打开另一个空数据库。
+	database, err := stdsql.New(db.DBConfig{Driver: "sqlite", Database: ":memory:", MaxOpenConns: 1})
 	require.NoError(tb, err)
 
 	ctx := context.Background()

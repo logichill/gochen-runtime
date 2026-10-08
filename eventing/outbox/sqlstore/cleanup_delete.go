@@ -3,10 +3,11 @@ package sqlstore
 import (
 	"context"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"time"
 
 	"gochen-runtime/internal/sqlresult"
-	"gochen/db/dialect"
+
 	"gochen/errors"
 	"gochen/eventing/outbox"
 )
@@ -63,7 +64,7 @@ func (s *CleanupService) deleteOldRecords(ctx context.Context, olderThan time.Ti
 }
 
 func (s *CleanupService) buildDeleteBatchQuery(olderThan time.Time, limit int64) (string, []any) {
-	if s.dialect.Name() == dialect.NameMySQL {
+	if s.dialect.Name() == coredialect.NameMySQL {
 		return fmt.Sprintf(`
 			DELETE FROM %s
 			WHERE ((status = ? AND published_at < ?) OR (status = ? AND created_at < ?))

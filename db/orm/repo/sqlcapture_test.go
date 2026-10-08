@@ -7,12 +7,12 @@ import (
 	"sync"
 	"testing"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/orm/lite"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/testkit/require"
 	_ "modernc.org/sqlite"

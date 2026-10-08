@@ -1,7 +1,8 @@
 package lite
 
 import (
-	"gochen/db/dialect"
+	"gochen-runtime/db/dialect"
+	coredialect "gochen/db/dialect"
 	"gochen/db/orm"
 )
 
@@ -19,7 +20,7 @@ func (m *model) Meta() *orm.ModelMeta { return m.meta }
 
 func (m *model) Capabilities() orm.Capabilities { return m.orm.caps }
 
-func (m *model) Dialect() dialect.IDialect {
+func (m *model) Dialect() coredialect.IDialect {
 	return dialect.FromDatabase(m.orm.db)
 }
 

@@ -60,6 +60,71 @@ func TestRuntime_EffectiveSubscriberWithSource_TransportFallback(t *testing.T) {
 	}
 }
 
+// nilReceiverTransport 在 Subscribe 中访问接收者字段：typed-nil 被误判为有效
+// 订阅者时，会像真实实现一样在调用时 panic，用于回归 R2a-F03。
+type nilReceiverTransport struct {
+	subscribeTypes []string
+}
+
+func (t *nilReceiverTransport) Subscribe(_ context.Context, messageType string, _ messaging.IMessageHandler) (messaging.UnsubscribeFunc, error) {
+	t.subscribeTypes = append(t.subscribeTypes, messageType)
+	return func(context.Context) error { return nil }, nil
+}
+
+func (t *nilReceiverTransport) Start(context.Context) error { return nil }
+
+func (t *nilReceiverTransport) Stop(context.Context) error { return nil }
+
+// 回归 R2a-F03：typed-nil 传输/订阅者（接口非 nil、底层指针为 nil）不得被
+// EffectiveSubscriberWithSource 当作有效能力返回；Subscriber 为 typed-nil 时
+// 必须跳过并回退到有效 Transport。
+func TestRuntime_EffectiveSubscriberWithSource_SkipsTypedNilCapabilities(t *testing.T) {
+	var typedNilTransport *nilReceiverTransport
+	runtime := NewRuntime(nil, nil, typedNilTransport)
+	if runtime.Transport == nil {
+		t.Fatal("test setup: expected a typed-nil (non-nil interface) transport")
+	}
+	if subscriber, source := runtime.EffectiveSubscriberWithSource(); subscriber != nil || source != SubscriberSourceNone {
+		t.Fatalf("typed-nil transport exposed: subscriber=%#v source=%s", subscriber, source)
+	}
+
+	var typedNilSubscriber *nilReceiverTransport
+	validTransport := newMockTransport()
+	fallback := NewRuntime(typedNilSubscriber, nil, validTransport)
+	if subscriber, source := fallback.EffectiveSubscriberWithSource(); subscriber != validTransport || source != SubscriberSourceTransport {
+		t.Fatalf("typed-nil subscriber must fall back to transport: subscriber=%#v source=%s", subscriber, source)
+	}
+
+	allNil := NewRuntime(typedNilSubscriber, nil, (*nilReceiverTransport)(nil))
+	if subscriber, source := allNil.EffectiveSubscriberWithSource(); subscriber != nil || source != SubscriberSourceNone {
+		t.Fatalf("all-typed-nil runtime exposed: subscriber=%#v source=%s", subscriber, source)
+	}
+}
+
+// 回归 R2a-F03：typed-nil 传输/订阅者不得让事件处理器启动路径在 nil 接收者上
+// panic；Start 必须返回明确的 InvalidInput 错误（与投影/运行时组件路径一致）。
+func TestModuleRuntime_Start_TypedNilCapabilitiesReturnErrorInsteadOfPanic(t *testing.T) {
+	var typedNilTransport *nilReceiverTransport
+	var typedNilSubscriber *nilReceiverTransport
+	for _, tc := range []struct {
+		name    string
+		runtime *Runtime
+	}{
+		{name: "typed-nil transport", runtime: NewRuntime(nil, nil, typedNilTransport)},
+		{name: "typed-nil subscriber", runtime: NewRuntime(typedNilSubscriber, nil, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			moduleRuntime := NewModuleRuntime("test", tc.runtime)
+			moduleRuntime.AddEventHandler(0, func() (any, error) { return newTestEventHandler(), nil })
+
+			err := moduleRuntime.Start(context.Background(), nil)
+			if !errors.Is(err, errors.InvalidInput) {
+				t.Fatalf("Start error = %v, want InvalidInput", err)
+			}
+		})
+	}
+}
+
 func TestModuleRuntime_Start_FailFast_WhenHandlerHasNoValidMessageTypes(t *testing.T) {
 	transport := newMockTransport()
 	runtime := NewModuleRuntime("test", NewRuntime(nil, nil, transport))

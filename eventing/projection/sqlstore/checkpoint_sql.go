@@ -4,13 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/schema"
 	"gochen-runtime/db/sql/safeident"
 	"gochen-runtime/db/sql/sqlbuilder"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/db/orm"
 	"gochen/errors"
 	"gochen/eventing/projection"
@@ -20,7 +21,7 @@ import (
 type SQLCheckpointStore struct {
 	db        db.IDatabase
 	tableName string
-	dialect   dialect.IDialect
+	dialect   coredialect.IDialect
 }
 
 // NewSQLCheckpointStore 创建一个基于 SQL 的检查点存储实现。
@@ -153,7 +154,7 @@ func (s *SQLCheckpointStore) buildForwardSaveQuery(checkpoint *projection.Checkp
 	}
 	quotedTable := s.dialect.QuoteIdentifier(s.tableName)
 	switch s.dialect.Name() {
-	case dialect.NameSQLite, dialect.NamePostgres:
+	case coredialect.NameSQLite, coredialect.NamePostgres:
 		return fmt.Sprintf(`
 			INSERT INTO %s (projection_name, position, last_event_id, last_event_time, updated_at)
 			VALUES (?, ?, ?, ?, ?)
@@ -164,7 +165,7 @@ func (s *SQLCheckpointStore) buildForwardSaveQuery(checkpoint *projection.Checkp
 				updated_at = excluded.updated_at
 			WHERE excluded.position > %s.position
 		`, quotedTable, quotedTable), baseArgs, nil
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return fmt.Sprintf(`
 			INSERT INTO %s (projection_name, position, last_event_id, last_event_time, updated_at)
 			VALUES (?, ?, ?, ?, ?)
@@ -194,7 +195,7 @@ func (s *SQLCheckpointStore) buildForceSaveQuery(checkpoint *projection.Checkpoi
 	}
 	quotedTable := s.dialect.QuoteIdentifier(s.tableName)
 	switch s.dialect.Name() {
-	case dialect.NameSQLite, dialect.NamePostgres:
+	case coredialect.NameSQLite, coredialect.NamePostgres:
 		return fmt.Sprintf(`
 			INSERT INTO %s (projection_name, position, last_event_id, last_event_time, updated_at)
 			VALUES (?, ?, ?, ?, ?)
@@ -204,7 +205,7 @@ func (s *SQLCheckpointStore) buildForceSaveQuery(checkpoint *projection.Checkpoi
 				last_event_time = excluded.last_event_time,
 				updated_at = excluded.updated_at
 		`, quotedTable), args, nil
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return fmt.Sprintf(`
 			INSERT INTO %s (projection_name, position, last_event_id, last_event_time, updated_at)
 			VALUES (?, ?, ?, ?, ?)
@@ -255,7 +256,7 @@ func (s *SQLCheckpointStore) CreateTable(ctx context.Context) error {
 	quotedTable := s.dialect.QuoteIdentifier(s.tableName)
 
 	switch s.dialect.Name() {
-	case dialect.NameSQLite:
+	case coredialect.NameSQLite:
 		indexName, indexTableName := sqliteCheckpointUpdatedAtIndexTarget(s.tableName)
 		createTable := fmt.Sprintf(`
 			CREATE TABLE IF NOT EXISTS %s (
@@ -277,7 +278,7 @@ func (s *SQLCheckpointStore) CreateTable(ctx context.Context) error {
 		}
 		return nil
 
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		createTable := fmt.Sprintf(`
 			CREATE TABLE IF NOT EXISTS %s (
 				projection_name VARCHAR(255) PRIMARY KEY,
@@ -298,7 +299,7 @@ func (s *SQLCheckpointStore) CreateTable(ctx context.Context) error {
 		}
 		return nil
 
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		query := fmt.Sprintf(`
 			CREATE TABLE IF NOT EXISTS %s (
 				projection_name VARCHAR(255) PRIMARY KEY,
@@ -321,7 +322,7 @@ func (s *SQLCheckpointStore) CreateTable(ctx context.Context) error {
 	}
 }
 
-func unsupportedCheckpointDialectError(d dialect.IDialect) error {
+func unsupportedCheckpointDialectError(d coredialect.IDialect) error {
 	return errors.NewCode(errors.Unsupported, "checkpoint store requires a known SQL dialect").
 		WithContext("dialect", string(d.Name()))
 }

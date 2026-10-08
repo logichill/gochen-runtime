@@ -260,6 +260,9 @@ func TestInsertBuilder_Build_MultiRow(t *testing.T) {
 }
 
 // TestDeleteBuilder_LimitDialectSupport 验证 DeleteBuilder LimitDialectSupport。
+//
+// 方言不支持 `DELETE ... LIMIT` 时必须 fail-fast：静默丢弃 LIMIT 会把
+// "最多删 N 行"悄悄放大成"删除全部匹配行"，属于不可逆的数据面缺陷。
 func TestDeleteBuilder_LimitDialectSupport(t *testing.T) {
 	t.Run("mysql supports delete limit", func(t *testing.T) {
 		db := &fakeDB{dialectName: "mysql"}
@@ -272,12 +275,30 @@ func TestDeleteBuilder_LimitDialectSupport(t *testing.T) {
 		require.Equal(t, []any{1, 10}, args)
 	})
 
-	t.Run("postgres does not support delete limit", func(t *testing.T) {
-		db := &fakeDB{dialectName: "postgres"}
+	for _, dialectName := range []string{"postgres", "sqlite"} {
+		t.Run(dialectName+" rejects silent delete limit drop", func(t *testing.T) {
+			db := &fakeDB{dialectName: dialectName}
+			s, err := New(db)
+			require.NoError(t, err)
+			b := s.DeleteFrom("users").Where("id = ?", 1).Limit(10)
+			q, args, buildErr := b.Build()
+			require.Error(t, buildErr)
+			require.ErrorIs(t, buildErr, gerrors.Unsupported)
+			require.Equal(t, "", q)
+			require.Nil(t, args)
+
+			if _, err := b.Exec(context.Background()); err == nil {
+				t.Fatal("expected Exec to fail instead of dropping LIMIT")
+			}
+			require.Len(t, db.execCalls, 0)
+		})
+	}
+
+	t.Run("no limit keeps dialect specific sql", func(t *testing.T) {
+		db := &fakeDB{dialectName: "sqlite"}
 		s, err := New(db)
 		require.NoError(t, err)
-		b := s.DeleteFrom("users").Where("id = ?", 1).Limit(10)
-		q, args, err := b.Build()
+		q, args, err := s.DeleteFrom("users").Where("id = ?", 1).Build()
 		require.NoError(t, err)
 		require.Equal(t, `DELETE FROM "users" WHERE id = ?`, q)
 		require.Equal(t, []any{1}, args)
@@ -336,14 +357,27 @@ func TestUpsertBuilder_QuotesKeyColumnsInUpdateWhere(t *testing.T) {
 	require.Equal(t, []any{"bob", 1}, update.args)
 }
 
-// TestInsertUpdateDelete_NegativeLimitPanics 验证 InsertUpdateDelete NegativeLimitPanics。
-func TestInsertUpdateDelete_NegativeLimitPanics(t *testing.T) {
+// TestDeleteBuilder_NegativeLimitReturnsInvalidInput 验证 deleteBuilder.Limit(-1)
+// 不会 panic，而是由 Build/Exec 返回 InvalidInput 错误。
+//
+// 回归 R2e-F02：该行为曾被 GoDoc 误述为“n<0 会 panic”，误导调用方以 recover 防御。
+func TestDeleteBuilder_NegativeLimitReturnsInvalidInput(t *testing.T) {
 	db := &fakeDB{dialectName: "mysql"}
 	s, err := New(db)
 	require.NoError(t, err)
-	_, _, err = s.DeleteFrom("users").Limit(-1).Build()
+
+	// 直接调用即可证明不 panic：若发生 panic，本用例会以崩溃失败。
+	b := s.DeleteFrom("users").Limit(-1)
+	q, args, err := b.Build()
 	require.Error(t, err)
 	require.True(t, gerrors.Is(err, gerrors.InvalidInput))
+	require.Empty(t, q)
+	require.Nil(t, args)
+
+	if _, err := b.Exec(context.Background()); !gerrors.Is(err, gerrors.InvalidInput) {
+		t.Fatalf("expected Exec to surface InvalidInput, got %v", err)
+	}
+	require.Len(t, db.execCalls, 0)
 }
 
 // TestSelectBuilder_InClauseExpandsSlice 验证 SelectBuilder InClauseExpandsSlice。

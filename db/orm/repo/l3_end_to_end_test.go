@@ -206,7 +206,7 @@ func l3Authorizer(t *testing.T, allowedScope int64) authscoped.IAuthorizer {
 
 func newL3App(t *testing.T, model *l3Model, allowedScope int64) crud.IApplication[*l3Entity, int64] {
 	t.Helper()
-	plain, err := crud.NewApplication[*l3Entity, int64](newL3Repo(t, model), nil, nil)
+	plain, err := crud.NewApplication[*l3Entity, int64](newL3Repo(t, model), nil)
 	require.NoError(t, err)
 	secured, err := secscoped.New[*l3Entity, int64](plain, l3Authorizer(t, allowedScope), secscoped.Config{
 		EntityType: "document",
@@ -287,7 +287,7 @@ func TestL3EndToEnd_StaleVersionReportsConcurrency(t *testing.T) {
 // 主体范围为 DenyAll 时，即便 PDP 放行也必须整体拒绝（范围求交，不是二选一）。
 func TestL3EndToEnd_SubjectScopeIntersectsDecision(t *testing.T) {
 	model := newL3Model(nil)
-	plain, err := crud.NewApplication[*l3Entity, int64](newL3Repo(t, model), nil, nil)
+	plain, err := crud.NewApplication[*l3Entity, int64](newL3Repo(t, model), nil)
 	require.NoError(t, err)
 	secured, err := secscoped.New[*l3Entity, int64](plain, l3Authorizer(t, 101), secscoped.Config{
 		EntityType: "document",
@@ -309,7 +309,7 @@ func TestL3EndToEnd_SubjectScopeIntersectsDecision(t *testing.T) {
 // 绕过 L3 PEP 直接用裸 Application 写：仓储取不到约束，fail-closed。
 func TestL3EndToEnd_BypassingDecoratorIsRejected(t *testing.T) {
 	model := newL3Model(nil)
-	plain, err := crud.NewApplication[*l3Entity, int64](newL3Repo(t, model), nil, nil)
+	plain, err := crud.NewApplication[*l3Entity, int64](newL3Repo(t, model), nil)
 	require.NoError(t, err)
 
 	err = plain.Create(context.Background(), &l3Entity{ID: 7, ManagedScopeID: 101})

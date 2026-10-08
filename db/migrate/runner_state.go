@@ -50,7 +50,7 @@ func (r *Runner) readStatus(ctx context.Context) (Status, error) {
 	if err == sql.ErrNoRows {
 		return Status{Type: r.migrationType}, nil
 	}
-	if isMissingStateTableError(err) {
+	if isMissingStateTableError(err, r.stateTable) {
 		return Status{Type: r.migrationType}, nil
 	}
 	return Status{}, errors.Wrap(err, errors.Database, "read migration status failed").

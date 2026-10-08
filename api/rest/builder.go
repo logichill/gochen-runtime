@@ -8,33 +8,15 @@ import (
 	"gochen/domain"
 	"gochen/errors"
 	"gochen/httpx"
-	"gochen/validate"
 )
 
-// Option 用于按需修改 ApiBuilder 的路由和服务配置。
+// Option 用于按需修改 ApiBuilder 的路由配置。
 type Option[T domain.IEntity[ID], ID comparable] func(*ApiBuilder[T, ID])
-
-// cloneServiceConfig 复制服务配置。
-func cloneServiceConfig(cfg *crud.ServiceConfig) *crud.ServiceConfig {
-	if cfg == nil {
-		def := crud.DefaultServiceConfig()
-		copyCfg := *def
-		return &copyCfg
-	}
-	clone := *cfg
-	return &clone
-}
 
 // IApiBuilder 定义 CRUD API 构建器暴露的核心能力。
 type IApiBuilder[T domain.IEntity[ID], ID comparable] interface {
 	// Route 配置 CRUD 路由的注册行为（如分页/批量/鉴权等）。
 	Route(config func(*RouteConfig[ID])) IApiBuilder[T, ID]
-
-	// Service 配置 Application 的服务行为（如批量上限/分页上限等）。
-	Service(config func(*crud.ServiceConfig)) IApiBuilder[T, ID]
-
-	// Hooks 配置 Application 的写入生命周期钩子。
-	Hooks(config func(*crud.Hooks[T, ID])) IApiBuilder[T, ID]
 
 	// Middleware 为构建出来的 CRUD 路由追加中间件（按注册顺序执行）。
 	Middleware(middlewares ...httpx.Middleware) IApiBuilder[T, ID]
@@ -45,13 +27,9 @@ type IApiBuilder[T domain.IEntity[ID], ID comparable] interface {
 
 // ApiBuilder 负责把 Application 能力组装成一组标准 CRUD 路由。
 type ApiBuilder[T domain.IEntity[ID], ID comparable] struct {
-	routeConfig       *RouteConfig[ID]
-	serviceConfig     *crud.ServiceConfig
-	serviceConfigured bool
-	middlewares       []httpx.Middleware
-	service           crud.IApplication[T, ID]
-	validator         validate.IValidator
-	hooks             *crud.Hooks[T, ID]
+	routeConfig *RouteConfig[ID]
+	middlewares []httpx.Middleware
+	service     crud.IApplication[T, ID]
 }
 
 // NewApiBuilder 创建一个可继续配置的 CRUD API 构建器。
@@ -64,12 +42,9 @@ func NewApiBuilder[T domain.IEntity[ID], ID comparable](
 	}
 	routeCfg := DefaultRouteConfig[ID]()
 
-	svcConfig := cloneServiceConfig(svc.Config())
-
 	builder := &ApiBuilder[T, ID]{
-		routeConfig:   routeCfg,
-		serviceConfig: svcConfig,
-		service:       svc,
+		routeConfig: routeCfg,
+		service:     svc,
 	}
 
 	for _, opt := range options {
@@ -89,66 +64,16 @@ func (rb *ApiBuilder[T, ID]) Route(config func(*RouteConfig[ID])) IApiBuilder[T,
 	return rb
 }
 
-// Service 调整 Application 层的分页、批量上限等服务配置。
-func (rb *ApiBuilder[T, ID]) Service(config func(*crud.ServiceConfig)) IApiBuilder[T, ID] {
-	if config == nil {
-		return rb
-	}
-	if rb.serviceConfig == nil {
-		rb.serviceConfig = cloneServiceConfig(crud.DefaultServiceConfig())
-	}
-	config(rb.serviceConfig)
-	rb.serviceConfigured = true
-	return rb
-}
-
 // Middleware 为 CRUD 路由追加中间件。
 func (rb *ApiBuilder[T, ID]) Middleware(middlewares ...httpx.Middleware) IApiBuilder[T, ID] {
 	rb.middlewares = append(rb.middlewares, middlewares...)
 	return rb
 }
 
-// Hooks 为 Application 注入 Create/Update/Delete 等显式生命周期钩子。
-func (rb *ApiBuilder[T, ID]) Hooks(config func(*crud.Hooks[T, ID])) IApiBuilder[T, ID] {
-	if config == nil {
-		return rb
-	}
-	if rb.hooks == nil {
-		rb.hooks = &crud.Hooks[T, ID]{}
-	}
-	config(rb.hooks)
-	return rb
-}
-
-// Build 把当前配置应用到 service，并将 CRUD 路由注册到指定路由组。
+// Build 将 CRUD 路由注册到指定路由组，不修改 Application。
 func (rb *ApiBuilder[T, ID]) Build(group httpx.IRouteGroup) error {
-	// 重新创建服务（如果配置有变化）
 	if rb.service == nil {
 		return errors.NewCode(errors.InvalidInput, "service cannot be nil")
-	}
-
-	if rb.serviceConfigured {
-		svc, ok := any(rb.service).(crud.IServiceConfigUpdatable)
-		if !ok {
-			return errors.NewCode(errors.FailedPrecondition, "service configuration was provided but service does not support updates")
-		}
-		svc.UpdateConfig(cloneServiceConfig(rb.serviceConfig))
-	}
-
-	if rb.validator != nil {
-		svc, ok := any(rb.service).(crud.IValidatorAware)
-		if !ok {
-			return errors.NewCode(errors.FailedPrecondition, "validator was provided but service does not support validator injection")
-		}
-		svc.SetValidator(rb.validator)
-	}
-
-	if rb.hooks != nil {
-		svc, ok := any(rb.service).(crud.IHooksAware[T, ID])
-		if !ok {
-			return errors.NewCode(errors.FailedPrecondition, "hooks were provided but service does not support hook injection")
-		}
-		svc.SetHooks(rb.hooks)
 	}
 
 	// 创建路由构建器
@@ -180,16 +105,12 @@ func Register[T domain.IEntity[ID], ID comparable](
 	return builder.Build(group)
 }
 
-// WithBatchOperations 启用批量路由，并同步限制 application 层的最大批量大小。
+// WithBatchOperations 启用批量路由，并限制该组 HTTP 请求的最大批量大小。
 func WithBatchOperations[T domain.IEntity[ID], ID comparable](maxSize int) Option[T, ID] {
 	return func(rb *ApiBuilder[T, ID]) {
 		rb.Route(func(config *RouteConfig[ID]) {
 			config.Routing.EnableBatch = true
-		})
-		rb.Service(func(cfg *crud.ServiceConfig) {
-			if maxSize > 0 {
-				cfg.MaxBatchSize = maxSize
-			}
+			config.Body.MaxBatchSize = maxSize
 		})
 	}
 }
@@ -228,19 +149,6 @@ func WithCustomValidator[T domain.IEntity[ID], ID comparable](validator func(any
 		rb.Route(func(config *RouteConfig[ID]) {
 			config.Body.Validator = validator
 		})
-	}
-}
-
-// WithValidator 配置 application 层的策略校验器。
-//
-// 参数：
-// - v：会注入 Application；若需 HTTP payload 专属校验，请使用 WithCustomValidator。
-func WithValidator[T domain.IEntity[ID], ID comparable](v validate.IValidator) Option[T, ID] {
-	return func(rb *ApiBuilder[T, ID]) {
-		if v == nil {
-			return
-		}
-		rb.validator = v
 	}
 }
 
@@ -292,12 +200,5 @@ func WithOperatorExtractor[T domain.IEntity[ID], ID comparable](extractor func(h
 		rb.Route(func(cfg *RouteConfig[ID]) {
 			cfg.Audit.OperatorExtractor = extractor
 		})
-	}
-}
-
-// WithHooks 为 builder 配置一组 application 生命周期钩子。
-func WithHooks[T domain.IEntity[ID], ID comparable](config func(*crud.Hooks[T, ID])) Option[T, ID] {
-	return func(rb *ApiBuilder[T, ID]) {
-		rb.Hooks(config)
 	}
 }

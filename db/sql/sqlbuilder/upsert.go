@@ -3,19 +3,20 @@ package sqlbuilder
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
 	"gochen-runtime/internal/sqlresult"
 	"gochen/db"
-	"gochen/db/dialect"
+
 	"gochen/errors"
 )
 
 // upsertBuilder 负责构造方言无关的“先插入、冲突则更新”语句。
 type upsertBuilder struct {
 	db      db.IDatabase
-	dialect dialect.IDialect
+	dialect coredialect.IDialect
 
 	table        string
 	columns      []string

@@ -5,13 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safeident"
 	"gochen-runtime/internal/sqlresult"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/process/workflow"
 )
@@ -42,7 +43,7 @@ type Config struct {
 // 拆列既无查询价值，又会让定义结构演进绑死 DDL 迁移。
 type SQLStore struct {
 	db              db.IDatabase
-	dialect         dialect.IDialect
+	dialect         coredialect.IDialect
 	definitionTable string
 	instanceTable   string
 }
@@ -436,7 +437,7 @@ func (s *SQLStore) upsertInstanceQuery(st *workflow.State, payload string) (stri
 	table := s.quotedInstanceTable()
 
 	switch s.dialect.Name() {
-	case dialect.NameSQLite, dialect.NamePostgres:
+	case coredialect.NameSQLite, coredialect.NamePostgres:
 		return fmt.Sprintf(
 			`INSERT INTO %s (instance_id, definition_id, definition_version, version, status,
 			 oldest_active_at, created_at, updated_at, payload)
@@ -449,7 +450,7 @@ func (s *SQLStore) upsertInstanceQuery(st *workflow.State, payload string) (stri
 			 	oldest_active_at = excluded.oldest_active_at,
 			 	updated_at = excluded.updated_at,
 			 	payload = excluded.payload`, table), args, nil
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return fmt.Sprintf(
 			`INSERT INTO %s (instance_id, definition_id, definition_version, version, status,
 			 oldest_active_at, created_at, updated_at, payload)
@@ -513,7 +514,7 @@ func nullableTime(value time.Time) any {
 	return value
 }
 
-func unsupportedDialectError(d dialect.IDialect) errors.IAppError {
+func unsupportedDialectError(d coredialect.IDialect) errors.IAppError {
 	return errors.NewCode(errors.Unsupported, "workflow sql store requires a known SQL dialect").
 		WithContext("dialect", string(d.Name()))
 }

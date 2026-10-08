@@ -5,12 +5,21 @@ import (
 	"strings"
 
 	"gochen/auth/scoped"
+	"gochen/db/orm"
 	"gochen/domain"
 	"gochen/gen"
 )
 
 // Option 用于配置默认 ORM 仓储行为。
 type Option[T domain.IEntity[ID], ID comparable] func(*Repo[T, ID])
+
+// WithReadPredicate 在租户与数据范围约束之外，为仓储读取追加可信业务条件，包括分页与计数。
+// ModelFor 返回的原始模型不应用此条件，自定义查询须自行追加条件或使用 ScopedQuery。
+// ResolveResourceByID/ResolveResourcesByID 仅强制租户隔离来解析授权事实，不应用 L3 数据范围或此读取条件。
+// 此选项不授予写入权限。
+func WithReadPredicate[T domain.IEntity[ID], ID comparable](predicate func(context.Context) (orm.Condition, error)) Option[T, ID] {
+	return func(r *Repo[T, ID]) { r.readPredicate = predicate }
+}
 
 func WithIDGenerator[T domain.IEntity[ID], ID comparable](g gen.IGenerator[ID]) Option[T, ID] {
 	return func(r *Repo[T, ID]) {

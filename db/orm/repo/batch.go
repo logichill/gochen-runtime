@@ -1,8 +1,11 @@
 package repo
 
 import (
+	"gochen-runtime/db/dialect"
+	"gochen-runtime/db/sql/sqlbuilder"
 	"gochen/db"
-	"gochen/db/dialect"
+	"gochen/db/orm"
+	"gochen/errors"
 )
 
 // maxBindParameters 返回本仓储可用的占位参数预算。
@@ -19,6 +22,18 @@ func (r *Repo[T, ID]) maxBindParameters() int {
 		return dialect.ResolveMaxBindParameters(provider.MaxBindParameters())
 	}
 	return dialect.DefaultMaxBindParameters
+}
+
+// idBatchBudget 为既有租户、范围等条件预留参数，剩余预算才可用于 ID。
+func (r *Repo[T, ID]) idBatchBudget(quer *queryBuilder, extra int) (int, error) {
+	budget := r.maxBindParameters() - extra
+	for _, condition := range orm.CollectQueryOptions(quer.opts...).Where {
+		budget -= sqlbuilder.CountConditionArgs(condition.Args)
+	}
+	if budget <= 0 {
+		return 0, errors.NewCode(errors.InvalidInput, "scope conditions exhaust the bind parameter budget")
+	}
+	return budget, nil
 }
 
 // chunkSlice 把列表切成不超过 size 的分片，供逐片下发语句
@@ -41,4 +56,25 @@ func chunkSlice[E any](items []E, size int) [][]E {
 		chunks = append(chunks, items[start:end])
 	}
 	return chunks
+}
+
+// dedupeSlice 按首次出现顺序折叠重复元素。
+//
+// 供分片前的 ID 列表使用：单条 `id IN (...)` 会把重复 ID 折叠成一行，
+// 分片后同一个 ID 落在不同分片则会各返回一行——先去重才能让分片前后的
+// 结果集语义保持一致。
+func dedupeSlice[E comparable](items []E) []E {
+	if len(items) < 2 {
+		return items
+	}
+	seen := make(map[E]struct{}, len(items))
+	out := make([]E, 0, len(items))
+	for _, item := range items {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }

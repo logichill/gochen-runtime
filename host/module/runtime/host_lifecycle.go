@@ -90,6 +90,10 @@ func (s *Host) stopOwnedTransport(ctx context.Context) error {
 	if !s.transportOwned {
 		return nil
 	}
+	if s.runtime == nil {
+		// 丢失运行期并不等于资源已停止；保留所有权并暴露不一致，禁止假报清理成功。
+		return errors.NewCode(errors.Internal, "owned transport runtime is missing")
+	}
 	if err := messaging.StopTransport(ctx, s.runtime.Transport); err != nil {
 		return err
 	}

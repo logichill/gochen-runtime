@@ -7,9 +7,9 @@ import (
 	"reflect"
 	"strings"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/sqlbuilder"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/db/orm"
 	"gochen/errors"
 )
@@ -275,7 +275,9 @@ func applyDeleteWhere(builder sqlbuilder.IDeleteBuilder, where []orm.Condition) 
 // Delete 删除对象并同步到存储。
 //
 // 说明：
-// - Delete 根据 QueryOptions 删除记录。
+//   - Delete 根据 QueryOptions 删除记录；
+//   - WithLimit 需要方言支持 `DELETE ... LIMIT`；不支持的方言（SQLite/PostgreSQL）
+//     返回 Unsupported，而不是静默丢弃 LIMIT 删除全部匹配行。
 func (m *model) Delete(ctx context.Context, opts ...orm.QueryOption) error {
 	qo := orm.CollectQueryOptions(opts...)
 	if !hasEffectiveWhere(qo.Where) {
@@ -292,6 +294,9 @@ func (m *model) Delete(ctx context.Context, opts ...orm.QueryOption) error {
 }
 
 // DeleteWithResult 删除对象并同步到存储。
+//
+// 说明：
+// - WithLimit 需要方言支持 `DELETE ... LIMIT`；不支持的方言返回 Unsupported。
 func (m *model) DeleteWithResult(ctx context.Context, opts ...orm.QueryOption) (sql.Result, error) {
 	qo := orm.CollectQueryOptions(opts...)
 	if !hasEffectiveWhere(qo.Where) {

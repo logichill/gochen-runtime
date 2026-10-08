@@ -5,13 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/schema"
 	"gochen-runtime/db/schema/diff"
 	"gochen-runtime/db/schema/introspect"
 	"gochen-runtime/db/schema/render"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/db"
-	"gochen/db/dialect"
 
 	_ "modernc.org/sqlite"
 )

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safesql"
 	"gochen-runtime/internal/sqlresult"
 	"gochen/codec"
 	"gochen/codec/idcodec"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	snapcore "gochen/eventing/store/snapshot"
 	"gochen/observe/logging"

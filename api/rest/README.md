@@ -77,7 +77,7 @@ type User struct {
 func (u *User) GetID() int64       { return u.ID }
 func (u *User) GetVersion() uint64 { return u.Version }
 
-userApp, err := appcrud.NewApplication(userRepo, validator, nil)
+userApp, err := appcrud.NewApplication(userRepo, &appcrud.Options[*User, int64]{Validator: validator})
 if err != nil {
   return err
 }
@@ -85,7 +85,6 @@ if err != nil {
 if err := rest.Register[*User, int64](
 	group,
 	userApp,
-	rest.WithValidator[*User, int64](validator),
 	func(b *rest.ApiBuilder[*User, int64]) {
 		b.Route(func(cfg *rest.RouteConfig[int64]) {
 			cfg.Routing.BasePath = "/users"
@@ -99,26 +98,28 @@ if err := rest.Register[*User, int64](
 
 ### 2.1.1 注册 CRUD Hooks
 
-标准 CRUD 扩展点统一走 `Hooks`，推荐在组合根或路由装配处注册：
+标准 CRUD 扩展点通过 `crud.Options.Hooks` 在组合根构造应用时配置：
 
 ```go
-if err := rest.Register[*User, int64](
-	group,
-	userApp,
-	rest.WithHooks[*User, int64](func(h *appcrud.Hooks[*User, int64]) {
-		h.BeforeCreate = func(ctx context.Context, user *User) error {
+userApp, err := appcrud.NewApplication(userRepo, &appcrud.Options[*User, int64]{
+	Hooks: &appcrud.Hooks[*User, int64]{
+		BeforeCreate: func(ctx context.Context, user *User) error {
 			if strings.TrimSpace(user.Name) == "" {
 				return errors.NewCode(errors.Validation, "user name is required")
 			}
 			return nil
-		}
-	}),
-); err != nil {
+		},
+	},
+})
+if err != nil {
+	return err
+}
+if err := rest.Register[*User, int64](group, userApp); err != nil {
 	return err
 }
 ```
 
-`Before*`、`After*`、`PostCommit*` 的调用阶段由 `app/crud` 的 writeflow 固定编排；`api/rest` 只负责把 hooks 注入 application。
+`Before*`、`After*`、`PostCommit*` 的调用阶段由 `app/crud` 的 writeflow 固定编排；`api/rest` 不修改应用配置。应用构造后再装配安全装饰器，同一应用的 HTTP、Worker、CLI 入口共用这些行为。
 
 ### 2.1.2 给 CRUD 列表加 QuerySchema（支持自动推导）
 
@@ -223,6 +224,7 @@ audited 的关键点是：**写操作必须能拿到 operator**，并在装配�
 import (
 	rest "gochen-runtime/api/rest"
 	appaudited "gochen/app/audited"
+	appcrud "gochen/app/crud"
 	"gochen/domain/audited"
 	"gochen/domain/crud"
 	"gochen/httpx"
@@ -238,7 +240,7 @@ var (
 
 // auditedApp 要求 repo 支持事务运行器（app/crud.ITransactional / WithinTx），audited 应用服务会在同一事务边界内编排业务写与审计写；
 // 具体“审计落库是否与业务写同库同事务”取决于 auditStore 的实现。
-auditedApp, err := appaudited.NewApplication(repo, validator, nil, auditStore)
+auditedApp, err := appaudited.NewApplication(repo, auditStore, &appcrud.Options[*User, int64]{Validator: validator})
 if err != nil {
   return err
 }
@@ -327,7 +329,7 @@ if err := rest.Register[*User, int64](
 - `GET    {BasePath}/deleted`
 - `GET    {BasePath}/:id/audit`（支持 `page/size`）
 - `POST   {BasePath}/:id/restore`
-- `DELETE {BasePath}/:id/purge`（标准 app 仅在 repo 支持 `crud.IPurgeRepository` 时注册；自定义 audited service 支持 purge 时注册）
+- `DELETE {BasePath}/:id/purge`（仅在应用的 `HasPurgeCapability()` 返回 true 时注册；标准 audited 应用根据底层仓储的 `crud.IPurgeRepository` 能力报告，安全包装保留此结果）
 
 audited 写操作约定：
 
@@ -348,6 +350,7 @@ audited 写操作约定：
 - `Query.AllowedFilterFields` / `Query.AllowedSortFields` / `Query.AllowedFields`：query 白名单
 - `Query.QuerySchema`：可选的动态查询字段 schema；可声明字段类型、允许的 filter op、是否允许排序/字段投影，并在 API 层前置做值校验与规范化
 - `Body.MaxBodySize` / `Body.Validator`：请求体大小限制与 API 层请求体验证。`MaxBodySize > 0` 使用该端点限制；`<= 0` 表示未配置或无效值，并由 `httpx` 默认 10MB 上限兜底。
+- `Body.MaxBatchSize`：本组 HTTP 路由的批量元素数上限，默认 1000；无效值使用默认值。`WithBatchOperations(n)` 设置此项，Create/Update/Delete 批量请求均在调用应用前校验。
 - `Response.ErrorHandler` / `Response.ResponseWrapper` / `Response.UseHTTP201ForCreate`：统一错误、响应结构与创建状态码
 - `HTTP.CORS` / `HTTP.Middlewares`：CORS 配置与路由级 middleware
 - `Audit.OperatorExtractor`：audited 写操作 operator 提取（audited 场景 **装配期必填**；写操作时 **运行期必需能提取到非空 operator**）
@@ -358,15 +361,17 @@ audited 写操作约定：
 
 ### 4.2 `crud.ServiceConfig`
 
-定义见：`app/crud/application.go`
+定义见 Core `app/crud/config.go`，通过 `crud.Options.Config` 在应用构造时注入。
 
-在 `gochen/api/rest` 场景里，常用且确实生效的只有：
+以下限制作用于应用的所有调用入口：
 
-- `AutoValidate`：是否执行注入的 validator
+- `AutoValidate`：是否执行领域不变量校验与注入的 validator
 - `MaxBatchSize`：批量上限
 - `MaxPageSize`：分页上限（crud 层也会使用）
 
 `ServiceConfig` 已收敛为以上 3 个字段；事务/缓存/软删等策略属于上层组合根或业务自定义能力，框架不会通过“某个开关”隐式帮你实现。
+
+REST 的批量与分页限制不能放宽应用的业务限制。应用可以复用于多组路由，各组分别配置 HTTP 限制。Builder 不提供 Service/Hooks/Validator 注入；HTTP payload 专属校验使用 `WithCustomValidator`。构造 API 的迁移方式见 Core `app/README.md`。
 
 ## 5. 关于 CORS（避免误解）
 

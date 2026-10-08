@@ -44,7 +44,6 @@ type streamHorizonCache struct {
 }
 
 var _ store.IEventStreamStore[int64] = (*SQLEventStore[int64])(nil)
-var _ store.ITransactionalEventStore[int64] = (*SQLEventStore[int64])(nil)
 
 var defaultNoopLogger logging.ILogger = logging.NewNoopLogger()
 

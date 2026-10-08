@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"testing"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/db/orm"
 	"gochen/errors"
 )
@@ -182,6 +182,68 @@ func TestDeleteAllowsEffectiveConditionWithBlankSibling(t *testing.T) {
 		t.Fatalf("unexpected query: %s", db.lastQuery)
 	}
 	if len(db.lastArgs) != 1 || db.lastArgs[0] != 7 {
+		t.Fatalf("unexpected args: %#v", db.lastArgs)
+	}
+}
+
+// TestDeleteWithLimitFailsFastInsteadOfDeletingAllOnSQLite 验证 SQLite 上
+// Delete(WithLimit(n)) 不会静默退化成"删除全部匹配行"。
+//
+// 回归 R2b-F01：SQLite（modernc 驱动未启用 SQLITE_ENABLE_UPDATE_DELETE_LIMIT）
+// 不支持 `DELETE ... LIMIT`，旧实现会直接丢掉 LIMIT 子句，把防护性删除放大为全量删除。
+func TestDeleteWithLimitFailsFastInsteadOfDeletingAllOnSQLite(t *testing.T) {
+	liteORM := setupScanTestOrm(t)
+	model, err := liteORM.Model(modelMetaForScanTest())
+	if err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+
+	sqlDB := scanTestSQLDB(t, liteORM)
+	execScanTestSQL(t, sqlDB, `INSERT INTO scan_test_entities (id, name) VALUES (3, 'dup'), (4, 'dup'), (5, 'dup')`)
+
+	assertAllRowsSurvive := func(stage string) {
+		t.Helper()
+		var count int
+		if err := sqlDB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM scan_test_entities WHERE name = 'dup'`).Scan(&count); err != nil {
+			t.Fatalf("count %s rows: %v", stage, err)
+		}
+		if count != 3 {
+			t.Fatalf("%s: expected all 3 matching rows to survive, got %d", stage, count)
+		}
+	}
+
+	err = model.Delete(t.Context(), orm.WithWhere("name = ?", "dup"), orm.WithLimit(1))
+	if !errors.Is(err, errors.Unsupported) {
+		t.Fatalf("expected Unsupported when sqlite cannot honor DELETE LIMIT, got %v", err)
+	}
+	assertAllRowsSurvive("after Delete")
+
+	resultModel, ok := model.(orm.IModelWithResult)
+	if !ok {
+		t.Fatal("expected model with result")
+	}
+	if _, err := resultModel.DeleteWithResult(t.Context(), orm.WithWhere("name = ?", "dup"), orm.WithLimit(1)); !errors.Is(err, errors.Unsupported) {
+		t.Fatalf("expected Unsupported from DeleteWithResult, got %v", err)
+	}
+	assertAllRowsSurvive("after DeleteWithResult")
+}
+
+// TestDeleteWithLimitForwardedForSupportingDialect 验证支持 `DELETE ... LIMIT`
+// 的方言仍原样下发 LIMIT（修复不得把能力可用的路径一并拒掉）。
+func TestDeleteWithLimitForwardedForSupportingDialect(t *testing.T) {
+	db := newLiteCaptureDB("mysql")
+	model := newCaptureModel(t, db)
+
+	if err := model.Delete(t.Context(), orm.WithWhere("name = ?", "dup"), orm.WithLimit(1)); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if db.execCalls != 1 {
+		t.Fatalf("expected one DELETE execution, got %d", db.execCalls)
+	}
+	if db.lastQuery != "DELETE FROM `scan_test_entities` WHERE name = ? LIMIT ?" {
+		t.Fatalf("unexpected query: %s", db.lastQuery)
+	}
+	if len(db.lastArgs) != 2 || db.lastArgs[0] != "dup" || db.lastArgs[1] != 1 {
 		t.Fatalf("unexpected args: %#v", db.lastArgs)
 	}
 }

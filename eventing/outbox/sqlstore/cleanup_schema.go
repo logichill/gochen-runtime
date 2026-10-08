@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -52,7 +52,7 @@ func (s *CleanupService) createArchiveTable(ctx context.Context) error {
 	quotedTable := s.dialect.QuoteIdentifier(s.policy.ArchiveTable)
 	var query string
 	switch s.dialect.Name() {
-	case dialect.NameSQLite:
+	case coredialect.NameSQLite:
 		query = fmt.Sprintf(`
 			CREATE TABLE IF NOT EXISTS %s (
 				id INTEGER PRIMARY KEY,
@@ -71,7 +71,7 @@ func (s *CleanupService) createArchiveTable(ctx context.Context) error {
 				next_retry_at DATETIME NULL
 			)
 		`, quotedTable)
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		query = fmt.Sprintf(`
 			CREATE TABLE IF NOT EXISTS %s (
 				id BIGINT PRIMARY KEY,
@@ -123,7 +123,7 @@ func (s *CleanupService) archiveTableColumns(ctx context.Context) (map[string]st
 	columns := make(map[string]struct{})
 
 	switch s.dialect.Name() {
-	case dialect.NameSQLite:
+	case coredialect.NameSQLite:
 		query := fmt.Sprintf("PRAGMA table_info(%s)", s.dialect.QuoteIdentifier(tableName))
 		if schemaName != "" {
 			query = fmt.Sprintf(
@@ -150,7 +150,7 @@ func (s *CleanupService) archiveTableColumns(ctx context.Context) (map[string]st
 		if err := rows.Err(); err != nil {
 			return nil, errors.Wrap(err, errors.Dependency, "iterate archive table columns failed").WithContext("table", s.policy.ArchiveTable)
 		}
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		query := "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?"
 		args := []any{tableName}
 		if schemaName != "" {
@@ -199,22 +199,22 @@ func (s *CleanupService) archiveTableColumns(ctx context.Context) (map[string]st
 	return columns, nil
 }
 
-func archiveClaimTokenDefinition(d dialect.IDialect) string {
-	if d.Name() == dialect.NameSQLite {
+func archiveClaimTokenDefinition(d coredialect.IDialect) string {
+	if d.Name() == coredialect.NameSQLite {
 		return "TEXT NOT NULL DEFAULT ''"
 	}
 	return "VARCHAR(255) NOT NULL DEFAULT ''"
 }
 
-func archiveLeaseUntilDefinition(d dialect.IDialect) string {
-	if d.Name() == dialect.NamePostgres {
+func archiveLeaseUntilDefinition(d coredialect.IDialect) string {
+	if d.Name() == coredialect.NamePostgres {
 		return "TIMESTAMPTZ NULL"
 	}
 	return "DATETIME NULL"
 }
 
-func archiveNextRetryAtDefinition(d dialect.IDialect) string {
-	if d.Name() == dialect.NamePostgres {
+func archiveNextRetryAtDefinition(d coredialect.IDialect) string {
+	if d.Name() == coredialect.NamePostgres {
 		return "TIMESTAMPTZ NULL"
 	}
 	return "DATETIME NULL"

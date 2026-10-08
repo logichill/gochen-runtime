@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 
+	"gochen-runtime/quick"
 	appes "gochen/app/eventsourced"
+	esstore "gochen/app/eventsourced/eventstore"
 	"gochen/domain"
 	deventsourced "gochen/domain/eventsourced"
 	"gochen/eventing/registry"
@@ -99,24 +101,19 @@ func main() {
 
 	memStore := store.NewMemoryEventStore[int64]()
 
-	domainStore, err := appes.NewDomainEventStore(appes.DomainEventStoreOptions[*BankAccount, int64]{
-		AggregateType:    "BankAccount",
-		EventStore:       memStore,
-		EventIDGenerator: uuid.NewGenerator(),
-		EventRegistry:    eventReg,
-		UpgraderRegistry: upgraders,
-	})
-	if err != nil {
-		log.Fatalf("create domain store failed: %v", err)
-	}
-
-	repo, err := appes.NewEventSourcedRepository(appes.RepositoryOptions[*BankAccount, int64]{
-		AggregateType: "BankAccount",
-		Sample:        &BankAccount{},
+	repo, err := quick.EventSourced(quick.EventSourcedOptions[*BankAccount, int64]{
+		Store: esstore.DomainEventStoreOptions[int64]{
+			PublishMode:      esstore.PublishModePersistOnly,
+			AggregateType:    "BankAccount",
+			EventStore:       memStore,
+			EventIDGenerator: uuid.NewGenerator(),
+			EventRegistry:    eventReg,
+			UpgraderRegistry: upgraders,
+		},
+		Sample: &BankAccount{},
 		Factory: appes.AdaptAggregateFactory(func(id int64) *BankAccount {
 			return NewBankAccount(metaReg, id)
 		}),
-		Store:            domainStore,
 		MetadataRegistry: metaReg,
 	})
 	if err != nil {

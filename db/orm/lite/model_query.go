@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"gochen/db/dialect"
+	"gochen-runtime/db/dialect"
 	"gochen/db/orm"
 	"gochen/errors"
 )

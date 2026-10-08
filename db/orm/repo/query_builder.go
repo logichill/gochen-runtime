@@ -22,6 +22,10 @@ func newQueryBuilder(model orm.IModel, ctx context.Context) *queryBuilder {
 	}
 }
 
+func (quer *queryBuilder) clone() *queryBuilder {
+	return &queryBuilder{ctx: quer.ctx, model: quer.model, opts: append([]orm.QueryOption(nil), quer.opts...)}
+}
+
 // Where 追加一段带参数的 WHERE 条件。
 func (quer *queryBuilder) Where(expr string, args ...any) *queryBuilder {
 	quer.opts = append(quer.opts, orm.WithWhere(expr, args...))

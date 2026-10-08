@@ -11,7 +11,6 @@ import (
 	appcrud "gochen/app/crud"
 	"gochen/domain"
 	"gochen/domain/audited"
-	"gochen/domain/crud"
 	"gochen/errors"
 	"gochen/httpx"
 )
@@ -237,8 +236,7 @@ func (rb *RouteBuilder[T, ID]) shouldRegisterPurge() bool {
 	if rb == nil || rb.auditedService == nil {
 		return false
 	}
-	_, ok := rb.service.Repository().(crud.IPurgeRepository[T, ID])
-	return ok
+	return rb.auditedService.HasPurgeCapability()
 }
 
 // registerBatchRoutes 注册批量操作路由。

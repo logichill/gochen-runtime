@@ -20,6 +20,9 @@ func (rb *RouteBuilder[T, ID]) handleCreateAll(c httpx.IContext) error {
 		return errors.Wrap(err, errors.InvalidInput, "invalid request data")
 	}
 
+	if err := rb.validateBatchSize(len(entities)); err != nil {
+		return err
+	}
 	// P1：拒绝 nil 元素
 	if err := rejectNilEntities(entities); err != nil {
 		return err
@@ -80,6 +83,9 @@ func (rb *RouteBuilder[T, ID]) handleUpdateBatch(c httpx.IContext) error {
 		return errors.Wrap(err, errors.InvalidInput, "invalid request data")
 	}
 
+	if err := rb.validateBatchSize(len(entities)); err != nil {
+		return err
+	}
 	// P1：拒绝 nil 元素
 	if err := rejectNilEntities(entities); err != nil {
 		return err
@@ -129,6 +135,9 @@ func (rb *RouteBuilder[T, ID]) handleDeleteBatch(c httpx.IContext) error {
 			return err
 		}
 		return errors.Wrap(err, errors.InvalidInput, "invalid request data")
+	}
+	if err := rb.validateBatchSize(len(req.IDs)); err != nil {
+		return err
 	}
 	if len(req.IDs) == 0 {
 		return errors.NewCode(errors.InvalidInput, "batch delete ids cannot be empty")
@@ -216,4 +225,15 @@ func validateAuditedBatchUpdate[T any](body []byte, entities []T) error {
 func (rb *RouteBuilder[T, ID]) batchWriter() (crud.IBatchWriter[T, ID], bool) {
 	writer, ok := any(rb.service).(crud.IBatchWriter[T, ID])
 	return writer, ok
+}
+
+func (rb *RouteBuilder[T, ID]) validateBatchSize(size int) error {
+	limit := rb.config.Body.MaxBatchSize
+	if limit <= 0 {
+		limit = defaultMaxBatchSize
+	}
+	if size > limit {
+		return errors.NewCode(errors.InvalidInput, "batch size exceeds HTTP limit").WithContext("max_batch_size", limit)
+	}
+	return nil
 }

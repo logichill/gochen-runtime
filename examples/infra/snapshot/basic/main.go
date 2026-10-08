@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	esstore "gochen/app/eventsourced/eventstore"
 	"log"
 	"time"
 
@@ -68,7 +69,8 @@ func main() {
 	upgraders := upcast.NewUpgraderRegistry()
 
 	// 2) 构建 ES 仓储
-	storeAdapter, err := eventsourced.NewDomainEventStore(eventsourced.DomainEventStoreOptions[*Counter, int64]{
+	storeAdapter, err := esstore.NewDomainEventStore(esstore.DomainEventStoreOptions[int64]{
+		PublishMode:      esstore.PublishModePersistOnly,
 		AggregateType:    "Counter",
 		EventIDGenerator: gen.NewUUIDGenerator(),
 		EventStore:       eventStore,

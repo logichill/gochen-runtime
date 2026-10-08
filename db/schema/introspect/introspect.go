@@ -2,21 +2,22 @@ package introspect
 
 import (
 	"context"
+	coredialect "gochen/db/dialect"
 	"strings"
 	"sync"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/schema"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
 var (
 	introspectorMu        sync.RWMutex
 	introspectorFactories = map[string]func() IIntrospector{
-		string(dialect.NameSQLite):   func() IIntrospector { return NewSQLite() },
-		string(dialect.NameMySQL):    func() IIntrospector { return NewMySQL() },
-		string(dialect.NamePostgres): func() IIntrospector { return NewPostgres() },
+		string(coredialect.NameSQLite):   func() IIntrospector { return NewSQLite() },
+		string(coredialect.NameMySQL):    func() IIntrospector { return NewMySQL() },
+		string(coredialect.NamePostgres): func() IIntrospector { return NewPostgres() },
 	}
 )
 

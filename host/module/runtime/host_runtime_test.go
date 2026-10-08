@@ -37,6 +37,28 @@ type dependencyTestModule struct {
 
 func (m *dependencyTestModule) DependsOn() []string { return append([]string(nil), m.deps...) }
 
+// valueTypeTestModule 以值接收者实现 IModule，且含 slice 字段（动态类型不可比较），
+// 用于回归 R2a-F02：模块实例不得被用作 map 键。
+type valueTypeTestModule struct {
+	id      string
+	name    string
+	deps    []string
+	initLog *[]string
+}
+
+func (m valueTypeTestModule) ID() string   { return m.id }
+func (m valueTypeTestModule) Name() string { return m.name }
+func (m valueTypeTestModule) DependsOn() []string {
+	return append([]string(nil), m.deps...)
+}
+func (m valueTypeTestModule) Init(module.ModuleInitOptions) error {
+	if m.initLog != nil {
+		*m.initLog = append(*m.initLog, m.id)
+	}
+	return nil
+}
+func (m valueTypeTestModule) Start(context.Context) (module.ModuleStopFunc, error) { return nil, nil }
+
 func (m *testModule) ID() string   { return m.id }
 func (m *testModule) Name() string { return m.name }
 func (m *testModule) Init(opts module.ModuleInitOptions) error {
@@ -803,6 +825,28 @@ func TestHostStartsModulesByDependencyAndStopsInReverseOrder(t *testing.T) {
 	}
 	if got, want := strings.Join(stops, ","), "dependent,base"; got != want {
 		t.Fatalf("stop order = %q, want %q", got, want)
+	}
+}
+
+// 回归 R2a-F02：含不可比较字段（slice）的值类型模块经 ModuleCtor 注册后，
+// Prepare 不得因以模块实例作 map 键而 panic（hash of unhashable），
+// 且依赖拓扑排序仍必须生效。
+func TestPrepareAcceptsNonComparableValueTypeModules(t *testing.T) {
+	var initOrder []string
+	host := NewHost([]module.ModuleCtor{
+		func() (module.IModule, error) {
+			return valueTypeTestModule{id: "dependent", name: "dependent", deps: []string{"base"}, initLog: &initOrder}, nil
+		},
+		func() (module.IModule, error) {
+			return valueTypeTestModule{id: "base", name: "base", initLog: &initOrder}, nil
+		},
+	}, config.WithHTTPServer(&testHTTPServer{}))
+
+	if err := host.Prepare(context.Background()); err != nil {
+		t.Fatalf("Prepare with non-comparable value-type modules failed: %v", err)
+	}
+	if got, want := strings.Join(initOrder, ","), "base,dependent"; got != want {
+		t.Fatalf("module init order = %q, want %q", got, want)
 	}
 }
 

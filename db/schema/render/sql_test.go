@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/schema"
 	"gochen-runtime/db/schema/diff"
-	"gochen/db/dialect"
 )
 
 func TestRenderSQLSQLite(t *testing.T) {

@@ -4,11 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strconv"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/eventing/outbox"
 )
@@ -50,8 +51,8 @@ type MetricsCollectorConfig struct {
 // DefaultMetricsCollectorConfig 返回指标采集器默认配置。
 func DefaultMetricsCollectorConfig() MetricsCollectorConfig {
 	return MetricsCollectorConfig{
-		OutboxTable:     outbox.OutboxEntry[int64]{}.TableName(),
-		DLQTable:        outbox.DLQEntry[int64]{}.TableName(),
+		OutboxTable:     DefaultOutboxTable,
+		DLQTable:        DefaultOutboxDLQTable,
 		MaxPendingCount: defaultMaxPendingCount,
 		MaxFailedCount:  defaultMaxFailedCount,
 		MaxDLQCount:     defaultMaxDLQCount,
@@ -98,7 +99,7 @@ func NewMetricsCollectorForRepository[ID comparable](
 		return nil, errors.NewCode(errors.InvalidInput, "outbox repository table name is required for metrics collector")
 	}
 	dlqTableProvider, ok := any(outboxRepo).(IDLQTableProvider)
-	dlqTable := outbox.DLQEntry[int64]{}.TableName()
+	dlqTable := DefaultOutboxDLQTable
 	if ok && dlqTableProvider.DLQTableName() != "" {
 		dlqTable = dlqTableProvider.DLQTableName()
 	}
@@ -143,10 +144,10 @@ func newMetricsCollector(db db.IDatabase, cfg MetricsCollectorConfig, validateTa
 		return nil, errors.NewCode(errors.InvalidInput, "metrics collector db cannot be nil")
 	}
 	if cfg.OutboxTable == "" {
-		cfg.OutboxTable = outbox.OutboxEntry[int64]{}.TableName()
+		cfg.OutboxTable = DefaultOutboxTable
 	}
 	if cfg.DLQTable == "" {
-		cfg.DLQTable = outbox.DLQEntry[int64]{}.TableName()
+		cfg.DLQTable = DefaultOutboxDLQTable
 	}
 	if cfg.MaxPendingCount <= 0 {
 		cfg.MaxPendingCount = defaultMaxPendingCount
@@ -262,10 +263,10 @@ func (c *MetricsCollector) collectRetryStats(ctx context.Context, metrics *outbo
 			SELECT
 			COALESCE(MAX(retry_count), 0) as max_retry,
 			COALESCE(AVG(retry_count), 0) as avg_retry,
-			COALESCE(SUM(CASE WHEN retry_count > 3 THEN 1 ELSE 0 END), 0) as high_retry
+			COALESCE(SUM(CASE WHEN retry_count > %d THEN 1 ELSE 0 END), 0) as high_retry
 		FROM %s
 		WHERE status NOT IN ('published', 'dead_lettered')
-	`, c.quotedOutboxTable())
+	`, defaultHighRetryCountThreshold, c.quotedOutboxTable())
 
 	err := c.db.QueryRow(ctx, query).Scan(
 		&metrics.MaxRetryCount,
@@ -322,13 +323,13 @@ func (c *MetricsCollector) collectAvgPublishDelay(ctx context.Context, metrics *
 	return nil
 }
 
-func avgPublishDelayNanosExpr(dialectName dialect.Name) (string, bool) {
+func avgPublishDelayNanosExpr(dialectName coredialect.Name) (string, bool) {
 	switch dialectName {
-	case dialect.NameSQLite:
+	case coredialect.NameSQLite:
 		return "(julianday(substr(CAST(published_at AS TEXT), 1, 19)) - julianday(substr(CAST(created_at AS TEXT), 1, 19))) * 86400000000000", true
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return "TIMESTAMPDIFF(MICROSECOND, created_at, published_at) * 1000", true
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		return "EXTRACT(EPOCH FROM (published_at - created_at)) * 1000000000", true
 	default:
 		return "", false

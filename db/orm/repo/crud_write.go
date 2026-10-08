@@ -399,16 +399,21 @@ func (r *Repo[T, ID]) DeleteAll(ctx context.Context, ids []ID) error {
 	return r.WithinTx(ctx, func(txCtx context.Context) error {
 		// ID 数量可能达到批量上限，按占位参数预算分片下发，避免撞驱动的
 		// 占位参数上限。分片全在本事务内，原子性与单条语句时一致。
+		base, err := r.query(txCtx)
+		if err != nil {
+			return err
+		}
 		if r.softDelete {
 			values, err := r.softDeleteValues(txCtx)
 			if err != nil {
 				return err
 			}
-			for _, chunk := range chunkSlice(ids, r.maxBindParameters()) {
-				quer, err := r.query(txCtx)
-				if err != nil {
-					return err
-				}
+			budget, err := r.idBatchBudget(base, len(values))
+			if err != nil {
+				return err
+			}
+			for _, chunk := range chunkSlice(ids, budget) {
+				quer := base.clone()
 				quer = quer.Where("id IN ?", chunk).Where(r.softDeleteCols.DeletedAt + " IS NULL")
 				result, err := quer.UpdateValuesWithResult(values)
 				if err != nil {
@@ -427,11 +432,12 @@ func (r *Repo[T, ID]) DeleteAll(ctx context.Context, ids []ID) error {
 			return nil
 		}
 
-		for _, chunk := range chunkSlice(ids, r.maxBindParameters()) {
-			quer, err := r.query(txCtx)
-			if err != nil {
-				return err
-			}
+		budget, err := r.idBatchBudget(base, 0)
+		if err != nil {
+			return err
+		}
+		for _, chunk := range chunkSlice(ids, budget) {
+			quer := base.clone()
 			quer = quer.Where("id IN ?", chunk)
 			result, err := quer.DeleteWithResult()
 			if err != nil {

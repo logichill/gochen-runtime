@@ -3,15 +3,17 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	coredialect "gochen/db/dialect"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safeident"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -83,7 +85,7 @@ func WithLockStaleAfter(staleAfter time.Duration) RunnerOption {
 type Runner struct {
 	db             db.IDatabase
 	source         ISource
-	dialect        dialect.IDialect
+	dialect        coredialect.IDialect
 	migrationType  string
 	stateTable     string
 	disableTx      bool
@@ -92,7 +94,7 @@ type Runner struct {
 	lockToken      uint64
 	lockStop       chan struct{}
 	lockDone       chan struct{}
-	lockErr        atomic.Pointer[lockHeartbeatFailure]
+	lockState      atomic.Pointer[lockHeartbeatState]
 	withLockActive bool
 	now            func() time.Time
 	mu             sync.Mutex
@@ -396,17 +398,27 @@ func normalizeContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-func isMissingStateTableError(err error) bool {
+// missingTablePatterns 匹配缺表诊断，避免把提及表名的缺列或数据库错误误判为缺表。
+var missingTablePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:no such table:|unknown table)\s*['" ]?([a-z0-9_.]+)['" ]?(?:\s|$)`),
+	regexp.MustCompile(`(?i)(?:relation|table) ['"]([^'"]+)['"] (?:does not exist|doesn't exist)`),
+}
+
+func isMissingStateTableError(err error, table string) bool {
 	if err == nil {
 		return false
 	}
-	text := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(text, "no such table"),
-		strings.Contains(text, "does not exist"),
-		strings.Contains(text, "unknown table"):
-		return true
-	default:
+	name := strings.ToLower(strings.TrimSpace(table))
+	if name == "" {
 		return false
 	}
+	for _, pattern := range missingTablePatterns {
+		for _, match := range pattern.FindAllStringSubmatch(err.Error(), -1) {
+			missing := strings.ToLower(match[1])
+			if missing == name || (!strings.Contains(name, ".") && strings.HasSuffix(missing, "."+name)) {
+				return true
+			}
+		}
+	}
+	return false
 }

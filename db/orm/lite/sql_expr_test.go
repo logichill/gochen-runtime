@@ -5,7 +5,7 @@ import (
 
 	"gochen/testkit/require"
 
-	"gochen/db/dialect"
+	"gochen-runtime/db/dialect"
 	"gochen/db/orm"
 )
 

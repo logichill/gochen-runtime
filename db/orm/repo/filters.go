@@ -223,7 +223,7 @@ func (r *Repo[T, ID]) applyAdvancedFilters(quer *queryBuilder, advanced query.Ad
 			return nil, err
 		}
 		if expr != "" {
-			quer = quer.Where(expr, args...)
+			quer = quer.Where("("+expr+")", args...)
 		}
 	}
 	if advanced.DateRange != nil {

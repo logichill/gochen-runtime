@@ -6,14 +6,15 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	mrand "math/rand"
 	"strings"
 	"sync"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/schema"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 )
 
@@ -127,11 +128,11 @@ func (s *SQLEventStore[ID]) validateGlobalPositionUniqueConstraint(ctx context.C
 		err error
 	)
 	switch d.Name() {
-	case dialect.NameSQLite:
+	case coredialect.NameSQLite:
 		ok, err = s.hasSQLiteGlobalPositionUniqueIndex(ctx, database)
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		ok, err = s.hasMySQLGlobalPositionUniqueIndex(ctx, database)
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		ok, err = s.hasPostgresGlobalPositionUniqueIndex(ctx, database)
 	default:
 		return errors.NewCode(errors.Unsupported, "global_position requires unique index validation for current database dialect").
@@ -330,9 +331,9 @@ func (s *SQLEventStore[ID]) reserveGlobalPositions(ctx context.Context, database
 	}
 	d := dialect.FromDatabase(database)
 	switch d.Name() {
-	case dialect.NameSQLite, dialect.NamePostgres:
+	case coredialect.NameSQLite, coredialect.NamePostgres:
 		return s.reserveGlobalPositionsReturning(ctx, database, d, count)
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return s.reserveGlobalPositionsWithRowLock(ctx, database, d, count)
 	default:
 		return 0, errors.NewCode(errors.Unsupported, "global_position allocator requires supported database dialect").
@@ -340,7 +341,7 @@ func (s *SQLEventStore[ID]) reserveGlobalPositions(ctx context.Context, database
 	}
 }
 
-func (s *SQLEventStore[ID]) reserveGlobalPositionsReturning(ctx context.Context, database db.IDatabase, d dialect.IDialect, count int) (int64, error) {
+func (s *SQLEventStore[ID]) reserveGlobalPositionsReturning(ctx context.Context, database db.IDatabase, d coredialect.IDialect, count int) (int64, error) {
 	row := database.QueryRow(ctx,
 		fmt.Sprintf("UPDATE %s SET next_position = next_position + ? WHERE store_name = ? RETURNING next_position",
 			d.QuoteIdentifier(s.globalPositionAllocatorTableName())),
@@ -364,7 +365,7 @@ func (s *SQLEventStore[ID]) reserveGlobalPositionsReturning(ctx context.Context,
 	return startPosition, nil
 }
 
-func (s *SQLEventStore[ID]) reserveGlobalPositionsWithRowLock(ctx context.Context, database db.IDatabase, d dialect.IDialect, count int) (int64, error) {
+func (s *SQLEventStore[ID]) reserveGlobalPositionsWithRowLock(ctx context.Context, database db.IDatabase, d coredialect.IDialect, count int) (int64, error) {
 	allocatorTable := d.QuoteIdentifier(s.globalPositionAllocatorTableName())
 	row := database.QueryRow(ctx,
 		fmt.Sprintf("SELECT next_position FROM %s WHERE store_name = ? FOR UPDATE", allocatorTable),

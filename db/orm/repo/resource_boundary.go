@@ -31,15 +31,17 @@ func (r *Repo[T, ID]) ResolveResourcesByID(ctx context.Context, ids []ID) ([]sco
 		return nil, err
 	}
 	columns := r.resourceBoundaryColumns()
+	base, _, err := r.applyIsolation(newQueryBuilder(model, ctx), isolationStrict)
+	if err != nil {
+		return nil, err
+	}
+	budget, err := r.idBatchBudget(base, 0)
+	if err != nil {
+		return nil, err
+	}
 	entities := make([]T, 0, len(ids))
-	for _, chunk := range chunkSlice(ids, r.maxBindParameters()) {
-		query := newQueryBuilder(model, ctx).Where("id IN ?", chunk).Select(columns...)
-		// 资源边界是 L3 判定的输入，永不参与跨隔离开闸：授权必须基于
-		// 本隔离空间内看得到的归属事实，否则 PDP 会对不属于本空间的资源作判定。
-		query, _, err = r.applyIsolation(query, isolationStrict)
-		if err != nil {
-			return nil, err
-		}
+	for _, chunk := range chunkSlice(ids, budget) {
+		query := base.clone().Where("id IN ?", chunk).Select(columns...)
 		if r.softDelete {
 			query = query.Where(r.softDeleteCols.DeletedAt + " IS NULL")
 		}

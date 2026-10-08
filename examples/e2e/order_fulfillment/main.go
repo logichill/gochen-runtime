@@ -97,7 +97,7 @@ func BootstrapSystem(ctx context.Context) (*AppSystem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create order repo: %w", err)
 	}
-	orderApp, err := crud.NewApplication[*domain.Order, int64](orderRepo, nil, nil)
+	orderApp, err := crud.NewApplication[*domain.Order, int64](orderRepo, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create order app: %w", err)
 	}

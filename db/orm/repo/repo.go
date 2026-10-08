@@ -45,6 +45,7 @@ type Repo[T domain.IEntity[ID], ID comparable] struct {
 	allowGlobalScope    bool
 	writeMissMode       WriteMissMode
 	maxPageSize         int
+	readPredicate       func(context.Context) (orm.Condition, error)
 }
 
 // NewRepo 创建仓储。
@@ -263,7 +264,20 @@ func (r *Repo[T, ID]) readQuery(ctx context.Context) (*queryBuilder, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.applyDataScope(newQueryBuilder(model, ctx), isolationRelaxable)
+	quer, err := r.applyDataScope(newQueryBuilder(model, ctx), isolationRelaxable)
+	if err != nil {
+		return nil, err
+	}
+	if r.readPredicate != nil {
+		condition, err := r.readPredicate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if condition.Expr != "" {
+			quer.Where("("+condition.Expr+")", condition.Args...)
+		}
+	}
+	return quer, nil
 }
 
 func (r *Repo[T, ID]) ModelFor(ctx context.Context) (orm.IModel, error) {

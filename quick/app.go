@@ -23,7 +23,7 @@ func App[T domain.IEntity[ID], ID comparable](repository domcrud.IRepository[T, 
 	if repository == nil || isNil(repository) {
 		return nil, errors.NewCode(errors.InvalidInput, "repository cannot be nil")
 	}
-	return crud.NewApplication[T, ID](repository, nil, nil)
+	return crud.NewApplication[T, ID](repository, nil)
 }
 
 // ScopedApp 快速装配 L3 数据范围资源授权应用服务（包装已有 Application）。
@@ -172,7 +172,8 @@ func buildScopedApp[T domain.IEntity[ID], ID comparable](
 	}
 
 	entityType := kind
-	if repo := base.Repository(); repo != nil {
+	if provider, ok := base.(crud.IRepositoryProvider[T, ID]); ok {
+		repo := provider.Repository()
 		if kindProbe, ok := any(repo).(scoped.IResourceKindProbe); ok && kindProbe != nil {
 			if rk := strings.TrimSpace(kindProbe.ResourceKind()); rk != "" {
 				entityType = rk

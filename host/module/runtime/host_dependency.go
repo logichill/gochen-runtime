@@ -7,17 +7,16 @@ import (
 	"gochen/errors"
 )
 
-// ensureModuleIDs 确保模块IDs。
+// ensureModuleIDs 校验并记录各模块的规范化 ID。
 func (s *Host) ensureModuleIDs() error {
 	if s == nil {
 		return nil
 	}
 	if len(s.modules) == 0 {
-		s.moduleIDs = map[module.IModule]string{}
+		s.moduleIDs = map[string]struct{}{}
 		return nil
 	}
-	seen := make(map[string]struct{}, len(s.modules))
-	mapping := make(map[module.IModule]string, len(s.modules))
+	mapping := make(map[string]struct{}, len(s.modules))
 	for _, m := range s.modules {
 		if m == nil {
 			continue
@@ -28,14 +27,27 @@ func (s *Host) ensureModuleIDs() error {
 				WithContext("module", m.Name()).
 				WithContext("raw_id", m.ID())
 		}
-		if _, ok := seen[id]; ok {
+		if _, ok := mapping[id]; ok {
 			return errors.NewCode(errors.Conflict, "duplicate module id").WithContext("id", id)
 		}
-		seen[id] = struct{}{}
-		mapping[m] = id
+		mapping[id] = struct{}{}
 	}
 	s.moduleIDs = mapping
 	return nil
+}
+
+// moduleIDOf 返回模块的规范化 ID（与 ensureModuleIDs 的校验结果一致）；
+// 模块为空或 ID 非法时返回空串。该查询不依赖模块实例的可比较性，
+// 值类型等不可比较模块同样适用。
+func (s *Host) moduleIDOf(m module.IModule) string {
+	if s == nil || m == nil {
+		return ""
+	}
+	id, err := module.NormalizeModuleID(m.ID())
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // sortModulesByDependencies 排序Modules按Dependencies。
@@ -53,7 +65,7 @@ func (s *Host) sortModulesByDependencies() error {
 		if m == nil {
 			continue
 		}
-		id := s.moduleIDs[m]
+		id := s.moduleIDOf(m)
 		if id == "" {
 			continue
 		}
@@ -71,7 +83,7 @@ func (s *Host) sortModulesByDependencies() error {
 		if m == nil {
 			continue
 		}
-		id := s.moduleIDs[m]
+		id := s.moduleIDOf(m)
 		if id == "" {
 			continue
 		}

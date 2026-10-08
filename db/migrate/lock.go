@@ -12,7 +12,7 @@ import (
 	"gochen/errors"
 )
 
-type lockHeartbeatFailure struct {
+type lockHeartbeatState struct {
 	err error
 }
 
@@ -28,7 +28,7 @@ func (r *Runner) acquireLock(ctx context.Context) error {
 		acquired, err := r.tryAcquireLock(ctx, token)
 		if err == nil && acquired {
 			r.lockToken = token
-			r.lockErr.Store(nil)
+			r.lockState.Store(nil)
 			r.startLockHeartbeat()
 			return nil
 		}
@@ -96,10 +96,14 @@ func (r *Runner) releaseLock() {
 
 func (r *Runner) startLockHeartbeat() {
 	interval := lockHeartbeatInterval(r.lockStaleAfter)
-	if interval <= 0 || r.lockToken == 0 {
+	token := r.lockToken
+	if interval <= 0 || token == 0 {
 		return
 	}
-	r.lockErr.Store(nil)
+	// 每次启动使用独立状态指针；旧心跳即使在停止等待超时后返回，
+	// 也只能发布到自己的代，不能覆盖随后获取的新锁状态。
+	state := &lockHeartbeatState{}
+	r.lockState.Store(state)
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	r.lockStop = stopCh
@@ -113,8 +117,8 @@ func (r *Runner) startLockHeartbeat() {
 			case <-stopCh:
 				return
 			case <-ticker.C:
-				if err := r.refreshLockWithDB(contextx.Background(), r.db); err != nil {
-					r.lockErr.Store(&lockHeartbeatFailure{err: err})
+				if err := r.refreshLockWithToken(contextx.Background(), r.db, token); err != nil {
+					r.lockState.CompareAndSwap(state, &lockHeartbeatState{err: err})
 					return
 				}
 			}
@@ -141,21 +145,22 @@ func (r *Runner) stopLockHeartbeat() {
 }
 
 func (r *Runner) refreshLock(ctx context.Context) error {
-	if err := r.lockHeartbeatError(); err != nil {
-		return err
-	}
 	return r.refreshLockWithDB(ctx, r.db)
 }
 
 func (r *Runner) refreshLockWithDB(ctx context.Context, database db.IDatabase) error {
-	if r.lockToken == 0 {
-		return nil
-	}
 	if err := r.lockHeartbeatError(); err != nil {
 		return err
 	}
+	return r.refreshLockWithToken(ctx, database, r.lockToken)
+}
+
+func (r *Runner) refreshLockWithToken(ctx context.Context, database db.IDatabase, token uint64) error {
+	if token == 0 {
+		return nil
+	}
 	query := fmt.Sprintf("UPDATE %s SET updated_at = ? WHERE migration_type = ? AND version = ?", r.quotedStateTable())
-	result, err := database.Exec(ctx, query, r.now().UTC(), lockMigrationType, r.lockToken)
+	result, err := database.Exec(ctx, query, r.now().UTC(), lockMigrationType, token)
 	if err != nil {
 		return errors.Wrap(err, errors.Database, "refresh migration lock failed").
 			WithContext("table", r.stateTable)
@@ -175,7 +180,7 @@ func (r *Runner) lockHeartbeatError() error {
 	if r == nil {
 		return nil
 	}
-	failure := r.lockErr.Load()
+	failure := r.lockState.Load()
 	if failure == nil || failure.err == nil {
 		return nil
 	}

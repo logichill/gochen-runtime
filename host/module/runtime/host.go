@@ -8,6 +8,7 @@ import (
 	"gochen-runtime/host/config"
 	"gochen-runtime/host/internal/bootstrap"
 	"gochen-runtime/host/module"
+	"gochen/errors"
 )
 
 const (
@@ -34,7 +35,10 @@ type Host struct {
 	backgroundStarted atomic.Bool
 	routeRegistration atomic.Uint32
 
-	moduleIDs map[module.IModule]string
+	// moduleIDs 记录已由 ensureModuleIDs 校验的规范化模块 ID 集合。
+	// 不得以模块实例作键：值类型模块（含 slice/map 字段）动态类型不可比较，
+	// 以实例为 map 键会触发运行时 "hash of unhashable type" panic。
+	moduleIDs map[string]struct{}
 }
 
 // NewHost 创建承载模块集合的轻量服务。
@@ -63,10 +67,14 @@ func (s *Host) Name() string {
 }
 
 // LoadConfig 加载并规范化服务配置。
+// 仅在 Prepare 前调用；已装配的 Host 必须先 Shutdown，再创建新实例加载配置。
+// 拒绝重载时保留原 runtime 和全部清理责任，包括启动/停止失败后的待清理资源。
 func (s *Host) LoadConfig() error {
+	if s.runtime != nil || s.backgroundStarted.Load() || s.transportOwned || len(s.moduleStops) > 0 {
+		return errors.NewCode(errors.Conflict, "host already initialized; shut down and create a new host to reload configuration")
+	}
 	s.config = config.Normalize(s.config)
 	s.container = s.config.Container
-	s.runtime = nil
 	s.routeRegistration.Store(routeRegistrationPending)
 	return nil
 }

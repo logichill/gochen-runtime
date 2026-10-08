@@ -2,18 +2,19 @@ package render
 
 import (
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/schema"
 	"gochen-runtime/db/schema/diff"
 	"gochen-runtime/db/sql/safeident"
-	"gochen/db/dialect"
-	"gochen/db/sqlscan"
+
+	"gochen-runtime/db/sqlscan"
 	"gochen/errors"
 )
 
 // RenderSQL 把 schema 变更渲染为指定方言的 SQL。
-func RenderSQL(changes diff.Changes, d dialect.IDialect) ([]string, error) {
+func RenderSQL(changes diff.Changes, d coredialect.IDialect) ([]string, error) {
 	var statements []string
 	for _, change := range changes {
 		switch change.Kind {
@@ -71,7 +72,7 @@ func addTableName(change diff.Change) (string, error) {
 }
 
 // RenderDownSQL 把新增类 schema 变更反向渲染为回滚 SQL。
-func RenderDownSQL(changes diff.Changes, d dialect.IDialect) ([]string, error) {
+func RenderDownSQL(changes diff.Changes, d coredialect.IDialect) ([]string, error) {
 	var statements []string
 	for i := len(changes) - 1; i >= 0; i-- {
 		change := changes[i]
@@ -102,7 +103,7 @@ func RenderDownSQL(changes diff.Changes, d dialect.IDialect) ([]string, error) {
 	return statements, nil
 }
 
-func renderCreateTable(change diff.Change, d dialect.IDialect) (string, error) {
+func renderCreateTable(change diff.Change, d coredialect.IDialect) (string, error) {
 	if change.Target == nil {
 		return "", errors.NewCode(errors.InvalidInput, "add table change missing target table")
 	}
@@ -149,14 +150,14 @@ func renderCreateTable(change diff.Change, d dialect.IDialect) (string, error) {
 	), nil
 }
 
-func renderDropTable(change diff.Change, d dialect.IDialect) (string, error) {
+func renderDropTable(change diff.Change, d coredialect.IDialect) (string, error) {
 	if err := validateQualifiedIdentifier(change.Table, "table"); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("DROP TABLE %s", d.QuoteIdentifier(change.Table)), nil
 }
 
-func renderAddColumn(change diff.Change, d dialect.IDialect) (string, error) {
+func renderAddColumn(change diff.Change, d coredialect.IDialect) (string, error) {
 	if err := validateQualifiedIdentifier(change.Table, "table"); err != nil {
 		return "", err
 	}
@@ -179,7 +180,7 @@ func renderAddColumn(change diff.Change, d dialect.IDialect) (string, error) {
 	), nil
 }
 
-func renderDropColumn(change diff.Change, d dialect.IDialect) (string, error) {
+func renderDropColumn(change diff.Change, d coredialect.IDialect) (string, error) {
 	if err := validateQualifiedIdentifier(change.Table, "table"); err != nil {
 		return "", err
 	}
@@ -196,11 +197,11 @@ func renderDropColumn(change diff.Change, d dialect.IDialect) (string, error) {
 	), nil
 }
 
-func renderAddIndex(change diff.Change, d dialect.IDialect) (string, error) {
+func renderAddIndex(change diff.Change, d coredialect.IDialect) (string, error) {
 	return renderCreateIndex(change.Table, change.Index, d)
 }
 
-func renderCreateIndex(table string, index *schema.Index, d dialect.IDialect) (string, error) {
+func renderCreateIndex(table string, index *schema.Index, d coredialect.IDialect) (string, error) {
 	if index == nil {
 		return "", errors.NewCode(errors.InvalidInput, "add index change missing index")
 	}
@@ -238,7 +239,7 @@ func renderCreateIndex(table string, index *schema.Index, d dialect.IDialect) (s
 	), nil
 }
 
-func renderDropIndex(change diff.Change, d dialect.IDialect) (string, error) {
+func renderDropIndex(change diff.Change, d coredialect.IDialect) (string, error) {
 	if err := validateQualifiedIdentifier(change.Table, "table"); err != nil {
 		return "", err
 	}
@@ -257,7 +258,7 @@ type columnSpec struct {
 	InlinePrimaryKeyName string
 }
 
-func renderColumn(spec columnSpec, d dialect.IDialect) (definition string, inlinePrimaryKey bool, err error) {
+func renderColumn(spec columnSpec, d coredialect.IDialect) (definition string, inlinePrimaryKey bool, err error) {
 	column := spec.Column
 	if err := validateSimpleIdentifier(column.Name, "column"); err != nil {
 		return "", false, err
@@ -280,7 +281,7 @@ func renderColumn(spec columnSpec, d dialect.IDialect) (definition string, inlin
 	autoIncrement := d.SchemaFeatures().AutoIncrement
 	inlinePK := false
 	if column.PrimaryKey && column.AutoIncrement && spec.TableCreating && spec.InlinePrimaryKeyName == column.Name {
-		if autoIncrement == dialect.AutoIncrementSQLite {
+		if autoIncrement == coredialect.AutoIncrementSQLite {
 			inlinePK = true
 			parts = []string{d.QuoteIdentifier(column.Name), "INTEGER PRIMARY KEY AUTOINCREMENT"}
 		}
@@ -289,7 +290,7 @@ func renderColumn(spec columnSpec, d dialect.IDialect) (definition string, inlin
 	} else if column.PrimaryKey {
 		return "", false, errors.NewCode(errors.Unsupported, "adding primary key column is not supported").
 			WithContext("column", column.Name)
-	} else if column.AutoIncrement && (autoIncrement == dialect.AutoIncrementSQLite || autoIncrement == dialect.AutoIncrementMySQL) {
+	} else if column.AutoIncrement && (autoIncrement == coredialect.AutoIncrementSQLite || autoIncrement == coredialect.AutoIncrementMySQL) {
 		return "", false, errors.NewCode(errors.InvalidInput, fmt.Sprintf("dialect %s auto increment column %s must be primary key", d.Name(), column.Name)).
 			WithContext("column", column.Name).
 			WithContext("dialect", d.Name())
@@ -299,7 +300,7 @@ func renderColumn(spec columnSpec, d dialect.IDialect) (definition string, inlin
 		if !column.Nullable || column.AutoIncrement {
 			parts = append(parts, "NOT NULL")
 		}
-		if column.AutoIncrement && autoIncrement == dialect.AutoIncrementMySQL {
+		if column.AutoIncrement && autoIncrement == coredialect.AutoIncrementMySQL {
 			parts = append(parts, "AUTO_INCREMENT")
 		}
 		if strings.TrimSpace(column.DefaultValue) != "" && !column.AutoIncrement {
@@ -310,8 +311,8 @@ func renderColumn(spec columnSpec, d dialect.IDialect) (definition string, inlin
 	return strings.Join(parts, " "), inlinePK, nil
 }
 
-func validateCreateTablePrimaryKeyLayout(columns []schema.Column, d dialect.IDialect) error {
-	if d.SchemaFeatures().AutoIncrement != dialect.AutoIncrementSQLite {
+func validateCreateTablePrimaryKeyLayout(columns []schema.Column, d coredialect.IDialect) error {
+	if d.SchemaFeatures().AutoIncrement != coredialect.AutoIncrementSQLite {
 		return nil
 	}
 	primaryCount := 0
@@ -336,8 +337,8 @@ func validateCreateTablePrimaryKeyLayout(columns []schema.Column, d dialect.IDia
 	return nil
 }
 
-func inlinePrimaryKeyColumnName(columns []schema.Column, d dialect.IDialect) string {
-	if d.SchemaFeatures().AutoIncrement != dialect.AutoIncrementSQLite {
+func inlinePrimaryKeyColumnName(columns []schema.Column, d coredialect.IDialect) string {
+	if d.SchemaFeatures().AutoIncrement != coredialect.AutoIncrementSQLite {
 		return ""
 	}
 	for _, column := range columns {
@@ -366,12 +367,12 @@ func validateSimpleIdentifier(name string, source string) error {
 	return nil
 }
 
-func renderColumnType(column schema.Column, d dialect.IDialect) string {
+func renderColumnType(column schema.Column, d coredialect.IDialect) string {
 	typ := strings.TrimSpace(column.Type)
 	if !column.AutoIncrement {
 		return typ
 	}
-	if d.SchemaFeatures().AutoIncrement == dialect.AutoIncrementPostgresSerial {
+	if d.SchemaFeatures().AutoIncrement == coredialect.AutoIncrementPostgresSerial {
 		switch strings.ToUpper(typ) {
 		case "SMALLINT", "INT2":
 			return "SMALLSERIAL"

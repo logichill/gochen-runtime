@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"gochen-runtime/host/capability"
+	"gochen-runtime/host/config"
 	"gochen-runtime/host/internal/bootstrap"
 	"gochen-runtime/host/module"
 	"gochen/errors"
@@ -69,6 +70,9 @@ func TestFailedTransportRollbackRetainsOwnershipForShutdown(t *testing.T) {
 			if err := host.StartBackground(ctx); !errors.Is(err, errors.Conflict) {
 				t.Fatalf("restart before cleanup = %v, want Conflict", err)
 			}
+			if err := host.LoadConfig(); !errors.Is(err, errors.Conflict) {
+				t.Fatalf("reload must retain failed startup cleanup: %v", err)
+			}
 			transport.stopErr = nil
 			if err := host.Shutdown(ctx); err != nil {
 				t.Fatal(err)
@@ -122,6 +126,9 @@ func TestFailedTransportStartStopsModulesBeforeTransport(t *testing.T) {
 				if !transport.running || transport.stopWithSnapshotCalls != 0 || !host.transportOwned || len(host.moduleStops) != 1 {
 					t.Fatal("failed module cleanup must retain the running transport and module stop")
 				}
+				if err := host.LoadConfig(); !errors.Is(err, errors.Conflict) {
+					t.Fatalf("reload must retain failed module cleanup: %v", err)
+				}
 				if err := host.StartBackground(ctx); !errors.Is(err, errors.Conflict) {
 					t.Fatalf("restart before cleanup = %v, want Conflict", err)
 				}
@@ -139,6 +146,51 @@ func TestFailedTransportStartStopsModulesBeforeTransport(t *testing.T) {
 			}
 			if stopCalls != wantModuleStops || transport.running || transport.stopWithSnapshotCalls != 1 || host.transportOwned || len(host.moduleStops) != 0 {
 				t.Fatalf("cleanup did not complete exactly once: module stops=%d, transport stops=%d", stopCalls, transport.stopWithSnapshotCalls)
+			}
+		})
+	}
+}
+
+// 回归 R2a-F01：拒绝重载后仍须真正停止已启动的资源。
+func TestLoadConfigPreservesShutdownAfterOwnedTransportStart(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		reload    bool
+		wantStops int
+	}{
+		{name: "control without LoadConfig", wantStops: 1},
+		{name: "LoadConfig after StartBackground", reload: true, wantStops: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := &testTransport{}
+			host := NewHost(nil, config.WithTransport(transport))
+			if err := host.Prepare(ctx); err != nil {
+				t.Fatalf("Prepare failed: %v", err)
+			}
+			if err := host.StartBackground(ctx); err != nil {
+				t.Fatalf("StartBackground failed: %v", err)
+			}
+			if !host.transportOwned {
+				t.Fatal("expected host to own the transport started by StartBackground")
+			}
+
+			if tc.reload {
+				originalRuntime := host.runtime
+				if err := host.LoadConfig(); !errors.Is(err, errors.Conflict) {
+					t.Fatalf("LoadConfig must reject initialized host: %v", err)
+				}
+				if host.runtime != originalRuntime || !host.transportOwned || !host.backgroundStarted.Load() {
+					t.Fatalf("LoadConfig must preserve lifecycle state: runtime_set=%v owned=%v started=%v stops=%d",
+						host.runtime != nil, host.transportOwned, host.backgroundStarted.Load(), len(host.moduleStops))
+				}
+			}
+
+			if err := host.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown failed: %v", err)
+			}
+			if got := transport.stopCalls + transport.stopWithSnapshotCalls; got != tc.wantStops {
+				t.Fatalf("transport stop calls = %d, want %d", got, tc.wantStops)
 			}
 		})
 	}

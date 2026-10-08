@@ -130,23 +130,43 @@ func (r *Repo[T, ID]) ListAll(ctx context.Context) ([]T, error) {
 
 // ListByIds 从存储中查询对象。
 //
+// 说明：
+//   - 结果顺序不做保证，与数据库对 `id IN (...)` 的返回顺序一致；
+//   - ID 列表按占位参数预算分片下发（与 DeleteAll 同一来源），避免超出驱动的
+//     变量上限把整次查询打成运行期错误；重复 ID 在被分片时会先折叠，
+//     与单条 IN 查询的语义保持一致。
+//
 // 参数：
 // - ids：对象/实体标识列表。
 func (r *Repo[T, ID]) ListByIds(ctx context.Context, ids []ID) ([]T, error) {
 	if len(ids) == 0 {
 		return []T{}, nil
 	}
-	var entities []T
-	quer, err := r.readQuery(ctx)
+	base, err := r.readQuery(ctx)
 	if err != nil {
 		return nil, err
 	}
-	quer = quer.Where("id IN ?", ids)
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	budget, err := r.idBatchBudget(base, 0)
+	if err != nil {
+		return nil, err
 	}
-	if err := quer.Find(&entities); err != nil {
-		return nil, errors.Wrap(err, errors.Database, "failed to list records by IDs")
+	if len(ids) > budget {
+		// 分片后同一 ID 落在不同分片会各返回一行，而单条 IN 只返回一行；
+		// 仅在真正需要分片时折叠，常态路径不做额外分配。
+		ids = dedupeSlice(ids)
+	}
+	var entities []T
+	for _, chunk := range chunkSlice(ids, budget) {
+		quer := base.clone()
+		quer = quer.Where("id IN ?", chunk)
+		if r.softDelete {
+			quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+		}
+		var chunkEntities []T
+		if err := quer.Find(&chunkEntities); err != nil {
+			return nil, errors.Wrap(err, errors.Database, "failed to list records by IDs")
+		}
+		entities = append(entities, chunkEntities...)
 	}
 	return entities, nil
 }

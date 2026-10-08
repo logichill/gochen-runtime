@@ -3,9 +3,10 @@ package stdsql
 import (
 	"context"
 	"database/sql"
+	"gochen-runtime/db/dialect"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/db/dialect"
+	coredialect "gochen/db/dialect"
 	"gochen/errors"
 	"time"
 )
@@ -14,7 +15,7 @@ import (
 type DB struct {
 	db        *sql.DB
 	driver    string
-	dial      dialect.IDialect
+	dial      coredialect.IDialect
 	bindLimit int
 	naming    *db.NamingConvention
 }

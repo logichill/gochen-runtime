@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	esstore "gochen/app/eventsourced/eventstore"
 	"log"
 	"net/http"
 	"os"
@@ -97,7 +98,7 @@ func main() {
 
 		mux := http.NewServeMux()
 		mux.Handle("/internal/monitoring/", http.StripPrefix("/internal/monitoring",
-			monitoringhttp.NewHandlerWithRoutes(monitoringRegistry, monitoring.FullRouteSet())))
+			monitoringhttp.NewHandlerWithRoutes(monitoringRegistry, monitoringhttp.FullRouteSet())))
 		go func() {
 			log.Printf("monitoring listening on http://%s/internal/monitoring/", monitoringAddr)
 			_ = http.ListenAndServe(monitoringAddr, mux)
@@ -111,7 +112,8 @@ func main() {
 	upgraders := upcast.NewUpgraderRegistry()
 
 	// 3) 基础 ES 仓储（含 Outbox 支持）
-	storeAdapter, err := eventsourced.NewDomainEventStore(eventsourced.DomainEventStoreOptions[*Account, int64]{
+	storeAdapter, err := esstore.NewDomainEventStore(esstore.DomainEventStoreOptions[int64]{
+		PublishMode:      esstore.PublishModeOutbox,
 		AggregateType:    "Account",
 		EventIDGenerator: gen.NewUUIDGenerator(),
 		EventStore:       es,

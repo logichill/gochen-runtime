@@ -3,7 +3,7 @@ package safesql
 import (
 	"testing"
 
-	"gochen/db/dialect"
+	"gochen-runtime/db/dialect"
 )
 
 func TestQuoteQualifiedIdentifier(t *testing.T) {

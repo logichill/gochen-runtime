@@ -30,16 +30,6 @@ func (noopRepository) List(context.Context, int, int) ([]*fakeEntity, error) {
 func (noopRepository) Count(context.Context) (int64, error)        { return 0, nil }
 func (noopRepository) Exists(context.Context, int64) (bool, error) { return true, nil }
 
-type trackingValidator struct {
-	err    error
-	called int
-}
-
-func (t *trackingValidator) Validate(any) error {
-	t.called++
-	return t.err
-}
-
 type capturingRepository struct {
 	gotUpdate   *fakeEntity
 	updateCalls int

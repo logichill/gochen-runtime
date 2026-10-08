@@ -217,3 +217,34 @@ func assertResolvedSame[T any](t *testing.T, container di.IContainer, ifacePtr *
 		t.Fatalf("resolve %s got %#v, want %#v", iface, got, want)
 	}
 }
+
+// 回归 R2a-F03：注入的 typed-nil Transport/EventBus 必须按“未提供”归一化，
+// 不得进入 Runtime 能力字段或在容器中登记 typed-nil 实例
+// （否则 Prepare 报错，或后续模块启动在 nil 接收者上 panic）。
+func TestPrepare_NormalizesTypedNilInjectedCapabilities(t *testing.T) {
+	container := basic.New()
+	var typedNilTransport *lifecycleSubscriberTransport
+	var typedNilEventBus *lifecycleSubscriberTransport
+
+	rt, err := Prepare(Config{
+		Container:          container,
+		DisableHealthRoute: true,
+		Transport:          typedNilTransport,
+		EventBus:           typedNilEventBus,
+	})
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	if rt.Transport != nil {
+		t.Fatalf("typed-nil transport must be treated as absent, got %#v", rt.Transport)
+	}
+	if rt.EventBus != nil {
+		t.Fatalf("typed-nil event bus must be treated as absent, got %#v", rt.EventBus)
+	}
+	if container.IsRegistered(reflect.TypeOf((*capability.ITransport)(nil)).Elem()) {
+		t.Fatal("typed-nil transport was registered in the container")
+	}
+	if container.IsRegistered(reflect.TypeOf((*capability.IEventSubscriber)(nil)).Elem()) {
+		t.Fatal("typed-nil event bus was registered in the container")
+	}
+}

@@ -10,9 +10,9 @@ import (
 
 	"gochen/testkit/require"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/eventing/projection"
 )

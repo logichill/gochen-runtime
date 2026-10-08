@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/orm/lite"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/auth/scoped"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/testkit/require"
 )
 
@@ -186,5 +186,164 @@ func TestSQLCapture_DeleteAll_ChunksLargeIDList(t *testing.T) {
 	for _, stmt := range capturing.captured() {
 		require.True(t, len(stmt.Args) <= dialect.DefaultMaxBindParameters,
 			"单条语句的占位参数不得超过 dialect.DefaultMaxBindParameters")
+	}
+}
+
+// 超过占位参数上限的 ID 列表在 ListByIds 上同样必须分片下发。
+//
+// 回归 R2b-F02：ListByIds 曾经把整份 ID 列表塞进单条 `id IN (...)`，
+// ID 数量一过驱动的变量上限（SQLite 32766）整次查询直接报
+// "too many SQL variables"，而同仓储的 DeleteAll 早已分片。
+func TestSQLCapture_ListByIds_ChunksLargeIDList(t *testing.T) {
+	database, err := stdsql.New(db.DBConfig{
+		Driver:       "sqlite",
+		Database:     ":memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	_, err = database.Exec(context.Background(),
+		"CREATE TABLE list_by_ids_entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '')")
+	require.NoError(t, err)
+
+	capturing := newCapturingDB(database)
+	ormEngine, err := lite.New(capturing)
+	require.NoError(t, err)
+	repository, err := NewRepo[*plainCaptureEntity, int64](ormEngine, "list_by_ids_entities")
+	require.NoError(t, err)
+
+	// 刚好越过占位参数上限 → 必须切成 2 条；用常量表达以免上限调整后断言失真。
+	total := dialect.DefaultMaxBindParameters + 1
+	ids := make([]int64, 0, total)
+	for i := 1; i <= total; i++ {
+		ids = append(ids, int64(i))
+	}
+
+	capturing.reset()
+	entities, err := repository.ListByIds(context.Background(), ids)
+	require.NoError(t, err)
+	require.Len(t, entities, 0)
+
+	require.Equal(t, 2,
+		countStatements(capturing.captured(), `SELECT * FROM "list_by_ids_entities"`),
+		"超出占位参数上限的 ID 列表必须分片下发")
+	for _, stmt := range capturing.captured() {
+		require.True(t, len(stmt.Args) <= dialect.DefaultMaxBindParameters,
+			"单条语句的占位参数不得超过 dialect.DefaultMaxBindParameters")
+	}
+}
+
+// 分片结果必须包含所有命中行，且重复 ID 不得放大结果；ListByIds 不承诺顺序。
+func TestSQLCapture_ListByIds_MergesChunksWithoutDuplicates(t *testing.T) {
+	database, err := stdsql.New(db.DBConfig{
+		Driver:            "sqlite",
+		Database:          ":memory:",
+		MaxOpenConns:      1,
+		MaxIdleConns:      1,
+		MaxBindParameters: 100,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	_, err = database.Exec(context.Background(), `
+		CREATE TABLE ordered_entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+		INSERT INTO ordered_entities (id, name)
+		WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM seq WHERE x < 250)
+		SELECT x, 'n' FROM seq;
+	`)
+	require.NoError(t, err)
+
+	capturing := newCapturingDB(database)
+	ormEngine, err := lite.New(capturing)
+	require.NoError(t, err)
+	repository, err := NewRepo[*plainCaptureEntity, int64](ormEngine, "ordered_entities")
+	require.NoError(t, err)
+
+	// 预算 100 → 250 个唯一 ID 切成 3 条；重复 ID 先折叠，不放大结果集。
+	ids := make([]int64, 0, 253)
+	for i := 1; i <= 250; i++ {
+		ids = append(ids, int64((i*73)%250+1))
+	}
+	ids = append(ids, 5, 5, 7)
+
+	capturing.reset()
+	entities, err := repository.ListByIds(context.Background(), ids)
+	require.NoError(t, err)
+	require.Len(t, entities, 250, "重复 ID 不得被分片放大成多行")
+
+	require.Equal(t, 3,
+		countStatements(capturing.captured(), `SELECT * FROM "ordered_entities"`),
+		"预算 100 下 250 个唯一 ID 应切成 3 条")
+	gotIDs := make([]int64, len(entities))
+	for i, entity := range entities {
+		gotIDs[i] = entity.ID
+	}
+	require.ElementsMatch(t, ids[:250], gotIDs)
+}
+
+// SQLite 端到端：40000 个 ID 必须成功返回全部命中行。
+//
+// 修复前 40000 个绑定参数超过 modernc sqlite 的 32766 变量上限，整次调用
+// 直接以 Database 错误失败；分片后切成 30000 + 10000 两条语句。
+func TestListByIds_ChunksBeyondSQLiteVariableLimit(t *testing.T) {
+	database, err := stdsql.New(db.DBConfig{
+		Driver:       "sqlite",
+		Database:     ":memory:",
+		MaxOpenConns: 1,
+		MaxIdleConns: 1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	_, err = database.Exec(context.Background(), `
+		CREATE TABLE wide_id_entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+		INSERT INTO wide_id_entities (id, name)
+		WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM seq WHERE x < 40000)
+		SELECT x, 'n' FROM seq;
+	`)
+	require.NoError(t, err)
+
+	ormEngine, err := lite.New(database)
+	require.NoError(t, err)
+	repository, err := NewRepo[*plainCaptureEntity, int64](ormEngine, "wide_id_entities")
+	require.NoError(t, err)
+
+	ids := make([]int64, 40000)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+
+	entities, err := repository.ListByIds(context.Background(), ids)
+	require.NoError(t, err)
+	require.Len(t, entities, 40000)
+	require.Equal(t, int64(1), entities[0].ID)
+	require.Equal(t, int64(40000), entities[len(entities)-1].ID)
+}
+
+type smallBudgetDB struct{ db.IDatabase }
+
+func (smallBudgetDB) MaxBindParameters() int { return 100 }
+
+func TestListByIDsReservesTenantAndScopeParameters(t *testing.T) {
+	_, capture := newCaptureRepo(t)
+	engine, err := lite.New(smallBudgetDB{capture})
+	require.NoError(t, err)
+	r, err := NewRepo[*captureEntity, int64](engine, "capture_entities",
+		WithIsolation[*captureEntity, int64](IsolationCols{Column: "tenant_id"}),
+		WithScope[*captureEntity, int64](ScopeCols{ManagedScopeID: "managed_scope_id"}))
+	require.NoError(t, err)
+	ids := make([]int64, 198)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	capture.reset()
+	_, err = r.ListByIds(scopedContext(t, "tenant-a", 101, 102), ids)
+	require.NoError(t, err)
+	statements := capture.captured()
+	require.Equal(t, 3, len(statements))
+	for _, stmt := range statements {
+		require.True(t, len(stmt.Args) <= 100, "scope and ID parameters must share the budget")
 	}
 }

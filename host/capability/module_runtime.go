@@ -83,7 +83,7 @@ func (m *ModuleRuntime) Start(ctx context.Context, onStart func(context.Context)
 	if m.runtime != nil {
 		subscriber, subscriberSource = m.runtime.EffectiveSubscriberWithSource()
 	}
-	if len(m.eventHandlers) > 0 && subscriber == nil {
+	if len(m.eventHandlers) > 0 && runtimeutil.IsTypedNil(subscriber) {
 		return errors.NewCode(errors.InvalidInput, "event handlers configured but no event bus/transport").
 			WithContext("module", m.moduleID).
 			WithContext("event_handlers_count", len(m.eventHandlers)).

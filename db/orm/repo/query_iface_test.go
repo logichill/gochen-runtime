@@ -2,18 +2,19 @@ package repo
 
 import (
 	"context"
+	coredialect "gochen/db/dialect"
 	"testing"
 	"time"
 
 	"gochen/testkit/require"
 
+	"gochen-runtime/db/dialect"
 	"gochen/app/query"
-	"gochen/db/dialect"
 	"gochen/db/orm"
 	"gochen/errors"
 )
 
-type repoTestDialect = dialect.IDialect
+type repoTestDialect = coredialect.IDialect
 
 func unknownRepoTestDialect() repoTestDialect { return dialect.New("") }
 
@@ -48,7 +49,7 @@ func (e *queryIfaceEntity) GetVersion() uint64 { return e.Version }
 
 type capturingQueryModel struct {
 	meta       *orm.ModelMeta
-	d          dialect.IDialect
+	d          coredialect.IDialect
 	nilDialect bool
 
 	lastFindOpts  orm.QueryOptions
@@ -66,7 +67,7 @@ func (m *capturingQueryModel) Meta() *orm.ModelMeta { return m.meta }
 // 返回：
 func (m *capturingQueryModel) Capabilities() orm.Capabilities { return nil }
 
-func (m *capturingQueryModel) Dialect() dialect.IDialect {
+func (m *capturingQueryModel) Dialect() coredialect.IDialect {
 	if m.nilDialect {
 		return nil
 	}
@@ -770,7 +771,7 @@ func TestRepo_Query_UsesAdvancedFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, m.lastFindOpts.Where, 2)
-	require.Equal(t, "(status = ?)", m.lastFindOpts.Where[0].Expr)
+	require.Equal(t, "((status = ?))", m.lastFindOpts.Where[0].Expr)
 	require.Equal(t, []any{"active"}, m.lastFindOpts.Where[0].Args)
 	require.Equal(t, "created_at >= ?", m.lastFindOpts.Where[1].Expr)
 	require.Equal(t, []any{"2026-04-01T00:00:00Z"}, m.lastFindOpts.Where[1].Args)
@@ -793,7 +794,7 @@ func TestRepo_Query_MapsAdvancedOrFieldNameToColumn(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, m.lastFindOpts.Where, 1)
-	require.Equal(t, "(status = ?)", m.lastFindOpts.Where[0].Expr)
+	require.Equal(t, "((status = ?))", m.lastFindOpts.Where[0].Expr)
 }
 
 func TestRepo_Query_InvalidQueryFilterFieldReturnsInvalidInput(t *testing.T) {
@@ -891,7 +892,7 @@ func TestRepo_QueryCount_UsesAdvancedFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, m.lastCountOpts.Where, 2)
-	require.Equal(t, "(status = ?)", m.lastCountOpts.Where[0].Expr)
+	require.Equal(t, "((status = ?))", m.lastCountOpts.Where[0].Expr)
 	require.Equal(t, []any{"active"}, m.lastCountOpts.Where[0].Args)
 	require.Equal(t, "created_at <= ?", m.lastCountOpts.Where[1].Expr)
 	require.Equal(t, []any{"2026-04-30T23:59:59Z"}, m.lastCountOpts.Where[1].Args)

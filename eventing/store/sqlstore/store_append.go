@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"gochen/db"
 	"gochen/errors"
 	"gochen/eventing"
+	"gochen/eventing/store"
 	"gochen/observe/logging"
 )
 
@@ -449,4 +451,68 @@ func isNilAppendEvent[ID comparable](event eventing.IStorableEvent[ID]) bool {
 	default:
 		return false
 	}
+}
+
+// AppendEventsBatch 在同一数据库事务中追加多个聚合的事件，任一失败回滚整批。
+func (s *SQLEventStore[ID]) AppendEventsBatch(ctx context.Context, batch []store.EventAppend[ID]) error {
+	if ctx == nil {
+		return errors.NewCode(errors.InvalidInput, "ctx is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	type request struct {
+		aggregateType   string
+		aggregateID     ID
+		agg             any
+		prepared        []preparedEvent
+		expectedVersion uint64
+	}
+	requests := make([]request, 0, len(batch))
+	for _, entry := range batch {
+		typ, agg, prepared, _, err := s.prepareAppendInput(entry.AggregateType, entry.AggregateID, entry.Events, entry.ExpectedVersion)
+		if err != nil {
+			return err
+		}
+		// 空事件项仍需要转换聚合 ID 并检查版本，不能作为空操作跳过。
+		if len(entry.Events) == 0 {
+			agg, err = s.codec.Encode(entry.AggregateID)
+			if err != nil {
+				return err
+			}
+		}
+		requests = append(requests, request{typ, entry.AggregateID, agg, prepared, entry.ExpectedVersion})
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return errors.NewCodeWithCause(errors.Database, "begin atomic append transaction failed", err)
+	}
+	// 失败和 panic 均回滚；提交后的 Rollback 由驱动按已完成事务处理。
+	defer func() { _ = tx.Rollback() }()
+	for _, entry := range requests {
+		if len(entry.prepared) == 0 {
+			version, err := s.getCurrentVersion(ctx, tx, entry.agg, entry.aggregateType)
+			if err != nil {
+				return err
+			}
+			if version != entry.expectedVersion {
+				return errors.NewCode(errors.Concurrency, "atomic read version changed").WithContext("aggregate_id", entry.aggregateID).WithContext("expected_version", entry.expectedVersion).WithContext("actual_version", version)
+			}
+			continue
+		}
+
+		if err := s.appendEventsWithDBValidated(ctx, tx, entry.aggregateType, entry.aggregateID, entry.agg, entry.prepared, entry.expectedVersion); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return errors.NewCodeWithCause(errors.Database, "commit atomic append transaction failed", err)
+	}
+	return nil
 }

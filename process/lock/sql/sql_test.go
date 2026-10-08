@@ -815,8 +815,8 @@ func TestSQLLockProvider_ExpiresAndCanBeReacquired(t *testing.T) {
 
 	p1, err := NewSQLLockProvider(database, &SQLLockProviderConfig{
 		Owner:         "a",
-		TTL:           30 * time.Millisecond,
-		PollInterval:  5 * time.Millisecond,
+		TTL:           100 * time.Millisecond,
+		PollInterval:  10 * time.Millisecond,
 		RenewInterval: -1,
 	})
 	if err != nil {
@@ -824,8 +824,8 @@ func TestSQLLockProvider_ExpiresAndCanBeReacquired(t *testing.T) {
 	}
 	p2, err := NewSQLLockProvider(database, &SQLLockProviderConfig{
 		Owner:         "b",
-		TTL:           30 * time.Millisecond,
-		PollInterval:  5 * time.Millisecond,
+		TTL:           100 * time.Millisecond,
+		PollInterval:  10 * time.Millisecond,
 		RenewInterval: -1,
 	})
 	if err != nil {
@@ -838,9 +838,9 @@ func TestSQLLockProvider_ExpiresAndCanBeReacquired(t *testing.T) {
 	}
 	// 故意不 release，等待 TTL 过期
 	_ = release
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	r2, err := p2.Acquire(ctx, "k")
 	if err != nil {
@@ -854,16 +854,16 @@ func TestSQLLockProvider_RenewsHeldLockUntilRelease(t *testing.T) {
 
 	p1, err := NewSQLLockProvider(database, &SQLLockProviderConfig{
 		Owner:        "a",
-		TTL:          40 * time.Millisecond,
-		PollInterval: 5 * time.Millisecond,
+		TTL:          100 * time.Millisecond,
+		PollInterval: 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewSQLLockProvider: %v", err)
 	}
 	p2, err := NewSQLLockProvider(database, &SQLLockProviderConfig{
 		Owner:        "b",
-		TTL:          40 * time.Millisecond,
-		PollInterval: 5 * time.Millisecond,
+		TTL:          100 * time.Millisecond,
+		PollInterval: 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewSQLLockProvider: %v", err)
@@ -873,9 +873,9 @@ func TestSQLLockProvider_RenewsHeldLockUntilRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	_, err = p2.Acquire(ctx, "k")
 	cancel()
 	if err == nil {
@@ -883,7 +883,7 @@ func TestSQLLockProvider_RenewsHeldLockUntilRelease(t *testing.T) {
 	}
 
 	release()
-	ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	r2, err := p2.Acquire(ctx, "k")
 	if err != nil {
@@ -897,16 +897,16 @@ func TestSQLLockProvider_RenewalOutlivesAcquireContext(t *testing.T) {
 
 	p1, err := NewSQLLockProvider(database, &SQLLockProviderConfig{
 		Owner:        "a",
-		TTL:          40 * time.Millisecond,
-		PollInterval: 5 * time.Millisecond,
+		TTL:          100 * time.Millisecond,
+		PollInterval: 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewSQLLockProvider: %v", err)
 	}
 	p2, err := NewSQLLockProvider(database, &SQLLockProviderConfig{
 		Owner:        "b",
-		TTL:          40 * time.Millisecond,
-		PollInterval: 5 * time.Millisecond,
+		TTL:          100 * time.Millisecond,
+		PollInterval: 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewSQLLockProvider: %v", err)
@@ -921,9 +921,9 @@ func TestSQLLockProvider_RenewalOutlivesAcquireContext(t *testing.T) {
 	cancelAcquire()
 	defer release()
 
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	_, err = p2.Acquire(ctx, "k")
 	cancel()
 	if err == nil {

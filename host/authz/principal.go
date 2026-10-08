@@ -31,19 +31,22 @@ type Principal struct {
 	ActiveBindingID int64
 	Roles           []string
 	Permissions     []string
-	IsSystem        bool
+	// PermissionScopes 由可信认证入口解析，限定权限可使用的授权域；不改变数据可见范围。
+	PermissionScopes []string
+	IsSystem         bool
 }
 
 func (p Principal) Clone() Principal {
 	cloned := Principal{
-		SubjectID:       normalize.PositiveID(p.SubjectID),
-		HomeTenantID:    normalize.PositiveID(p.HomeTenantID),
-		HomeScopeID:     normalize.PositiveID(p.HomeScopeID),
-		ActiveScopeID:   normalize.PositiveID(p.ActiveScopeID),
-		ActiveBindingID: normalize.PositiveID(p.ActiveBindingID),
-		Roles:           normalize.Strings(p.Roles),
-		Permissions:     normalize.Strings(p.Permissions),
-		IsSystem:        p.IsSystem,
+		SubjectID:        normalize.PositiveID(p.SubjectID),
+		HomeTenantID:     normalize.PositiveID(p.HomeTenantID),
+		HomeScopeID:      normalize.PositiveID(p.HomeScopeID),
+		ActiveScopeID:    normalize.PositiveID(p.ActiveScopeID),
+		ActiveBindingID:  normalize.PositiveID(p.ActiveBindingID),
+		Roles:            normalize.Strings(p.Roles),
+		Permissions:      normalize.Strings(p.Permissions),
+		PermissionScopes: normalize.Strings(p.PermissionScopes),
+		IsSystem:         p.IsSystem,
 	}
 	return cloned
 }

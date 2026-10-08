@@ -104,7 +104,7 @@ func (s *Host) registerModuleCatalogs(ctx context.Context) error {
 		if m == nil {
 			continue
 		}
-		entries = append(entries, capability.ModuleCatalogEntry{ID: s.moduleIDs[m], Module: m})
+		entries = append(entries, capability.ModuleCatalogEntry{ID: s.moduleIDOf(m), Module: m})
 	}
 	for _, registrar := range s.catalogRegistrars {
 		if registrar == nil {
@@ -126,7 +126,7 @@ func (s *Host) makeHTTPOptions(m module.IModule, baseGroup httpx.IRouteGroup) *r
 	id := ""
 	if m != nil {
 		if s != nil && s.moduleIDs != nil {
-			id = s.moduleIDs[m]
+			id = s.moduleIDOf(m)
 		}
 		if id == "" {
 			id = strings.TrimSpace(m.ID())

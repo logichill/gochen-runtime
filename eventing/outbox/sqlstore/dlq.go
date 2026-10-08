@@ -4,14 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 	"time"
 
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/internal/sqlresult"
 	"gochen/codec"
 	"gochen/codec/idcodec"
 	"gochen/db"
-	"gochen/db/dialect"
 	"gochen/errors"
 	"gochen/eventing/outbox"
 	"gochen/observe/logging"
@@ -20,7 +21,7 @@ import (
 // SQLDLQRepository DLQ 的 SQL 实现。
 type SQLDLQRepository[ID comparable] struct {
 	db          db.IDatabase
-	dialect     dialect.IDialect
+	dialect     coredialect.IDialect
 	outboxRepo  outbox.IOutboxRepository[ID]
 	outboxTable string
 	dlqTable    string
@@ -90,7 +91,7 @@ func dlqOutboxTable[ID comparable](outboxRepo outbox.IOutboxRepository[ID]) stri
 			return table
 		}
 	}
-	return outbox.OutboxEntry[ID]{}.TableName()
+	return DefaultOutboxTable
 }
 
 func dlqTableName[ID comparable](outboxRepo outbox.IOutboxRepository[ID]) string {
@@ -99,7 +100,7 @@ func dlqTableName[ID comparable](outboxRepo outbox.IOutboxRepository[ID]) string
 			return table
 		}
 	}
-	return outbox.DLQEntry[ID]{}.TableName()
+	return DefaultOutboxDLQTable
 }
 
 func (r *SQLDLQRepository[ID]) quotedOutboxTable() string {

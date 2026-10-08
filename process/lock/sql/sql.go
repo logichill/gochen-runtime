@@ -5,10 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safeident"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/db/dialect"
+	coredialect "gochen/db/dialect"
 	"gochen/errors"
 	"gochen/observe/logging"
 	"gochen/process/lock"
@@ -164,9 +165,9 @@ func (p *SQLLockProvider) addLeaseTokenColumnDDL() string {
 
 func (p *SQLLockProvider) lockStringColumnTypes() (string, string, string) {
 	switch dialect.FromDatabase(p.db).Name() {
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return "VARCHAR(255)", "VARCHAR(255)", "VARCHAR(64)"
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		return "TEXT", "TEXT", "TEXT"
 	default:
 		return "TEXT", "TEXT", "TEXT"
@@ -179,9 +180,9 @@ func (p *SQLLockProvider) quotedTableName() string {
 
 func (p *SQLLockProvider) hasLeaseTokenColumn(ctx context.Context) (bool, error) {
 	switch dialect.FromDatabase(p.db).Name() {
-	case dialect.NameMySQL:
+	case coredialect.NameMySQL:
 		return p.hasColumnByInformationSchema(ctx)
-	case dialect.NamePostgres:
+	case coredialect.NamePostgres:
 		return p.hasColumnByCatalog(ctx)
 	default:
 		return p.hasColumnByZeroRowProbe(ctx)

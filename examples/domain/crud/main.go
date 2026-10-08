@@ -106,7 +106,7 @@ func main() {
 	router := testkit.NewRecordingRouter()
 
 	// 2) 服务
-	baseSvc, err := crud.NewApplication(userRepo, nil, nil)
+	baseSvc, err := crud.NewApplication(userRepo, nil)
 	if err != nil {
 		log.Fatalf("failed to create application service: %v", err)
 	}
