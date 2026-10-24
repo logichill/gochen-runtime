@@ -10,7 +10,6 @@ import (
 	"gochen/db"
 
 	"gochen/errors"
-	"gochen/eventing/outbox"
 	"gochen/observe/logging"
 )
 
@@ -82,7 +81,7 @@ func (s *CleanupService) archiveBatch(ctx context.Context, olderThan time.Time, 
 		}
 	}()
 
-	entryIDs, next, err := s.selectArchiveBatchIDs(ctx, tx, olderThan, s.policy.BatchSize, cursor)
+	entryIDs, next, err := s.selectArchiveBatchIDs(ctx, tx, olderThan, s.effectiveArchiveBatchSize(), cursor)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -127,7 +126,8 @@ func (s *CleanupService) archiveBatch(ctx context.Context, olderThan time.Time, 
 
 func (s *CleanupService) selectArchiveBatchIDs(ctx context.Context, tx db.ITransaction, olderThan time.Time, limit int, cursor *archiveCursor) ([]int64, *archiveCursor, error) {
 	after := ""
-	args := []any{outbox.OutboxStatusPublished, olderThan, outbox.OutboxStatusDeadLettered, olderThan}
+	cond, condArgs := s.buildEligibleCondition(olderThan)
+	args := append([]any(nil), condArgs...)
 	if cursor != nil {
 		after = " AND (created_at > ? OR (created_at = ? AND id > ?))"
 		args = append(args, cursor.createdAt, cursor.createdAt, cursor.id)
@@ -141,10 +141,10 @@ func (s *CleanupService) selectArchiveBatchIDs(ctx context.Context, tx db.ITrans
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT id, %s
 		FROM %s
-		WHERE ((status = ? AND published_at < ?) OR (status = ? AND created_at < ?))%s
+		WHERE %s%s
 		ORDER BY created_at, id
 		LIMIT ?
-	`, createdAtColumn, s.outboxTable(), after), args...)
+	`, createdAtColumn, s.outboxTable(), cond, after), args...)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, errors.Dependency, "select archive batch ids failed")
 	}

@@ -19,6 +19,9 @@ import (
 type PolicySnapshotStore struct {
 	db        db.IDatabase
 	tableName string
+	// dialect 在构造时解析一次，避免每次查询重复推断；
+	// 同时便于测试直接注入方言校验各分支的 SQL 生成。
+	dialect coredialect.IDialect
 }
 
 // NewPolicySnapshotStore 创建 SQL 策略快照存储。
@@ -33,6 +36,7 @@ func NewPolicySnapshotStore(database db.IDatabase, tableName string) (*PolicySna
 	return &PolicySnapshotStore{
 		db:        database,
 		tableName: normalizedTableName,
+		dialect:   dialect.FromDatabase(database),
 	}, nil
 }
 
@@ -47,10 +51,15 @@ func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot g
 		return errors.Wrap(err, errors.InvalidInput, "marshal policy snapshot metadata failed")
 	}
 
-	if dialect.FromDatabase(s.db).Name() == coredialect.NameUnknown {
+	if s.dialect.Name() == coredialect.NameUnknown {
 		return s.savePolicySnapshotCompat(ctx, snapshot, string(metaJSON))
 	}
 	query, args := s.buildUpsertQuery(snapshot, string(metaJSON))
+	if query == "" {
+		// 非标准方言（如第三方注册的方言）不支持 upsert 语法：
+		// 回退到 UPDATE+INSERT 兼容路径，而不是直接执行空 SQL。
+		return s.savePolicySnapshotCompat(ctx, snapshot, string(metaJSON))
+	}
 	if _, err := s.db.Exec(ctx, query, args...); err != nil {
 		return errors.Wrap(err, errors.Database, "save policy snapshot failed").WithContext("snapshot_key", snapshot.Key)
 	}
@@ -59,7 +68,7 @@ func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot g
 
 func (s *PolicySnapshotStore) buildUpsertQuery(snapshot governance.PolicySnapshot, metadataJSON string) (string, []any) {
 	args := []any{snapshot.Key, snapshot.Version, snapshot.Timestamp, metadataJSON}
-	switch dialect.FromDatabase(s.db).Name() {
+	switch s.dialect.Name() {
 	case coredialect.NameSQLite, coredialect.NamePostgres:
 		return fmt.Sprintf(`INSERT INTO %s (snapshot_key, version, timestamp, metadata)
 			VALUES (?, ?, ?, ?)
@@ -90,15 +99,40 @@ func (s *PolicySnapshotStore) savePolicySnapshotCompat(ctx context.Context, snap
 	if rows, errRows := result.RowsAffected(); errRows == nil && rows > 0 {
 		return nil
 	}
+	// RowsAffected==0 有两种含义：记录不存在，或更新值与库中原值完全一致
+	// （MySQL 默认语义）。后者并非失败，不能直接走 INSERT 触发唯一键冲突。
+	// 因此先按主键探测存在性：存在即视为幂等成功，不存在才插入。
+	exists, existsErr := s.policySnapshotExists(ctx, snapshot.Key)
+	if existsErr != nil {
+		return existsErr
+	}
+	if exists {
+		return nil
+	}
 
 	insertSQL := fmt.Sprintf(`INSERT INTO %s (snapshot_key, version, timestamp, metadata) VALUES (?, ?, ?, ?)`, s.tableName)
 	if _, err := s.db.Exec(ctx, insertSQL, snapshot.Key, snapshot.Version, snapshot.Timestamp, metadataJSON); err != nil {
 		if db.IsUniqueViolation(err) {
+			// 并发插入竞争：另一写者已插入，重试更新（此时记录必定存在）。
 			return s.updatePolicySnapshotCompat(ctx, updateSQL, snapshot, metadataJSON)
 		}
 		return errors.Wrap(err, errors.Database, "insert policy snapshot failed").WithContext("snapshot_key", snapshot.Key)
 	}
 	return nil
+}
+
+// policySnapshotExists 按主键探测记录是否存在。
+func (s *PolicySnapshotStore) policySnapshotExists(ctx context.Context, key string) (bool, error) {
+	query := fmt.Sprintf(`SELECT 1 FROM %s WHERE snapshot_key = ?`, s.tableName)
+	row := s.db.QueryRow(ctx, query, key)
+	var one int
+	if err := row.Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, errors.Wrap(err, errors.Database, "probe policy snapshot existence failed").WithContext("snapshot_key", key)
+	}
+	return true, nil
 }
 
 func (s *PolicySnapshotStore) updatePolicySnapshotCompat(ctx context.Context, updateSQL string, snapshot governance.PolicySnapshot, metadataJSON string) error {
@@ -107,7 +141,15 @@ func (s *PolicySnapshotStore) updatePolicySnapshotCompat(ctx context.Context, up
 		return errors.Wrap(err, errors.Database, "retry update policy snapshot failed").WithContext("snapshot_key", snapshot.Key)
 	}
 	if rows, errRows := result.RowsAffected(); errRows == nil && rows == 0 {
-		return errors.NewCode(errors.Conflict, "policy snapshot changed while saving").WithContext("snapshot_key", snapshot.Key)
+		// RowsAffected==0 也可能是“更新值与原值一致”的幂等重复保存；
+		// 只有记录确实不存在时才判定为并发冲突。
+		exists, existsErr := s.policySnapshotExists(ctx, snapshot.Key)
+		if existsErr != nil {
+			return existsErr
+		}
+		if !exists {
+			return errors.NewCode(errors.Conflict, "policy snapshot changed while saving").WithContext("snapshot_key", snapshot.Key)
+		}
 	}
 	return nil
 }
@@ -126,7 +168,7 @@ func (s *PolicySnapshotStore) LoadPolicySnapshot(ctx context.Context, key string
 		metaRaw  sql.NullString
 	)
 	if err := row.Scan(&snapshot.Key, &snapshot.Version, &snapshot.Timestamp, &metaRaw); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.NewCode(errors.NotFound, "policy snapshot not found").WithContext("snapshot_key", key)
 		}
 		return nil, errors.Wrap(err, errors.Database, "query policy snapshot failed").WithContext("snapshot_key", key)
@@ -161,8 +203,10 @@ func (s *PolicySnapshotStore) ListPolicySnapshots(ctx context.Context, prefix st
 	query := fmt.Sprintf(`SELECT snapshot_key, version, timestamp, metadata FROM %s`, s.tableName)
 	args := make([]any, 0, 2)
 	if prefix = strings.TrimSpace(prefix); prefix != "" {
-		query += ` WHERE snapshot_key LIKE ?`
-		args = append(args, prefix+"%")
+		// ESCAPE 子句必须由方言提供：硬编码的反斜杠转义在 MySQL 默认配置下
+		// 会把字符串字面量解析为未闭合，触发 1064 语法错误。
+		query += ` WHERE snapshot_key LIKE ?` + s.dialect.LikeEscapeClause()
+		args = append(args, escapeLike(prefix)+"%")
 	}
 	query += ` ORDER BY timestamp DESC, snapshot_key ASC`
 	if limit > 0 {
@@ -230,4 +274,18 @@ func normalizePolicySnapshot(snapshot governance.PolicySnapshot) (governance.Pol
 		snapshot.Metadata = nil
 	}
 	return snapshot, nil
+}
+
+func escapeLike(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteRune('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

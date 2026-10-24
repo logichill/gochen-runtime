@@ -55,7 +55,12 @@ func (s *Server) addRoute(method, path string, handler httpx.Handler) httpx.ISer
 }
 
 // Group 创建一个带前缀的路由分组。
+//
+// prefix 统一规范化（前缀斜杠补齐 + 尾部斜杠剥离），避免 "api/" 之类前缀
+// 在后续路由拼接中产生 "//users" 双斜杠 pattern；规范化后的前缀同时用作
+// groups 表的 key，保证同一逻辑前缀复用同一 RouteGroup。
 func (s *Server) Group(prefix string) httpx.IRouteGroup {
+	prefix = httpx.NormalizeRoutePrefix(prefix)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := &RouteGroup{prefix: prefix, server: s, middlewares: make([]httpx.Middleware, 0)}

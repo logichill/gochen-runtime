@@ -87,7 +87,12 @@ func (r *Repo[T, ID]) commitTx(tx tx.TxScope) error {
 	if !owned || !tx.Owned() {
 		return nil
 	}
-	return session.Commit()
+	if err := session.Commit(); err != nil {
+		return err
+	}
+	// 封存回调批次：提交之后注册的回调无法进入已提交批次，必须显式失败而非丢失。
+	contextx.MarkTxCommitted(tx.Context())
+	return nil
 }
 
 func (r *Repo[T, ID]) rollbackTx(tx tx.TxScope) error {
@@ -98,5 +103,7 @@ func (r *Repo[T, ID]) rollbackTx(tx tx.TxScope) error {
 	if !owned || !tx.Owned() {
 		return nil
 	}
+	// 回滚时清空未执行的提交后回调，避免其常驻内存或被后续复用误触发。
+	contextx.ResetAfterCommit(tx.Context())
 	return session.Rollback()
 }

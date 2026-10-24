@@ -158,8 +158,8 @@ type bootBadAggregate struct {
 	*eventsourced.EventSourcedAggregate[int64]
 }
 
-func (a *bootBadAggregate) Handle1(*bootAggregateEvent) {}
-func (a *bootBadAggregate) Handle2(*bootAggregateEvent) {}
+func (a *bootBadAggregate) ApplyFirst(*bootAggregateEvent)  {}
+func (a *bootBadAggregate) ApplySecond(*bootAggregateEvent) {}
 
 type bootInitAggregateEvent struct{}
 

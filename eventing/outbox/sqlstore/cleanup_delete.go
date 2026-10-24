@@ -9,7 +9,6 @@ import (
 	"gochen-runtime/internal/sqlresult"
 
 	"gochen/errors"
-	"gochen/eventing/outbox"
 )
 
 // deleteOldRecords 分批删除早于阈值的已发布记录。
@@ -63,22 +62,32 @@ func (s *CleanupService) deleteOldRecords(ctx context.Context, olderThan time.Ti
 	return totalDeleted, nil
 }
 
+// buildDeleteBatchQuery 生成分批删除语句。
+//
+// 取舍说明：MySQL 走 DELETE ... LIMIT（行业常规，无 keyset 可言）；PG/SQLite
+// 子查询路径每批从头执行 ORDER BY created_at, id 的子查询，没有 (created_at, id)
+// 游标——DELETE 不回传本批行的键值，加游标必须先 SELECT 再 DELETE（往返翻倍）。
+// 不可删除“表头”很大时该路径有 O(批数 × 表头) 放大；主要删除路径
+// SimpleSQLOutboxRepository.DeletePublished 已改为 SELECT+DELETE keyset 游标，
+// 本路径服务于无仓储参与的 CleanupService，维持单语句形态并在此记录取舍。
 func (s *CleanupService) buildDeleteBatchQuery(olderThan time.Time, limit int64) (string, []any) {
-	if s.dialect.Name() == coredialect.NameMySQL {
+	cond, args := s.buildEligibleCondition(olderThan)
+	allArgs := append(append([]any(nil), args...), limit)
+	if s.dialect.SupportsDeleteLimit() || s.dialect.Name() == coredialect.NameMySQL {
 		return fmt.Sprintf(`
 			DELETE FROM %s
-			WHERE ((status = ? AND published_at < ?) OR (status = ? AND created_at < ?))
+			WHERE %s
 			LIMIT ?
-		`, s.outboxTable()), []any{outbox.OutboxStatusPublished, olderThan, outbox.OutboxStatusDeadLettered, olderThan, limit}
+		`, s.outboxTable(), cond), allArgs
 	}
 
 	return fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE id IN (
 			SELECT id FROM %s
-			WHERE ((status = ? AND published_at < ?) OR (status = ? AND created_at < ?))
+			WHERE %s
 			ORDER BY created_at, id
 			LIMIT ?
 		)
-	`, s.outboxTable(), s.outboxTable()), []any{outbox.OutboxStatusPublished, olderThan, outbox.OutboxStatusDeadLettered, olderThan, limit}
+	`, s.outboxTable(), s.outboxTable(), cond), allArgs
 }

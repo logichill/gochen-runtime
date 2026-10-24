@@ -860,3 +860,58 @@ func TestSQLOutboxRepository_DeletePublished_FailsWhenRowsAffectedUnavailable(t 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, errors.Database))
 }
+
+func TestSQLOutboxRepository_ClaimPendingEntries_ExcludesEntriesExceedingMaxRetries(t *testing.T) {
+	database := setupTestDB(t)
+	eventStore := &MockEventStoreWithDB{}
+	repo, err := NewSimpleSQLOutboxRepository(database, eventStore, logging.NewNoopLogger(), WithMaxRetries(3))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = repo.SaveWithEvents(ctx, 1, []eventing.Event[int64]{
+		newTestEvent(1, 1, "event-exceeded", nil),
+		newTestEvent(2, 1, "event-ok", nil),
+	})
+	require.NoError(t, err)
+
+	past := time.Now().Add(-time.Hour)
+	_, err = database.Exec(ctx, `
+		UPDATE event_outbox
+		SET status = 'failed',
+			retry_count = CASE event_id WHEN 'event-exceeded' THEN 3 ELSE 1 END,
+			next_retry_at = ?
+	`, past)
+	require.NoError(t, err)
+
+	entries, err := repo.ClaimPendingEntries(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "event-ok", entries[0].EventID)
+}
+
+func TestSQLOutboxRepository_NoMaxRetries_ClaimsEntriesRegardlessOfRetryCount(t *testing.T) {
+	database := setupTestDB(t)
+	eventStore := &MockEventStoreWithDB{}
+	repo, err := NewSimpleSQLOutboxRepository(database, eventStore, logging.NewNoopLogger(), WithMaxRetries(outbox.NoMaxRetries))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = repo.SaveWithEvents(ctx, 1, []eventing.Event[int64]{
+		newTestEvent(1, 1, "event-many-retries", nil),
+	})
+	require.NoError(t, err)
+
+	past := time.Now().Add(-time.Hour)
+	_, err = database.Exec(ctx, `
+		UPDATE event_outbox
+		SET status = 'failed',
+			retry_count = 100,
+			next_retry_at = ?
+	`, past)
+	require.NoError(t, err)
+
+	entries, err := repo.ClaimPendingEntries(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "event-many-retries", entries[0].EventID)
+}

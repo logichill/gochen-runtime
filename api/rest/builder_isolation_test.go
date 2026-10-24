@@ -29,10 +29,10 @@ func TestBuildersShareApplicationWithoutChangingItsBehavior(t *testing.T) {
 	base, err := appcrud.NewApplication(&noopRepository{}, &appcrud.Options[*fakeEntity, int64]{
 		Config:    &appcrud.ServiceConfig{AutoValidate: true, MaxBatchSize: 1},
 		Validator: validatorFunc(func(any) error { validations.Add(1); return nil }),
-		Hooks: &appcrud.Hooks[*fakeEntity, int64]{BeforeCreate: func(context.Context, *fakeEntity) error {
+		Hooks: &appcrud.Hooks[*fakeEntity, int64]{Create: appcrud.Stage[*fakeEntity]{Before: func(context.Context, *fakeEntity) error {
 			hooks.Add(1)
 			return nil
-		}},
+		}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,4 +171,80 @@ func TestSecuredAuditedRoutesUseApplicationPurgeCapability(t *testing.T) {
 	if g.Handlers["DELETE /items/:id/purge"] != nil {
 		t.Fatal("unsupported purge route must remain absent")
 	}
+}
+
+type narrowRestRepo struct{}
+
+func (narrowRestRepo) Create(context.Context, *fakeEntity) error       { return nil }
+func (narrowRestRepo) Get(context.Context, int64) (*fakeEntity, error) { return &fakeEntity{}, nil }
+func (narrowRestRepo) Update(context.Context, *fakeEntity) error       { return nil }
+func (narrowRestRepo) Delete(context.Context, int64) error             { return nil }
+
+type queryOnlyRestRepo struct {
+	narrowRestRepo
+}
+
+func (queryOnlyRestRepo) List(context.Context, int, int) ([]*fakeEntity, error) {
+	return []*fakeEntity{}, nil
+}
+func (queryOnlyRestRepo) Count(context.Context) (int64, error)        { return 0, nil }
+func (queryOnlyRestRepo) Exists(context.Context, int64) (bool, error) { return true, nil }
+
+func TestRouteBuilderFailsFastWhenRepositoryCapabilitiesMissing(t *testing.T) {
+	t.Run("list route fails fast when repo lacks query capability", func(t *testing.T) {
+		base, err := appcrud.NewApplication[*fakeEntity, int64](narrowRestRepo{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secured, err := secaction.New[*fakeEntity, int64](base, allowingActionChecker{}, action.OperationPolicy{List: "item:api:list"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, svc := range []appcrud.IApplication[*fakeEntity, int64]{base, secured} {
+			builder, err := NewApiBuilder(svc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			builder.Route(func(cfg *RouteConfig[int64]) { cfg.Routing.BasePath = "/items" })
+			if err := builder.Build(testutil.NewMockRouteGroup()); err == nil {
+				t.Fatal("expected Build to fail fast when EnableList is true and repository lacks query capability")
+			}
+
+			// 显式关闭 EnableList 后，仅单条 CRUD 的仓储可正常注册。
+			noListBuilder, err := NewApiBuilder(svc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			noListBuilder.Route(func(cfg *RouteConfig[int64]) {
+				cfg.Routing.BasePath = "/items"
+				cfg.Routing.EnableList = false
+			})
+			if err := noListBuilder.Build(testutil.NewMockRouteGroup()); err != nil {
+				t.Fatalf("expected Build with EnableList=false to succeed, got %v", err)
+			}
+		}
+	})
+
+	t.Run("batch route fails fast when repo lacks batch capability", func(t *testing.T) {
+		base, err := appcrud.NewApplication[*fakeEntity, int64](queryOnlyRestRepo{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secured, err := secaction.New[*fakeEntity, int64](base, allowingActionChecker{}, action.OperationPolicy{Create: "item:api:create"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, svc := range []appcrud.IApplication[*fakeEntity, int64]{base, secured} {
+			builder, err := NewApiBuilder(svc, WithBatchOperations[*fakeEntity, int64](10))
+			if err != nil {
+				t.Fatal(err)
+			}
+			builder.Route(func(cfg *RouteConfig[int64]) { cfg.Routing.BasePath = "/items" })
+			if err := builder.Build(testutil.NewMockRouteGroup()); err == nil {
+				t.Fatal("expected Build to fail fast when EnableBatch is true and repository lacks batch capability")
+			}
+		}
+	})
 }

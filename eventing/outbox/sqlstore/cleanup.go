@@ -8,6 +8,7 @@ import (
 	"gochen-runtime/internal/sqlsafe"
 	"gochen/db"
 	"gochen/errors"
+	"gochen/eventing/outbox"
 
 	"gochen/observe/logging"
 )
@@ -52,9 +53,32 @@ type CleanupPolicy struct {
 	// 如果为 true，只统计不实际删除。
 	// 默认：false
 	DryRun bool `json:"dry_run"`
+
+	// MaxRetries 判定重试超限的阈值。
+	//
+	// 0 表示未显式配置，构造时回退为 DefaultMaxRetries；
+	// > 0 时，重试次数达到或超过该阈值且早于保留期的 failed/processing 记录，
+	// 也会被纳入归档或清理范围，防止无 DLQ 时主表永久堆积死信；
+	// < 0（outbox.NoMaxRetries）表示永不清理 failed/processing 记录。
+	//
+	// 该阈值必须与仓储 claim 门禁、publisher DLQ 判定同源（同一 OutboxConfig
+	// 或经 outbox.IOutboxMaxRetriesAware 协商后的仓储值），否则分叉时记录会在
+	// 仓储侧停止 claim、publisher 侧不迁 DLQ，最后被 cleanup 当作普通垃圾
+	// 静默删除且无 DLQ 痕迹。推荐用 NewCleanupServiceWithRepository 从仓储
+	// 值派生。
+	MaxRetries int `json:"max_retries"`
 }
 
 const defaultCleanupBatchSize = 1000
+
+// maxArchiveBatchSize 是归档单批选行数的硬上限。
+//
+// archiveBatch 会对同一批 id 连续执行多条 `IN (?, ?, ...)` 查询（归档插入、
+// 回查已归档 id、按 id 删除），每条查询的绑定参数个数都等于本批行数。
+// 若 BatchSize 超过底层驱动的参数上限（sqlsafe.DefaultInsertMaxParams），
+// 这些查询会直接报错或退化为全表扫描。此处把有效批次收敛到安全上限，
+// 使默认值 1000 与用户自定义的大批次都不会踩线。
+const maxArchiveBatchSize = sqlsafe.DefaultInsertMaxParams
 
 // DefaultCleanupPolicy 返回一组适合日常运行的默认 Outbox 清理策略。
 func DefaultCleanupPolicy() CleanupPolicy {
@@ -65,6 +89,7 @@ func DefaultCleanupPolicy() CleanupPolicy {
 		OutboxTable:    DefaultOutboxTable,
 		ArchiveTable:   defaultArchiveTable,
 		DryRun:         false,
+		MaxRetries:     outbox.DefaultMaxRetries,
 	}
 }
 
@@ -111,6 +136,11 @@ func NewCleanupService(
 	if policy.BatchSize <= 0 {
 		policy.BatchSize = defaultCleanupBatchSize
 	}
+	// MaxRetries：0 视为未配置回退默认值（与 outbox 配置约定一致）；
+	// 显式禁用需传负值（outbox.NoMaxRetries）。
+	if policy.MaxRetries == 0 {
+		policy.MaxRetries = outbox.DefaultMaxRetries
+	}
 	if policy.OutboxTable == "" {
 		policy.OutboxTable = DefaultOutboxTable
 	}
@@ -138,11 +168,66 @@ func NewCleanupService(
 	}, nil
 }
 
-// validateTableName 校验 SQL 表名是否安全，避免拼接 SQL 时引入注入风险。
+// NewCleanupServiceWithRepository 创建与指定 Outbox 仓储共享 MaxRetries 阈值的清理服务。
+//
+// 仓储的 claim 门禁与 publisher 的 DLQ 判定通过 outbox.IOutboxMaxRetriesAware
+// 协商共享同一上限；cleanup 若使用独立配置，三阈值分叉时“达到上限的记录”
+// 会卡死在主表并被本服务当作普通垃圾删除、无 DLQ 痕迹。这里从仓储已配置/
+// 已对齐的值派生 policy.MaxRetries（含 outbox.NoMaxRetries 负值语义），保证
+// 清理阈值与 claim/DLQ 同源。仓储未显式配置且尚未与 publisher 协商时保持
+// policy 原值——接线方应保证仓储、publisher、cleanup 使用同一 OutboxConfig，
+// 且在 publisher 构造（协商发生点）之后创建本服务。
+func NewCleanupServiceWithRepository(
+	db db.IDatabase,
+	policy CleanupPolicy,
+	logger logging.ILogger,
+	repo outbox.IOutboxMaxRetriesAware,
+) (*CleanupService, error) {
+	if repo != nil {
+		if maxRetries, configured := repo.ConfiguredMaxRetries(); configured {
+			policy.MaxRetries = maxRetries
+		}
+	}
+	return NewCleanupService(db, policy, logger)
+}
+
+// effectiveArchiveBatchSize 返回受参数上限约束后的归档批次大小。
+func (s *CleanupService) effectiveArchiveBatchSize() int {
+	size := s.policy.BatchSize
+	if size <= 0 {
+		size = defaultCleanupBatchSize
+	}
+	if size > maxArchiveBatchSize {
+		return maxArchiveBatchSize
+	}
+	return size
+}
 func validateTableName(name string) error {
 	return sqlsafe.ValidateTableName(name)
 }
 
 func (s *CleanupService) outboxTable() string {
 	return s.dialect.QuoteIdentifier(s.policy.OutboxTable)
+}
+
+// buildEligibleCondition 生成清理候选行的 4 路 OR 条件。
+//
+// 索引契约：published 分支依赖部署方主表上的 (status, published_at) 覆盖索引；
+// 参考示例 schema（examples/infra/outbox/sql/internal/schema.go）仅有
+// (status, created_at, id) 等三个索引，published 存量大时清理批会退化为
+// status 前缀扫描。部署指南/DDL 应补充：
+//
+//	CREATE INDEX idx_event_outbox_published ON event_outbox (status, published_at)
+func (s *CleanupService) buildEligibleCondition(olderThan time.Time) (string, []any) {
+	if s.policy.MaxRetries > 0 {
+		return "((status = ? AND published_at < ?) OR (status = ? AND created_at < ?) OR (status = ? AND retry_count >= ? AND created_at < ?) OR (status = ? AND (lease_until IS NULL OR lease_until < ?) AND retry_count >= ? AND created_at < ?))",
+			[]any{
+				outbox.OutboxStatusPublished, olderThan,
+				outbox.OutboxStatusDeadLettered, olderThan,
+				outbox.OutboxStatusFailed, s.policy.MaxRetries, olderThan,
+				outbox.OutboxStatusProcessing, olderThan, s.policy.MaxRetries, olderThan,
+			}
+	}
+	return "((status = ? AND published_at < ?) OR (status = ? AND created_at < ?))",
+		[]any{outbox.OutboxStatusPublished, olderThan, outbox.OutboxStatusDeadLettered, olderThan}
 }

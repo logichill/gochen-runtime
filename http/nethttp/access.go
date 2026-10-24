@@ -47,8 +47,11 @@ func RequestOf(ctx httpx.IContext) (*http.Request, bool) {
 }
 
 // HandlerOf 从抽象 server 中提取底层 http.Handler。
+//
+// 会先解包包装型服务器（如 httpx.WithRouteRegistry 返回的
+// routeRegistryServer），再对最内层实现做能力断言。
 func HandlerOf(server httpx.IServer) (http.Handler, bool) {
-	provider, ok := server.(IHandlerProvider)
+	provider, ok := httpx.UnwrapServer(server).(IHandlerProvider)
 	if !ok || provider == nil {
 		return nil, false
 	}
@@ -57,8 +60,10 @@ func HandlerOf(server httpx.IServer) (http.Handler, bool) {
 }
 
 // ServeMuxOf 从抽象 server 中提取底层 *http.ServeMux。
+//
+// 会先解包包装型服务器，再对最内层实现做能力断言。
 func ServeMuxOf(server httpx.IServer) (*http.ServeMux, bool) {
-	provider, ok := server.(IServeMuxProvider)
+	provider, ok := httpx.UnwrapServer(server).(IServeMuxProvider)
 	if !ok || provider == nil {
 		return nil, false
 	}

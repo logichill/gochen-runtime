@@ -8,56 +8,19 @@ import (
 	"gochen-runtime/api/rest"
 	"gochen/app/crud"
 	"gochen/app/query"
+	domcrud "gochen/domain/crud"
 	"gochen/httpx"
 	"gochen/testkit"
 )
 
-// User 简单实体（普通 CRUD）
+// User 业务实体（内嵌通用 CRUD 实体基类，自动具备 ID、Version 及访问器）
 type User struct {
-	ID      int64  `json:"id"`
-	Name    string `json:"name"`
-	Email   string `json:"email"`
-	Version uint64 `json:"version"`
-	Active  bool   `json:"active"`
-	// 扩展示例字段
+	domcrud.Entity[int64]
+	Name        string     `json:"name"`
+	Email       string     `json:"email"`
+	Active      bool       `json:"active"`
 	ActivatedAt *time.Time `json:"activated_at,omitempty"`
 }
-
-// GetID 返回用户实体 ID。
-func (u *User) GetID() int64 { return u.ID }
-
-// GetVersion 返回乐观锁版本号。
-func (u *User) GetVersion() uint64 { return u.Version }
-
-// GetCreatedAt 在该示例中返回零值。
-func (u *User) GetCreatedAt() int64 { return 0 }
-
-// GetUpdatedAt 在该示例中返回零值。
-func (u *User) GetUpdatedAt() int64 { return 0 }
-
-// SetUpdatedAt 在该简化示例中保留为空实现。
-func (u *User) SetUpdatedAt(_ int64) {}
-
-// IsDeleted 在该示例里始终返回 false。
-func (u *User) IsDeleted() bool { return false }
-
-// MarkAsDeleted 在该示例里保留为空实现。
-func (u *User) MarkAsDeleted() {}
-
-// Restore 在该示例里保留为空实现。
-func (u *User) Restore() {}
-
-// GetDeletedAt 在该示例里始终返回 nil。
-func (u *User) GetDeletedAt() *int64 { return nil }
-
-// Validate 在该示例里不额外施加校验。
-func (u *User) Validate() error { return nil }
-
-// SetID 回填仓储生成的实体 ID。
-func (u *User) SetID(id int64) { u.ID = id }
-
-// GetEntityType 返回示例实体类型名。
-func (u *User) GetEntityType() string { return "User" }
 
 // 扩展仓储：增加激活方法
 type ExtUserRepo struct {
@@ -76,23 +39,22 @@ func (r *ExtUserRepo) Activate(ctx context.Context, id int64) error {
 	now := time.Now()
 	u.Active = true
 	u.ActivatedAt = &now
-	u.SetUpdatedAt(now.Unix())
 	return r.Update(ctx, u)
 }
 
 // 扩展服务：封装业务方法
-type UserServiceExt struct {
+type UserApplication struct {
 	crud.IApplication[*User, int64]
 	repo *ExtUserRepo
 }
 
-// NewUserServiceExt 创建带扩展业务方法的用户服务包装器。
-func NewUserServiceExt(repo *ExtUserRepo, base crud.IApplication[*User, int64]) *UserServiceExt {
-	return &UserServiceExt{IApplication: base, repo: repo}
+// NewUserApplication 创建带扩展业务方法的用户服务包装器。
+func NewUserApplication(repo *ExtUserRepo, base crud.IApplication[*User, int64]) *UserApplication {
+	return &UserApplication{IApplication: base, repo: repo}
 }
 
 // Activate 复用扩展仓储完成激活业务。
-func (s *UserServiceExt) Activate(ctx context.Context, id int64) error {
+func (s *UserApplication) Activate(ctx context.Context, id int64) error {
 	return s.repo.Activate(ctx, id)
 }
 
@@ -101,7 +63,7 @@ func main() {
 	log.Println("=== Basic CRUD Example ===")
 
 	// 1) 依赖（内存模拟）
-	baseRepo := testkit.NewMemoryRepository[*User, int64](testkit.NewInt64Sequence(1))
+	baseRepo := testkit.NewMemoryRepository[*User](testkit.NewInt64Sequence(1))
 	userRepo := &ExtUserRepo{MemoryRepository: baseRepo}
 	router := testkit.NewRecordingRouter()
 
@@ -110,7 +72,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create application service: %v", err)
 	}
-	svc := NewUserServiceExt(userRepo, baseSvc)
+	svc := NewUserApplication(userRepo, baseSvc)
 
 	// 3) 注册 RESTful API
 	if err := rest.Register(router, svc,

@@ -223,6 +223,9 @@ func validateAuditedBatchUpdate[T any](body []byte, entities []T) error {
 // 说明：批量写是 Application 的**可选能力**，通过类型断言探测，
 // 未实现时在路由注册期 fail-fast（见 router.go）。
 func (rb *RouteBuilder[T, ID]) batchWriter() (crud.IBatchWriter[T, ID], bool) {
+	if capProbe, ok := any(rb.service).(interface{ HasBatchCapability() bool }); ok && !capProbe.HasBatchCapability() {
+		return nil, false
+	}
 	writer, ok := any(rb.service).(crud.IBatchWriter[T, ID])
 	return writer, ok
 }

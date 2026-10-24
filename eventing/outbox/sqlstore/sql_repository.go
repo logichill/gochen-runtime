@@ -36,7 +36,16 @@ type SimpleSQLOutboxRepository[ID comparable] struct {
 	logger      logging.ILogger
 	codec       codec.ICodec[ID, any]
 	claimLease  time.Duration
+	maxRetries  int
+	// maxRetriesSet 区分构造默认值、显式配置（WithConfig/WithMaxRetries）与
+	// publisher 下发（ApplyMaxRetries）三种来源，语义与内存仓储一致。
+	maxRetriesSet bool
 }
+
+// 编译期断言：SQL 仓储实现 core 的 MaxRetries 协商接口，参与 publisher 侧
+// 的阈值对齐（见 outbox.IOutboxMaxRetriesAware），避免 claim 门禁与 publisher
+// DLQ 判定静默分叉。
+var _ outbox.IOutboxMaxRetriesAware = (*SimpleSQLOutboxRepository[int64])(nil)
 
 // IOutboxTableProvider 表示可暴露 SQL Outbox 主表名的仓储能力。
 type IOutboxTableProvider interface {
@@ -52,7 +61,17 @@ type IDLQTableProvider interface {
 type SQLOutboxRepositoryOption func(*sqlOutboxRepositoryOptions)
 
 type sqlOutboxRepositoryOptions struct {
-	outboxTable string
+	outboxTable   string
+	maxRetries    int
+	maxRetriesSet bool
+}
+
+// WithMaxRetries 显式配置最大重试次数；<0 (如 outbox.NoMaxRetries) 表示禁用重试上限（无限重试）；0 表示使用配置默认值。
+func WithMaxRetries(maxRetries int) SQLOutboxRepositoryOption {
+	return func(opts *sqlOutboxRepositoryOptions) {
+		opts.maxRetries = maxRetries
+		opts.maxRetriesSet = true
+	}
 }
 
 // WithOutboxTable 设置 SQL Outbox 主表名；空字符串保留默认表名。
@@ -80,11 +99,17 @@ func buildSQLOutboxRepositoryOptions(opts []SQLOutboxRepositoryOption) (sqlOutbo
 }
 
 // NewSimpleSQLOutboxRepository 为 `int64` 聚合 ID 创建一个简化 SQL Outbox 仓储。
+//
+// 未显式传入 OutboxConfig，仓储不报告显式 MaxRetries 配置（ConfiguredMaxRetries
+// 返回 configured=false），publisher 构造时会把自身解析后的阈值下发对齐。
 func NewSimpleSQLOutboxRepository(db db.IDatabase, eventStore IEventAppenderWithDB[int64], logger logging.ILogger, opts ...SQLOutboxRepositoryOption) (*SimpleSQLOutboxRepository[int64], error) {
-	return NewSimpleSQLOutboxRepositoryWithCodec[int64](db, eventStore, idcodec.NewInt64[int64](), logger, opts...)
+	return newSimpleSQLOutboxRepositoryWithCodecAndConfig[int64](db, eventStore, idcodec.NewInt64[int64](), logger, outbox.DefaultOutboxConfig(), false, opts...)
 }
 
 // NewSimpleSQLOutboxRepositoryWithConfig 创建带 outbox.OutboxConfig 的 int64 SQL Outbox 仓储。
+//
+// 显式传入的 cfg.MaxRetries 视为仓储显式配置，参与 outbox.IOutboxMaxRetriesAware
+// 协商时优先于 publisher 配置（与内存仓储 WithMaxRetries 语义一致）。
 func NewSimpleSQLOutboxRepositoryWithConfig(db db.IDatabase, eventStore IEventAppenderWithDB[int64], logger logging.ILogger, cfg outbox.OutboxConfig, opts ...SQLOutboxRepositoryOption) (*SimpleSQLOutboxRepository[int64], error) {
 	return NewSimpleSQLOutboxRepositoryWithCodecAndConfig[int64](db, eventStore, idcodec.NewInt64[int64](), logger, cfg, opts...)
 }
@@ -97,7 +122,7 @@ func NewSimpleSQLOutboxRepositoryWithCodec[ID comparable](
 	logger logging.ILogger,
 	opts ...SQLOutboxRepositoryOption,
 ) (*SimpleSQLOutboxRepository[ID], error) {
-	return NewSimpleSQLOutboxRepositoryWithCodecAndConfig(db, eventStore, idCodec, logger, outbox.DefaultOutboxConfig(), opts...)
+	return newSimpleSQLOutboxRepositoryWithCodecAndConfig(db, eventStore, idCodec, logger, outbox.DefaultOutboxConfig(), false, opts...)
 }
 
 // NewSimpleSQLOutboxRepositoryWithCodecAndConfig 创建带 outbox.OutboxConfig 的 SQL Outbox 仓储。
@@ -107,6 +132,23 @@ func NewSimpleSQLOutboxRepositoryWithCodecAndConfig[ID comparable](
 	idCodec codec.ICodec[ID, any],
 	logger logging.ILogger,
 	cfg outbox.OutboxConfig,
+	opts ...SQLOutboxRepositoryOption,
+) (*SimpleSQLOutboxRepository[ID], error) {
+	return newSimpleSQLOutboxRepositoryWithCodecAndConfig(db, eventStore, idCodec, logger, cfg, true, opts...)
+}
+
+// newSimpleSQLOutboxRepositoryWithCodecAndConfig 是各公开构造函数的公共实现。
+//
+// explicitConfig 标记调用方是否显式传入了 OutboxConfig：仅显式配置或
+// WithMaxRetries 选项才会让 ConfiguredMaxRetries 报告 configured=true，
+// publisher 才会采纳仓储阈值而不是下发自身配置。
+func newSimpleSQLOutboxRepositoryWithCodecAndConfig[ID comparable](
+	db db.IDatabase,
+	eventStore IEventAppenderWithDB[ID],
+	idCodec codec.ICodec[ID, any],
+	logger logging.ILogger,
+	cfg outbox.OutboxConfig,
+	explicitConfig bool,
 	opts ...SQLOutboxRepositoryOption,
 ) (*SimpleSQLOutboxRepository[ID], error) {
 	if logger == nil {
@@ -126,14 +168,48 @@ func NewSimpleSQLOutboxRepositoryWithCodecAndConfig[ID comparable](
 	if err != nil {
 		return nil, err
 	}
+	maxRetries := cfg.MaxRetries
+	maxRetriesSet := explicitConfig
+	if repoOpts.maxRetriesSet {
+		maxRetriesSet = true
+		if repoOpts.maxRetries != 0 {
+			maxRetries = repoOpts.maxRetries
+		}
+	}
 	return &SimpleSQLOutboxRepository[ID]{
-		db:          db,
-		eventStore:  eventStore,
-		outboxTable: repoOpts.outboxTable,
-		logger:      logger,
-		codec:       idCodec,
-		claimLease:  cfg.ClaimLease,
+		db:            db,
+		eventStore:    eventStore,
+		outboxTable:   repoOpts.outboxTable,
+		logger:        logger,
+		codec:         idCodec,
+		claimLease:    cfg.ClaimLease,
+		maxRetries:    maxRetries,
+		maxRetriesSet: maxRetriesSet,
 	}, nil
+}
+
+// ConfiguredMaxRetries 返回仓储当前生效的重试上限及来源标记。
+//
+// configured=false 表示仓储未显式配置且尚未被 publisher 下发对齐（构造默认值），
+// 此时 publisher 应通过 ApplyMaxRetries 下发自身配置；configured=true 表示
+// 显式配置或已完成对齐，后续 publisher 应采纳而非覆盖。
+func (r *SimpleSQLOutboxRepository[ID]) ConfiguredMaxRetries() (int, bool) {
+	if r == nil {
+		return 0, false
+	}
+	return r.maxRetries, r.maxRetriesSet
+}
+
+// ApplyMaxRetries 接受 publisher 下发的重试上限，并视为已完成对齐
+// （此后 ConfiguredMaxRetries 报告 configured=true，后续构造的其他 publisher
+// 采纳对齐结果而不是用不同配置覆盖）。claim 门禁（claimableWhere 的
+// retry_count 谓词）与该值同源，保证与 publisher 的 DLQ 判定共享同一阈值。
+func (r *SimpleSQLOutboxRepository[ID]) ApplyMaxRetries(maxRetries int) {
+	if r == nil {
+		return
+	}
+	r.maxRetries = maxRetries
+	r.maxRetriesSet = true
 }
 
 // GetClaimLease 返回仓储实际用于 claim/renew 的租约时长。
@@ -539,7 +615,7 @@ func (r *SimpleSQLOutboxRepository[ID]) ClaimPendingEntries(ctx context.Context,
 		"id", "aggregate_id", "aggregate_type", "event_id", "event_type", "event_data",
 		"status", "claim_token", "created_at", "published_at", "retry_count", "last_error", "lease_until", "next_retry_at",
 	).From(r.outboxTable).
-		Where(claimableOutboxEntriesWhere(), claimableOutboxEntriesArgs(now)...).
+		Where(r.claimableWhere(), r.claimableArgs(now)...).
 		OrderBy(sqlbuilder.OrderAsc("created_at"), sqlbuilder.OrderAsc("id")).
 		Limit(limit).
 		ForUpdate().
@@ -615,7 +691,7 @@ func (r *SimpleSQLOutboxRepository[ID]) ClaimPendingEntries(ctx context.Context,
 		Set("lease_until", leaseUntil).
 		Set("next_retry_at", nil).
 		Where(inIDsClause("id", len(entries)), entryIDsToArgs(entries)...).
-		Where(claimableOutboxEntriesWhere(), claimableOutboxEntriesArgs(now)...).
+		Where(r.claimableWhere(), r.claimableArgs(now)...).
 		Exec(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.Database, "claim pending entries failed")
@@ -724,33 +800,203 @@ func (r *SimpleSQLOutboxRepository[ID]) RenewClaim(ctx context.Context, entryID 
 	return nil
 }
 
+// deletePublishedBatchSize 单次删除的目标行数：把大额清理拆成多个小事务，
+// 避免一次性删除造成长事务/大范围锁与主从延迟（与 CleanupService 的
+// defaultCleanupBatchSize 保持同一量级）。
+const deletePublishedBatchSize = 1000
+
+// deletePublishedSleepInterval 批间休眠：给主复制与在线业务留出喘息窗口。
+const deletePublishedSleepInterval = 10 * time.Millisecond
+
+// deletePublishedMaxZeroProgressBatches 连续“选中即删 0 行”的容错批数。
+//
+// 正常情况下 SELECT 与 DELETE 使用同一谓词，删除数应等于选中数；仅并发
+// 清理竞争或异常驱动（RowsAffected 恒 0）才会连续为 0。游标本身保证循环
+// 按主键推进最终收敛，此阈值只是把账目异常显式暴露而不是静默扫完全表。
+const deletePublishedMaxZeroProgressBatches = 3
+
 // DeletePublished 删除发布时间早于阈值的已发布记录。
+//
+// 实现说明：无条件全量 `DELETE` 在存量数据庞大时会产生超大事务与长时锁
+// （锁表/间隙锁、主从延迟、IO 飙高），因此这里按 `deletePublishedBatchSize`
+// 分批删除：每批先 SELECT 主键再按主键删除（兼容不支持 `DELETE ... LIMIT`
+// 的方言，如 SQLite），批间休眠 `deletePublishedSleepInterval`，直到清空或
+// ctx 取消。
+//
+// SELECT 使用主键 keyset 游标（`id > 上批最大 id`）推进扫描位置：若表中
+// 存在大量不可删除的“表头”行（保留期内 published、pending/processing/
+// failed），无游标的每批重扫代价为 O(批数 × 表头行数)，游标后每行至多被
+// 访问一次。
 func (r *SimpleSQLOutboxRepository[ID]) DeletePublished(ctx context.Context, olderThan time.Time) error {
-	sq, err := sqlbuilder.New(r.db)
+	databaseDialect := dialect.FromDatabase(r.db)
+	tableName, err := r.validatedOutboxTableName()
 	if err != nil {
-		return errors.Wrap(err, errors.Internal, "failed to create sql builder")
+		return err
 	}
+	quotedTable := databaseDialect.QuoteIdentifier(tableName)
 
-	builder := sq.DeleteFrom(r.outboxTable).
-		Where("status = ?", outbox.OutboxStatusPublished).
-		Where("published_at < ?", olderThan)
-
-	result, err := builder.Exec(ctx)
-	if err != nil {
-		return errors.Wrap(err, errors.Database, "delete published failed").
-			WithContext("older_than", olderThan)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		if rowsErr := sqlresult.RowsAffectedError(err, "delete published rows affected failed"); rowsErr != nil {
-			return rowsErr.WithContext("older_than", olderThan)
+	totalDeleted := 0
+	var lastScannedID int64
+	zeroProgressStreak := 0
+	sleepTimer := time.NewTimer(0)
+	if !sleepTimer.Stop() {
+		select {
+		case <-sleepTimer.C:
+		default:
 		}
 	}
-	if rowsAffected > 0 {
-		r.logger.Info(ctx, "cleaned up published outbox entries", logging.Int64("deleted", rowsAffected))
+	defer sleepTimer.Stop()
+
+	for {
+		ids, err := r.selectPublishedIDs(ctx, quotedTable, olderThan, deletePublishedBatchSize, lastScannedID)
+		if err != nil {
+			return classifyDeletePublishedError(ctx, err, olderThan, totalDeleted)
+		}
+		if len(ids) == 0 {
+			break
+		}
+		deleted, err := r.deletePublishedByIDs(ctx, quotedTable, olderThan, ids)
+		// 分片中途失败时保留已删除账目（partial 记账），错误路径仍可观测。
+		totalDeleted += deleted
+		if err != nil {
+			return classifyDeletePublishedError(ctx, err, olderThan, totalDeleted)
+		}
+		if deleted == 0 {
+			zeroProgressStreak++
+			if zeroProgressStreak >= deletePublishedMaxZeroProgressBatches {
+				return errors.NewCode(errors.Database, "delete published made no progress").
+					WithContext("older_than", olderThan).
+					WithContext("batch_size", len(ids)).
+					WithContext("deleted", totalDeleted)
+			}
+		} else {
+			zeroProgressStreak = 0
+		}
+		lastScannedID = ids[len(ids)-1]
+		if len(ids) < deletePublishedBatchSize {
+			break
+		}
+		if !sleepTimer.Stop() {
+			select {
+			case <-sleepTimer.C:
+			default:
+			}
+		}
+		sleepTimer.Reset(deletePublishedSleepInterval)
+		select {
+		case <-ctx.Done():
+			if totalDeleted > 0 {
+				r.logger.Info(ctx, "cleaned up published outbox entries (partial)", logging.Int("deleted", totalDeleted))
+			}
+			// 主动取消与超时分开归类，避免调用方把 Canceled 当作 Timeout 重试/告警。
+			return classifyDeletePublishedError(ctx, ctx.Err(), olderThan, totalDeleted)
+		case <-sleepTimer.C:
+		}
+	}
+	if totalDeleted > 0 {
+		r.logger.Info(ctx, "cleaned up published outbox entries", logging.Int("deleted", totalDeleted))
 	}
 	return nil
+}
+
+// classifyDeletePublishedError 统一 DeletePublished 各阶段（SELECT / DELETE /
+// 批间休眠）ctx 取消错误的分类口径：DeadlineExceeded 无论发生在哪个阶段都
+// 归一为 errors.Timeout（保留原始错误链与 WithContext 诊断信息），避免同一
+// 超时因发生阶段不同而在 Timeout / Database 之间漂移；主动 Canceled 不伪装
+// 为 Timeout，按原始形态返回（保持 ee3afcb 的修复语义）。其他错误原样透传。
+func classifyDeletePublishedError(ctx context.Context, err error, olderThan time.Time, deleted int) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.Wrap(err, errors.Timeout, "delete published interrupted").
+			WithContext("older_than", olderThan).
+			WithContext("deleted", deleted)
+	}
+	return err
+}
+
+// buildSelectPublishedIDsQuery 生成分批删除的主键查询。
+//
+// keyset 游标（id > afterID）+ 按主键排序 + LIMIT 字面量；`?` 占位符为三方言
+// （MySQL/Postgres/SQLite）通用形态（Postgres 由驱动层改写占位符）。
+func buildSelectPublishedIDsQuery(quotedTable string, limit int) string {
+	return fmt.Sprintf(
+		"SELECT id FROM %s WHERE status = ? AND published_at < ? AND id > ? ORDER BY id LIMIT %d",
+		quotedTable, limit,
+	)
+}
+
+// selectPublishedIDs 查询一批早于阈值的已发布记录主键。
+//
+// 按主键排序并从 afterID 之后扫描，保证分批以 keyset 游标推进而不是每批
+// 从头重扫不可删除的“表头”行。
+func (r *SimpleSQLOutboxRepository[ID]) selectPublishedIDs(ctx context.Context, quotedTable string, olderThan time.Time, limit int, afterID int64) ([]int64, error) {
+	query := buildSelectPublishedIDsQuery(quotedTable, limit)
+	rows, err := r.db.Query(ctx, query, outbox.OutboxStatusPublished, olderThan, afterID)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.Database, "select published outbox ids failed").
+			WithContext("older_than", olderThan).
+			WithContext("after_id", afterID)
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, errors.Wrap(err, errors.Database, "scan published outbox id failed")
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, errors.Database, "iterate published outbox ids failed")
+	}
+	return ids, nil
+}
+
+// deletePublishedByIDs 按主键集合删除；IN 参数数量受 SQL 驱动限制时自动分片。
+func (r *SimpleSQLOutboxRepository[ID]) deletePublishedByIDs(ctx context.Context, quotedTable string, olderThan time.Time, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	// 保守分片上限：远低于常见驱动 65535 参数上限，同时保持单语句规模可控。
+	const chunkSize = 500
+	total := 0
+	for start := 0; start < len(ids); start += chunkSize {
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		params := make([]any, 0, len(chunk)+2)
+		params = append(params, outbox.OutboxStatusPublished, olderThan)
+		for _, id := range chunk {
+			params = append(params, id)
+		}
+		query := buildDeletePublishedByIDsQuery(quotedTable, len(chunk))
+		result, err := r.db.Exec(ctx, query, params...)
+		if err != nil {
+			return total, errors.Wrap(err, errors.Database, "delete published batch failed").
+				WithContext("batch_size", len(chunk))
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			if rowsErr := sqlresult.RowsAffectedError(err, "delete published rows affected failed"); rowsErr != nil {
+				return total, rowsErr.WithContext("batch_size", len(chunk))
+			}
+		}
+		total += int(affected)
+	}
+	return total, nil
+}
+
+// buildDeletePublishedByIDsQuery 按主键集合删除一批已发布记录；`?` 占位符
+// 三方言通用，IN 参数个数由调用方分片控制。
+func buildDeletePublishedByIDsQuery(quotedTable string, count int) string {
+	return fmt.Sprintf(
+		"DELETE FROM %s WHERE status = ? AND published_at < ? AND id IN (%s)",
+		quotedTable, outboxPlaceholders(count),
+	)
 }
 
 // calculateExpectedVersion 根据事件批次首条事件的版本推导 expectedVersion。
@@ -790,12 +1036,20 @@ func (r *SimpleSQLOutboxRepository[ID]) serializeEvent(event eventing.IStorableE
 	return string(bytes), nil
 }
 
-func claimableOutboxEntriesWhere() string {
-	return "((status = ?) OR (status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)) OR (status = ? AND lease_until <= ?))"
+func (r *SimpleSQLOutboxRepository[ID]) claimableWhere() string {
+	base := "((status = ?) OR (status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)) OR (status = ? AND lease_until <= ?))"
+	if r != nil && r.maxRetries > 0 {
+		return base + " AND retry_count < ?"
+	}
+	return base
 }
 
-func claimableOutboxEntriesArgs(now time.Time) []any {
-	return []any{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, now, outbox.OutboxStatusProcessing, now}
+func (r *SimpleSQLOutboxRepository[ID]) claimableArgs(now time.Time) []any {
+	args := []any{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, now, outbox.OutboxStatusProcessing, now}
+	if r != nil && r.maxRetries > 0 {
+		args = append(args, r.maxRetries)
+	}
+	return args
 }
 
 func entryIDsToArgs[ID comparable](entries []outbox.OutboxEntry[ID]) []any {

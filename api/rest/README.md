@@ -103,11 +103,13 @@ if err := rest.Register[*User, int64](
 ```go
 userApp, err := appcrud.NewApplication(userRepo, &appcrud.Options[*User, int64]{
 	Hooks: &appcrud.Hooks[*User, int64]{
-		BeforeCreate: func(ctx context.Context, user *User) error {
-			if strings.TrimSpace(user.Name) == "" {
-				return errors.NewCode(errors.Validation, "user name is required")
-			}
-			return nil
+		Create: appcrud.Stage[*User]{
+			Before: func(ctx context.Context, user *User) error {
+				if strings.TrimSpace(user.Name) == "" {
+					return errors.NewCode(errors.Validation, "user name is required")
+				}
+				return nil
+			},
 		},
 	},
 })
@@ -119,7 +121,7 @@ if err := rest.Register[*User, int64](group, userApp); err != nil {
 }
 ```
 
-`Before*`、`After*`、`PostCommit*` 的调用阶段由 `app/crud` 的 writeflow 固定编排；`api/rest` 不修改应用配置。应用构造后再装配安全装饰器，同一应用的 HTTP、Worker、CLI 入口共用这些行为。
+`Before`、`After`、`PostCommit` 的调用阶段由 `app/crud` 的 writeflow 固定编排，按 `Create`、`Update`、`Delete` 动作分组；`api/rest` 不修改应用配置。应用构造后再装配安全装饰器，同一应用的 HTTP、Worker、CLI 入口共用这些行为。
 
 ### 2.1.2 给 CRUD 列表加 QuerySchema（支持自动推导）
 
@@ -344,7 +346,7 @@ audited 写操作约定：
 - `Routing.BasePath`：路由前缀（可选；默认空路径，注册到当前 group 根路径）
 - `Routing.IDCodec`：用于解析 `:id` 参数并复用统一 Bind/Scan 语义；默认会尝试按 ID 底层类型（`int64/string`）自动装配；否则需显式提供（否则 `Build/Register` fail-fast）
 - `Routing.EnableList` / `Routing.EnableGet` / `Routing.EnableCreate` / `Routing.EnableUpdate` / `Routing.EnableDelete`：是否注册对应基础 CRUD 路由（默认：true）；关闭后不注册对应路由
-- `Routing.EnableBatch`：是否注册 batch 路由（默认：true）
+- `Routing.EnableBatch`：是否注册 batch 路由（默认：false；批量路由依赖应用的批量写能力，需通过 `WithBatchOperations(n)` 或显式配置开启）
 - `Query.EnablePagination`：是否允许 `page/size` 分页（默认：true）
 - `Query.DefaultPageSize` / `Query.MaxPageSize`：默认分页大小与最大分页大小；API 层会裁剪 size，application 层也会用 `ServiceConfig.MaxPageSize` 做保护
 - `Query.AllowedFilterFields` / `Query.AllowedSortFields` / `Query.AllowedFields`：query 白名单

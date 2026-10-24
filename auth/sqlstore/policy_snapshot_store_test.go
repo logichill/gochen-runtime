@@ -239,3 +239,36 @@ func (d *uniqueConflictPolicyDB) Exec(ctx context.Context, query string, args ..
 	}
 	return d.IDatabase.Exec(ctx, query, args...)
 }
+
+func TestPolicySnapshotStore_ListPolicySnapshots_WildcardEscaping(t *testing.T) {
+	database := setupAuthzSQLDB(t)
+	store, err := sqlstore.NewPolicySnapshotStore(database, "authz_policy_snapshots")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+		Key:       "tenant_1:main",
+		Version:   "v1",
+		Timestamp: time.Now(),
+	}))
+	require.NoError(t, store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+		Key:       "tenantA1:main",
+		Version:   "v1",
+		Timestamp: time.Now(),
+	}))
+	require.NoError(t, store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+		Key:       "tenant%2:main",
+		Version:   "v1",
+		Timestamp: time.Now(),
+	}))
+
+	list, err := store.ListPolicySnapshots(ctx, "tenant_1", 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "tenant_1:main", list[0].Key)
+
+	list, err = store.ListPolicySnapshots(ctx, "tenant%", 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "tenant%2:main", list[0].Key)
+}

@@ -141,17 +141,21 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 	}
 
 	if r.scopeDeclared {
-		if r.accessColumns.managedScope == "" {
-			r.accessColumns.managedScope = globalNaming.ScopeColumn
+		typ := reflect.TypeOf(zero)
+		for typ != nil && typ.Kind() == reflect.Ptr {
+			typ = typ.Elem()
 		}
-		if r.accessColumns.version == "" {
-			r.accessColumns.version = globalNaming.VersionColumn
+		if r.accessColumns.managedScope == "" && globalNaming.ScopeColumn != "" {
+			if _, ok := findFieldByColumn(typ, globalNaming.ScopeColumn, nil, map[reflect.Type]int{}); ok {
+				r.accessColumns.managedScope = globalNaming.ScopeColumn
+			}
+		}
+		if r.accessColumns.version == "" && globalNaming.VersionColumn != "" {
+			if _, ok := findFieldByColumn(typ, globalNaming.VersionColumn, nil, map[reflect.Type]int{}); ok {
+				r.accessColumns.version = globalNaming.VersionColumn
+			}
 		}
 		if r.accessColumns.ownerID == "" && globalNaming.OwnerIDColumn != "" {
-			typ := reflect.TypeOf(zero)
-			for typ != nil && typ.Kind() == reflect.Ptr {
-				typ = typ.Elem()
-			}
 			if _, ok := findFieldByColumn(typ, globalNaming.OwnerIDColumn, nil, map[reflect.Type]int{}); ok {
 				r.accessColumns.ownerID = globalNaming.OwnerIDColumn
 			}

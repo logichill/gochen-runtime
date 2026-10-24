@@ -49,8 +49,10 @@ func (g *RouteGroup) OPTIONS(path string, h httpx.Handler) httpx.IRouteGroup {
 }
 
 // Group 创建子 group：拼接 prefix 并继承父 group 的中间件快照（子 group 的 Use 不会回写到父 group）。
+//
+// 子前缀先规范化再拼接，避免尾部斜杠产生 "//" 双斜杠 pattern。
 func (g *RouteGroup) Group(prefix string) httpx.IRouteGroup {
-	child := g.server.Group(g.prefix + prefix)
+	child := g.server.Group(httpx.NormalizeRoutePrefix(g.prefix) + httpx.NormalizeRoutePrefix(prefix))
 	if rg, ok := child.(*RouteGroup); ok && rg != nil {
 		rg.middlewares = append([]httpx.Middleware{}, g.middlewares...)
 	}
@@ -69,7 +71,9 @@ func (g *RouteGroup) Use(mw ...httpx.Middleware) httpx.IRouteGroup {
 // - 中间件以快照形式落到 route.middlewares，避免通过 handler wrapper 隐式传播；
 // - 这样 Server 在自动注册 OPTIONS 等场景下可以复用相同的 middleware 语义。
 func (g *RouteGroup) add(method, path string, h httpx.Handler) httpx.IRouteGroup {
-	full := g.prefix + path
+	// path 规范化（前缀斜杠补齐）后拼接，避免 "users" 之类声明拼出 "apiusers"；
+	// prefix 已在 Group 创建时规范化，不会再引入双斜杠。
+	full := g.prefix + httpx.NormalizeRoutePath(path)
 	snapshot := append([]httpx.Middleware{}, g.middlewares...)
 	g.server.mu.Lock()
 	defer g.server.mu.Unlock()

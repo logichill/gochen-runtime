@@ -178,7 +178,9 @@ func DefaultRouteConfig[ID comparable]() *RouteConfig[ID] {
 			EnableCreate: true,
 			EnableUpdate: true,
 			EnableDelete: true,
-			EnableBatch:  true,
+			// 批量路由需要 application 具备批量写能力；默认关闭，避免能力不足时 Build 失败。
+			// 通过 WithBatchOperations 显式开启。
+			EnableBatch: false,
 		},
 		Query: QueryOptions{
 			EnablePagination: true,

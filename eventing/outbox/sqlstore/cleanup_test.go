@@ -497,3 +497,93 @@ func queryInt64List(t *testing.T, database db.IDatabase, ctx context.Context, qu
 	require.NoError(t, rows.Err())
 	return result
 }
+
+func TestCleanupService_CleansFailedRecordsExceedingMaxRetries(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+
+	oldTime := time.Now().AddDate(0, 0, -10)
+	_, err := database.Exec(ctx, `
+		INSERT INTO event_outbox (
+			id, aggregate_id, aggregate_type, event_id, event_type, event_data,
+			status, claim_token, created_at, published_at, retry_count, last_error, lease_until, next_retry_at
+		) VALUES
+		(1, 1001, 'Agg', 'event-failed-exceeded', 'TestEvent', '{}', 'failed', '', ?, NULL, 5, 'perm error', NULL, NULL),
+		(2, 1002, 'Agg', 'event-failed-retying', 'TestEvent', '{}', 'failed', '', ?, NULL, 2, 'transient error', NULL, NULL),
+		(3, 1003, 'Agg', 'event-published', 'TestEvent', '{}', 'published', '', ?, ?, 0, '', NULL, NULL),
+		(4, 1004, 'Agg', 'event-processing-orphaned', 'TestEvent', '{}', 'processing', 'token', ?, NULL, 5, 'crash', ?, NULL)
+	`, oldTime, oldTime, oldTime, oldTime, oldTime, oldTime)
+	require.NoError(t, err)
+
+	service, err := NewCleanupService(database, CleanupPolicy{
+		RetentionDays: 1,
+		BatchSize:     10,
+		MaxRetries:    3,
+	}, logging.NewNoopLogger())
+	require.NoError(t, err)
+
+	result, err := service.Cleanup(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), result.DeletedCount)
+
+	remaining := queryInt64List(t, database, ctx, "SELECT id FROM event_outbox ORDER BY id")
+	assert.Equal(t, []int64{2}, remaining)
+}
+
+func TestDefaultCleanupPolicy_HasDefaultMaxRetries(t *testing.T) {
+	policy := DefaultCleanupPolicy()
+	assert.Equal(t, outbox.DefaultMaxRetries, policy.MaxRetries)
+	assert.Equal(t, 7, policy.RetentionDays)
+}
+
+func TestNewCleanupService_DefaultsMaxRetriesWhenUnset(t *testing.T) {
+	database := setupTestDB(t)
+	// 字面量构造，未显式传 MaxRetries
+	service, err := NewCleanupService(database, CleanupPolicy{
+		RetentionDays: 14,
+	}, logging.NewNoopLogger())
+	require.NoError(t, err)
+	assert.Equal(t, outbox.DefaultMaxRetries, service.policy.MaxRetries)
+}
+
+func TestNewCleanupService_PreservesNoMaxRetries(t *testing.T) {
+	database := setupTestDB(t)
+	service, err := NewCleanupService(database, CleanupPolicy{
+		RetentionDays: 14,
+		MaxRetries:    outbox.NoMaxRetries,
+	}, logging.NewNoopLogger())
+	require.NoError(t, err)
+	assert.Equal(t, outbox.NoMaxRetries, service.policy.MaxRetries)
+}
+
+// 归档批次必须被收敛到 sqlsafe 参数上限内，避免 IN (...) 查询参数溢出。
+func TestCleanupService_ArchiveBatchSizeClampedToParamLimit(t *testing.T) {
+	service, err := NewCleanupService(setupTestDB(t), CleanupPolicy{
+		RetentionDays:  1,
+		BatchSize:      5000,
+		ArchiveEnabled: true,
+	}, logging.NewNoopLogger())
+	require.NoError(t, err)
+
+	if got := service.effectiveArchiveBatchSize(); got != maxArchiveBatchSize {
+		t.Fatalf("expected archive batch clamped to %d, got %d", maxArchiveBatchSize, got)
+	}
+
+	// 默认值 1000 也超过 900 上限，同样必须被收敛。
+	service, err = NewCleanupService(setupTestDB(t), DefaultCleanupPolicy(), logging.NewNoopLogger())
+	require.NoError(t, err)
+	if got := service.effectiveArchiveBatchSize(); got != maxArchiveBatchSize {
+		t.Fatalf("expected default archive batch clamped to %d, got %d", maxArchiveBatchSize, got)
+	}
+
+	// 小批次不受影响。
+	service, err = NewCleanupService(setupTestDB(t), CleanupPolicy{
+		RetentionDays:  1,
+		BatchSize:      50,
+		ArchiveEnabled: true,
+	}, logging.NewNoopLogger())
+	require.NoError(t, err)
+	if got := service.effectiveArchiveBatchSize(); got != 50 {
+		t.Fatalf("expected small archive batch preserved, got %d", got)
+	}
+}

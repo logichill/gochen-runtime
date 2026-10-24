@@ -127,6 +127,11 @@ func (rb *RouteBuilder[T, ID]) validateCORSConfig() error {
 }
 
 func (rb *RouteBuilder[T, ID]) validateServiceCapabilities() error {
+	if rb.config != nil && rb.config.Routing.EnableList {
+		if capProbe, ok := any(rb.service).(interface{ HasQueryCapability() bool }); ok && !capProbe.HasQueryCapability() {
+			return errors.NewCode(errors.InvalidInput, "list routes require service repository to implement IQueryRepository or IQueryableRepository")
+		}
+	}
 	if rb.hasEnabledBatchRoutes() {
 		if _, ok := rb.batchWriter(); !ok {
 			return errors.NewCode(errors.InvalidInput, "batch routes require a built-in batch writer or service-specific batch writer")
@@ -145,7 +150,7 @@ func (rb *RouteBuilder[T, ID]) validateAuditedCapabilities() error {
 	if rb.auditedService == nil {
 		return errors.NewCode(errors.InvalidInput, "audited entity requires service to implement audited operations")
 	}
-	if rb.auditedService.AuditStore() == nil {
+	if !rb.auditedService.HasAuditStore() {
 		return errors.NewCode(errors.InvalidInput, "audited entity requires non-nil auditStore")
 	}
 	return nil

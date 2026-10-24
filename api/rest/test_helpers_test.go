@@ -29,6 +29,13 @@ func (noopRepository) List(context.Context, int, int) ([]*fakeEntity, error) {
 }
 func (noopRepository) Count(context.Context) (int64, error)        { return 0, nil }
 func (noopRepository) Exists(context.Context, int64) (bool, error) { return true, nil }
+func (noopRepository) CreateAll(context.Context, []*fakeEntity) error {
+	return nil
+}
+func (noopRepository) UpdateAll(context.Context, []*fakeEntity) error {
+	return nil
+}
+func (noopRepository) DeleteAll(context.Context, []int64) error { return nil }
 
 type capturingRepository struct {
 	gotUpdate   *fakeEntity

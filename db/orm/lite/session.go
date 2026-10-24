@@ -35,7 +35,13 @@ func (s *session) Rollback() error {
 	if s.tx == nil {
 		return errors.NewCode(errors.InvalidInput, "basic.session: tx is nil")
 	}
-	return s.tx.Rollback()
+	err := s.tx.Rollback()
+	// 回滚后提交后回调不会再判发：清空残留条目（及其捕获的 context 引用）
+	// 并复位 drained，保证会话/分发器可复用、不泄漏内存。
+	if dispatcher, ok := s.afterCommit.(interface{ Reset() }); ok {
+		dispatcher.Reset()
+	}
+	return err
 }
 
 // AfterCommitDispatcher 暴露绑定在 session 上的提交后回调分发器。
