@@ -122,6 +122,9 @@ func (o *l3Orm) BeginTx(context.Context, *sql.TxOptions) (orm.IOrmSession, error
 }
 func (o *l3Orm) Database() db.IDatabase { return nil }
 
+// DatasourceID 测试替身与真实适配器同一契约：参与事务传播就必须提供身份。
+func (o *l3Orm) DatasourceID() string { return "l3-test-datasource" }
+
 func (s *l3Session) Capabilities() orm.Capabilities           { return nil }
 func (s *l3Session) WithContext(context.Context) orm.IOrm     { return s }
 func (s *l3Session) Model(*orm.ModelMeta) (orm.IModel, error) { return s.model, nil }
@@ -132,6 +135,9 @@ func (s *l3Session) BeginTx(context.Context, *sql.TxOptions) (orm.IOrmSession, e
 	return nil, errors.NewCode(errors.Unsupported, "nested begin")
 }
 func (s *l3Session) Database() db.IDatabase { return nil }
+
+// DatasourceID 与 l3Orm 同源：同一数据源身份。
+func (s *l3Session) DatasourceID() string { return "l3-test-datasource" }
 func (s *l3Session) Rollback() error        { return nil }
 func (s *l3Session) Commit() error {
 	if s.dispatcher != nil {

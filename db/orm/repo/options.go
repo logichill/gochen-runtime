@@ -215,6 +215,27 @@ func WithAudited[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
 	}
 }
 
+// WithoutVersioning 显式退出 Update 的乐观锁版本保护。
+//
+// 默认策略：实体只要具备可写版本字段（嵌入 crud.Entity / audited.AuditedEntity）
+// 或启用审计，Update 就以 WHERE id = ? AND version = ? 原子执行并推进版本。
+// 本选项只服务于“表有版本列但业务明确不需要框架乐观锁”的场景（例如版本由
+// 外部系统管理、或共享表写入方不受本框架约束）：Update 不施加版本条件、
+// 不推进版本，旧值覆盖的后果由调用方承担。
+//
+// 注意：实体模型仍会照常读写 version 列（Save 按列全量写入），“表没有版本列”
+// 的情况应调整实体模型，本选项解决不了缺列问题。
+//
+// 构造期约束：启用审计的仓储不可退出（审计乐观锁依赖版本列），否则 NewRepo 报错。
+func WithoutVersioning[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
+	return func(r *Repo[T, ID]) {
+		if r == nil {
+			return
+		}
+		r.versioningDisabled = true
+	}
+}
+
 // WriteMissMode 决定约束写命中 0 行（RowsAffected == 0）时如何归因错误。
 //
 // 约束写的 WHERE 同时含 id / 租户 / 范围 / revision，命中 0 行有三种可能成因，

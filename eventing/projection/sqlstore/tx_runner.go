@@ -5,6 +5,7 @@ import (
 	"database/sql"
 
 	"gochen/db/orm"
+	"gochen/db/tx"
 	"gochen/errors"
 )
 
@@ -22,6 +23,10 @@ func NewSQLCheckpointTxRunner(ormEngine orm.IOrm) (*SQLCheckpointTxRunner, error
 }
 
 // WithinTx 在 ORM 事务中执行 fn，并把事务 session 注入 ctx。
+//
+// 生命周期走统一的 tx.RunTxLifecycle：ctx 中建立共享 lifecycle，内层作用域
+// （如 Repo.WithinTx / 应用服务事务）失败或 panic 时标记 rollback-only，
+// 物理提交点统一检查并拒绝提交——本入口不再自持一套 begin/commit 旁路。
 func (r *SQLCheckpointTxRunner) WithinTx(ctx context.Context, fn func(txCtx context.Context) error) error {
 	if ctx == nil {
 		return errors.NewCode(errors.InvalidInput, "ctx is nil")
@@ -37,25 +42,5 @@ func (r *SQLCheckpointTxRunner) WithinTx(ctx context.Context, fn func(txCtx cont
 	if err != nil {
 		return errors.Wrap(err, errors.Database, "begin projection transaction failed")
 	}
-	txCtx, err := orm.WithTxSession(ctx, session, true)
-	if err != nil {
-		_ = session.Rollback()
-		return err
-	}
-
-	committed := false
-	defer func() {
-		if !committed {
-			_ = session.Rollback()
-		}
-	}()
-
-	if err := fn(txCtx); err != nil {
-		return err
-	}
-	if err := session.Commit(); err != nil {
-		return errors.Wrap(err, errors.Database, "commit projection transaction failed")
-	}
-	committed = true
-	return nil
+	return tx.RunTxLifecycle(ctx, tx.SessionRunner{Session: session}, fn)
 }

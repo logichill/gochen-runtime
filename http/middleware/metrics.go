@@ -1,31 +1,17 @@
 package middleware
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"gochen/errors"
 	"gochen/httpx"
 	"gochen/observe"
 )
-
-const normalizedPathCacheMaxEntries = 4096
-
-var (
-	defaultNormalizedPathCache = newNormalizedPathCache()
-)
-
-type normalizedPathCacheStore struct {
-	mu    sync.RWMutex
-	cache map[string]string // path -> normalized path
-	order []string
-}
-
-func newNormalizedPathCache() *normalizedPathCacheStore {
-	return &normalizedPathCacheStore{cache: make(map[string]string)}
-}
 
 // MetricsConfig 指标中间件配置。
 type MetricsConfig struct {
@@ -41,26 +27,65 @@ type MetricsConfig struct {
 	// SkipPathPrefixes 不记录指标的路径前缀。
 	SkipPathPrefixes []string
 
-	// Buckets 延迟直方图分桶（毫秒），默认使用标准分桶。
+	// Buckets 延迟直方图分桶（毫秒）。
+	//
+	// 分桶（配置值或默认的 DefaultDurationBucketsMS）在装配阶段注册生效：
+	// 收集器必须支持带分桶注册（histogramRegistrar），注册失败（含同名指标
+	// 已被不同配置注册）立即返回错误，不允许运行期静默退回默认分桶。
+	// 观察值与分桶同为毫秒。
 	Buckets []float64
 }
 
-type histogramWithBuckets interface {
-	HistogramWithBuckets(name string, value float64, buckets []float64, labels map[string]string)
+// DefaultDurationBucketsMS 未配置 Buckets 时使用的默认耗时分桶（毫秒）。
+//
+// 与 Prometheus 默认分桶（0.005…10，秒尺度）不同：本中间件的观察值是毫秒，
+// 默认分桶必须与观察值同单位，否则典型 Web 请求（数十毫秒）会全部落入
+// 最后一个有限桶，延迟分布不可用。
+var DefaultDurationBucketsMS = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+
+// histogramRegistrar 声明“可按分桶注册直方图”的收集器能力。
+type histogramRegistrar interface {
+	RegisterHistogram(name, help string, labelNames []string, buckets []float64) error
 }
+
+// routePatternProvider 可选能力：请求上下文暴露命中的路由模板。
+//
+// 由 HTTP 适配层实现（nethttp 基于 Go 1.22+ ServeMux 的 r.Pattern，
+// gin 基于 FullPath），未命中任何路由时返回空字符串。
+type routePatternProvider interface {
+	RoutePattern() string
+}
+
+// UnmatchedRouteLabel 未命中路由的请求统一使用的 path 标签值。
+//
+// 未命中路由的原始路径完全由客户端控制，进入指标标签会造成无基数上限的
+// 时间序列增长，因此归入固定类别；高基数信息应进入日志或 trace。
+const UnmatchedRouteLabel = "unmatched"
+
+// UnpatternedRouteLabel 上下文不暴露路由模板时使用的 path 标签值。
+//
+// 没有模板就无法从任意路径中可靠区分静态段与动态段（历史上按数字/UUID
+// 猜测的归一化对 slug 类路径无效，仍会产生无界标签）。固定类别牺牲了
+// 静态路径的区分度，换取标签集合有界；需要精确路径分布时给适配层实现
+// RoutePattern，而不是退回猜测。
+const UnpatternedRouteLabel = "unpatterned"
 
 // MetricsMiddleware 创建 HTTP 请求指标中间件。
 //
 // 说明：
 // - 记录请求计数（按 method/path/status 维度）；
-// - 记录请求延迟直方图；
+// - 记录请求延迟直方图（毫秒）；
 // - 记录当前进行中请求数。
+//
+// path 标签使用路由模板（如 /items/:slug 或 /items/{slug}）而非实际路径：
+// 同一路由的任意动态路径值只产生一个标签值；未命中路由归入
+// UnmatchedRouteLabel；上下文不暴露路由模板归入 UnpatternedRouteLabel。
 //
 // 指标名称：
 // - {namespace}_http_requests_total：请求总数计数器
 // - {namespace}_http_request_duration_ms：请求延迟直方图（毫秒）
 // - {namespace}_http_requests_in_flight：进行中请求仪表盘
-func MetricsMiddleware(cfg MetricsConfig) httpx.Middleware {
+func MetricsMiddleware(cfg MetricsConfig) (httpx.Middleware, error) {
 	metrics := cfg.Metrics
 	if metrics == nil {
 		metrics = &observe.DefaultMetrics{}
@@ -77,6 +102,28 @@ func MetricsMiddleware(cfg MetricsConfig) httpx.Middleware {
 	requestDuration := namespace + "http_request_duration_ms"
 	requestsInFlight := namespace + "http_requests_in_flight"
 
+	// 分桶在装配期统一声明并注册（配置值或毫秒默认值）：收集器不支持注册、
+	// 分桶非法、或同名指标已按别的配置存在，都在这里明确失败，
+	// 不进入“配置了但静默用默认分桶”的运行态。
+	registrar, ok := metrics.(histogramRegistrar)
+	if !ok || registrar == nil {
+		return nil, errors.NewCode(errors.Unsupported,
+			"metrics collector does not support histogram registration; use a registration-capable collector (e.g. observe.DefaultMetrics or contrib prometheus)")
+	}
+	buckets := cfg.Buckets
+	if len(buckets) == 0 {
+		buckets = DefaultDurationBucketsMS
+	}
+	if err := validateDurationBuckets(buckets); err != nil {
+		return nil, err
+	}
+	if err := registrar.RegisterHistogram(requestDuration,
+		"HTTP request duration in milliseconds",
+		[]string{"method", "path", "status"}, buckets); err != nil {
+		return nil, errors.Wrap(err, errors.FailedPrecondition,
+			"failed to register http duration histogram with configured buckets")
+	}
+
 	type inFlightEntry struct {
 		counter  atomic.Int64
 		lastZero atomic.Int64 // unix nano; 0 means not in zero state / unknown
@@ -84,7 +131,6 @@ func MetricsMiddleware(cfg MetricsConfig) httpx.Middleware {
 
 	var inFlight sync.Map // key -> *inFlightEntry
 	var cleanupTick atomic.Uint64
-	pathCache := newNormalizedPathCache()
 	const cleanupEveryN = 1024
 	const inFlightTTL = 10 * time.Minute
 
@@ -101,7 +147,7 @@ func MetricsMiddleware(cfg MetricsConfig) httpx.Middleware {
 		}
 
 		method := ctx.Method()
-		normalizedPath := pathCache.normalize(path)
+		normalizedPath := routePathLabel(ctx)
 
 		// 记录进行中请求
 		key := method + "\n" + normalizedPath
@@ -166,125 +212,53 @@ func MetricsMiddleware(cfg MetricsConfig) httpx.Middleware {
 		}
 		metrics.Counter(requestsTotal, 1, labels)
 
-		// 请求延迟
-		if len(cfg.Buckets) > 0 {
-			if hb, ok := metrics.(histogramWithBuckets); ok {
-				hb.HistogramWithBuckets(requestDuration, float64(elapsed.Milliseconds()), cfg.Buckets, labels)
-			} else {
-				metrics.Histogram(requestDuration, float64(elapsed.Milliseconds()), labels)
-			}
-		} else {
-			metrics.Histogram(requestDuration, float64(elapsed.Milliseconds()), labels)
-		}
+		// 请求延迟（毫秒，与注册阶段的毫秒分桶同一单位）
+		metrics.Histogram(requestDuration, float64(elapsed.Milliseconds()), labels)
 
 		return err
-	}
+	}, nil
 }
 
-// normalizePath 规范化路径，移除路径参数以减少指标基数。
+// validateDurationBuckets 在装配期校验耗时分桶（毫秒）。
 //
-// 例如：/users/123 -> /users/:id
-func normalizePath(path string) string {
-	return defaultNormalizedPathCache.normalize(path)
-}
-
-func (c *normalizedPathCacheStore) normalize(path string) string {
-	if c == nil {
-		return normalizePathUncached(path)
+// 非有限值、非正数或非严格递增的分桶对直方图没有意义；这类配置如果
+// 放到运行期才暴露（某些后端在首个观察值上才 panic），故障会迟到且难定位。
+func validateDurationBuckets(buckets []float64) error {
+	if len(buckets) == 0 {
+		return errors.NewCode(errors.InvalidInput, "duration buckets cannot be empty")
 	}
-	c.mu.RLock()
-	cached, ok := c.cache[path]
-	c.mu.RUnlock()
-	if ok {
-		return cached
-	}
-
-	normalized := normalizePathUncached(path)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cached, ok := c.cache[path]; ok {
-		return cached
-	}
-	if len(c.cache) >= normalizedPathCacheMaxEntries {
-		c.evictOldest()
-	}
-	c.cache[path] = normalized
-	c.order = append(c.order, path)
-	return normalized
-}
-
-func (c *normalizedPathCacheStore) evictOldest() {
-	for len(c.order) > 0 {
-		oldest := c.order[0]
-		copy(c.order, c.order[1:])
-		c.order[len(c.order)-1] = ""
-		c.order = c.order[:len(c.order)-1]
-		if _, ok := c.cache[oldest]; ok {
-			delete(c.cache, oldest)
-			return
+	for i, b := range buckets {
+		if math.IsNaN(b) || math.IsInf(b, 0) {
+			return errors.NewCode(errors.InvalidInput, "duration buckets must be finite").
+				WithContext("index", i)
+		}
+		if b <= 0 {
+			return errors.NewCode(errors.InvalidInput, "duration buckets must be positive").
+				WithContext("index", i)
+		}
+		if i > 0 && b <= buckets[i-1] {
+			return errors.NewCode(errors.InvalidInput, "duration buckets must be strictly increasing").
+				WithContext("index", i).
+				WithContext("previous", buckets[i-1]).
+				WithContext("current", b)
 		}
 	}
+	return nil
 }
 
-func clearNormalizedPathCache() {
-	defaultNormalizedPathCache = newNormalizedPathCache()
-}
-
-func normalizedPathCacheLen() int {
-	defaultNormalizedPathCache.mu.RLock()
-	defer defaultNormalizedPathCache.mu.RUnlock()
-	return len(defaultNormalizedPathCache.cache)
-}
-
-func normalizePathUncached(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		// 检测数字 ID
-		if isNumeric(part) {
-			parts[i] = ":id"
-			continue
-		}
-		// 检测 UUID
-		if isUUID(part) {
-			parts[i] = ":uuid"
-			continue
-		}
+// routePathLabel 决定本次请求的 path 指标标签。
+//
+//	模板可用            → 路由模板（"/items/{slug}" / "/items/:slug"）
+//	模板能力存在但未命中 → UnmatchedRouteLabel
+//	上下文无模板能力     → UnpatternedRouteLabel
+func routePathLabel(ctx httpx.IContext) string {
+	provider, ok := ctx.(routePatternProvider)
+	if !ok || provider == nil {
+		return UnpatternedRouteLabel
 	}
-	return strings.Join(parts, "/")
-}
-
-// isNumeric 判断Numeric。
-func isNumeric(s string) bool {
-	if s == "" {
-		return false
+	pattern := strings.TrimSpace(provider.RoutePattern())
+	if pattern == "" {
+		return UnmatchedRouteLabel
 	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// isUUID 判断UUID。
-func isUUID(s string) bool {
-	// UUID 格式：8-4-4-4-12，共 36 个字符
-	if len(s) != 36 {
-		return false
-	}
-	for i, c := range s {
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if c != '-' {
-				return false
-			}
-		} else {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-				return false
-			}
-		}
-	}
-	return true
+	return pattern
 }

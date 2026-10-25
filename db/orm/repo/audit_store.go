@@ -113,6 +113,11 @@ func isNilAuditIDGenerator(generator gen.IGenerator[int64]) bool {
 
 func (s *AuditStore) modelFor(ctx context.Context) (orm.IModel, error) {
 	if session, ok := orm.SessionFromContext(ctx); ok && session != nil {
+		// 审计记录是安全证据，归属校验与仓储同一口径：异源或无法验证的事务
+		// 会话直接拒绝，防止审计流水被写进别的数据源。
+		if err := ensureSessionDatasourceFor(s.orm, session, s.meta.Table); err != nil {
+			return nil, err
+		}
 		return session.Model(s.meta)
 	}
 	return s.model, nil

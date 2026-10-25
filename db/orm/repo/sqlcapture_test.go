@@ -82,6 +82,15 @@ func (c *capturingDB) lastArgs(tb testing.TB) []any {
 	return stmts[len(stmts)-1].Args
 }
 
+// DatasourceID 转发底层身份：包装层不得吞掉数据源标识，
+// 否则跨数据源事务传播校验因“无法验证”被拒绝。
+func (c *capturingDB) DatasourceID() string {
+	if provider, ok := c.inner.(db.IDatasourceIdentityProvider); ok && provider != nil {
+		return provider.DatasourceID()
+	}
+	return ""
+}
+
 func (c *capturingDB) Query(ctx context.Context, query string, args ...any) (db.IRows, error) {
 	c.record("query", query, args)
 	return c.inner.Query(ctx, query, args...)
@@ -153,6 +162,15 @@ func (t *capturingTx) MaxBindParameters() int {
 		return provider.MaxBindParameters()
 	}
 	return dialect.DefaultMaxBindParameters
+}
+
+// DatasourceID 同样必须显式转发：吞掉身份会让事务会话的归属校验
+// 因“无法验证”而被拒绝。
+func (t *capturingTx) DatasourceID() string {
+	if provider, ok := t.ITransaction.(db.IDatasourceIdentityProvider); ok {
+		return provider.DatasourceID()
+	}
+	return ""
 }
 
 func (c *capturingDB) Ping(ctx context.Context) error { return c.inner.Ping(ctx) }

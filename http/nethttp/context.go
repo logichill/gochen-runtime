@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -93,6 +94,29 @@ func (c *Context) Method() string {
 
 func (c *Context) Path() string {
 	return c.path
+}
+
+// RoutePattern 返回本次请求命中的路由模板（如 "/items/{slug}"）。
+//
+// 基于 Go 1.22+ http.ServeMux 匹配后写入请求的 Pattern 字段；去掉可能存在的
+// 方法前缀（注册模式形如 "GET /items/{slug}"），只保留路径模板。
+// 未命中任何路由（404）或模板不可用时返回空字符串，调用方（如指标中间件）
+// 应将此类请求归入固定类别，避免以客户端可控的原始路径作为标签。
+func (c *Context) RoutePattern() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	req := c.baseRequest
+	c.mu.RUnlock()
+	if req == nil || req.Pattern == "" {
+		return ""
+	}
+	pattern := req.Pattern
+	if i := strings.IndexByte(pattern, ' '); i >= 0 {
+		pattern = pattern[i+1:]
+	}
+	return pattern
 }
 
 func (c *Context) Query(key string) string {

@@ -130,6 +130,19 @@ func (o *Orm) wrapSession(tx db.ITransaction) (orm.IOrmSession, error) {
 
 func (o *Orm) Database() db.IDatabase { return o.db }
 
+// DatasourceID 实现 db.IDatasourceIdentityProvider 语义：身份由底层连接派生。
+// 事务会话内部包装的是事务句柄，而事务句柄会返回其根连接的同一标识，
+// 因此根 Orm 与其事务会话的 DatasourceID 一致，可被仓储用于归属校验。
+func (o *Orm) DatasourceID() string {
+	if o == nil || o.db == nil {
+		return ""
+	}
+	if provider, ok := o.db.(db.IDatasourceIdentityProvider); ok && provider != nil {
+		return provider.DatasourceID()
+	}
+	return ""
+}
+
 // NamingConvention 实现 db.INamingConventionProvider。
 func (o *Orm) NamingConvention() db.NamingConvention {
 	if o == nil {

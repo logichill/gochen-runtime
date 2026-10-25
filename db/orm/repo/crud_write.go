@@ -2,7 +2,6 @@ package repo
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"gochen-runtime/internal/sqlresult"
@@ -37,6 +36,10 @@ func (r *Repo[T, ID]) EnsureID(entity T) error {
 }
 
 // prepareCreate 在创建前补齐数据域、ID 和审计/时间戳字段。
+//
+// 审计实体的创建归因、初始版本与删除态一律由服务端控制：客户端提供的任何
+// 初始值都会被覆写，防止经公开入口伪造 created_by/created_at/version 或
+// 直接触发软删除态。可信的历史数据导入应使用专门入口，而不是 Create。
 func (r *Repo[T, ID]) prepareCreate(ctx context.Context, entity T) error {
 	if err := r.applyDataScopeToEntity(ctx, entity); err != nil {
 		return err
@@ -48,10 +51,16 @@ func (r *Repo[T, ID]) prepareCreate(ctx context.Context, entity T) error {
 	if aud, ok := any(entity).(audited.IAuditable); ok {
 		by := r.actorFromContext(ctx)
 		now := time.Now()
-		if aud.GetCreatedAt().IsZero() && strings.TrimSpace(aud.GetCreatedBy()) == "" {
-			aud.SetCreatedInfo(by, now)
+		if setter, ok := any(entity).(domain.ISettableVersion); ok {
+			setter.SetVersion(0)
 		}
+		aud.SetCreatedInfo(by, now)
 		aud.SetUpdatedInfo(by, now)
+		if deleter, ok := any(entity).(interface {
+			SetDeletedInfo(at *time.Time, by *string)
+		}); ok {
+			deleter.SetDeletedInfo(nil, nil)
+		}
 		return nil
 	}
 
@@ -186,7 +195,29 @@ func (r *Repo[T, ID]) Create(ctx context.Context, entity T) error {
 	return nil
 }
 
-// Update 按主键更新实体，并在启用审计字段时附带乐观锁检查。
+// restoreEntityVersion 在写入失败后把实体版本恢复到进入更新时的值。
+//
+// 版本推进发生在写入之前（prepareUpdate 的 SetUpdatedInfo 或仓储的 SetVersion）；
+// 若写入失败（并发冲突 / 目标不存在 / 基础设施错误）后内存版本停留在已推进值，
+// 调用方用同一对象直接重试会"恰好"命中数据库里的新版本并覆盖别人的写入。
+// 事务整体回滚同理：内存版本与数据库已不一致，调用方应重新 Get，而不是复用旧对象。
+func restoreEntityVersion[T domain.IEntity[ID], ID comparable](entity T, version uint64) {
+	if setter, ok := any(entity).(domain.ISettableVersion); ok && setter != nil {
+		setter.SetVersion(version)
+	}
+}
+
+// Update 按主键更新实体。
+//
+// 语义契约（见 domain/crud.IRepository）：
+//   - 版本化实体（嵌入 crud.Entity / AuditedEntity，或显式启用审计）默认开启
+//     乐观锁：更新以 WHERE id = ? AND version = ? 原子执行，同一版本只有一次
+//     更新成功，版本随更新推进；未命中时区分 NotFound（记录不存在或已软删）
+//     与 Concurrency（版本不匹配）；
+//   - 非版本化实体不施加版本条件，但同样检查影响行数：目标不存在返回 NotFound，
+//     不再静默成功；
+//   - 更新失败（含并发冲突）时实体版本保持进入时的值，重试同一对象不会
+//     意外命中新版本。
 func (r *Repo[T, ID]) Update(ctx context.Context, entity T) error {
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
@@ -200,37 +231,61 @@ func (r *Repo[T, ID]) Update(ctx context.Context, entity T) error {
 	}
 	expectedVersion := entity.GetVersion()
 	if err := r.prepareUpdate(ctx, entity); err != nil {
+		restoreEntityVersion(entity, expectedVersion)
 		return err
 	}
 	quer, err := r.query(ctx)
 	if err != nil {
+		restoreEntityVersion(entity, expectedVersion)
 		return err
 	}
 	quer = quer.Where("id = ?", entity.GetID())
 	if r.softDelete {
 		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
 	}
-	// 乐观锁（仅在启用审计字段时默认打开，因为版本推进语义依赖 SetUpdatedInfo 的约定）。
-	if r.auditFields {
+	if r.versioned() {
+		// 版本化实体：非审计路径的版本推进由仓储完成；审计路径在 prepareUpdate
+		// 中随 SetUpdatedInfo 推进，此处不重复推进。
+		if !r.auditFields {
+			if setter, ok := any(entity).(domain.ISettableVersion); ok && setter != nil {
+				setter.SetVersion(expectedVersion + 1)
+			}
+		}
 		quer = quer.Where(r.versionColumn()+" = ?", expectedVersion)
 		res, err := quer.SaveWithResult(entity)
-		if err == nil {
-			affected, err := rowsAffected(res, "update")
-			if err != nil {
-				return err
+		if err != nil {
+			restoreEntityVersion(entity, expectedVersion)
+			if errors.Is(err, errors.Unsupported) {
+				return errors.Wrap(err, errors.Unsupported, "optimistic locking requires an orm model with result support")
 			}
-			if affected == 0 {
-				return r.classifyActiveUpdateMiss(ctx, entity.GetID(), expectedVersion)
-			}
-			return nil
+			return writeError(err, "failed to update record")
 		}
+		affected, err := rowsAffected(res, "update")
+		if err != nil {
+			restoreEntityVersion(entity, expectedVersion)
+			return err
+		}
+		if affected == 0 {
+			restoreEntityVersion(entity, expectedVersion)
+			return r.classifyActiveUpdateMiss(ctx, entity.GetID(), expectedVersion)
+		}
+		return nil
+	}
+	res, err := quer.SaveWithResult(entity)
+	if err != nil {
 		if errors.Is(err, errors.Unsupported) {
-			return errors.Wrap(err, errors.Unsupported, "optimistic locking requires an orm model with result support")
+			return r.fallbackOnUnsupported(ctx, entity.GetID(), true, "failed to update record", func() error {
+				return quer.Save(entity)
+			})
 		}
 		return writeError(err, "failed to update record")
 	}
-	if err := quer.Save(entity); err != nil {
-		return writeError(err, "failed to update record")
+	affected, err := rowsAffected(res, "update")
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return errors.NewCode(errors.NotFound, "record not found").WithContext("id", entity.GetID())
 	}
 	return nil
 }

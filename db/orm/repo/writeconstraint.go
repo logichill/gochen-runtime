@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gochen/auth/scoped"
+	"gochen/domain"
 	"gochen/errors"
 )
 
@@ -43,6 +44,8 @@ func (r *Repo[T, ID]) prepareCreateWithConstraint(ctx context.Context, entity T,
 
 // UpdateWithConstraint 在显式写入约束下更新实体。
 func (r *Repo[T, ID]) UpdateWithConstraint(ctx context.Context, entity T, constraint scoped.WriteConstraint) error {
+	enterVersion := entity.GetVersion()
+	restore := func() { restoreEntityVersion(entity, enterVersion) }
 	resource, expectedVersion, err := r.requireVersionedConstraint(constraint, entity.GetID(), false)
 	if err != nil {
 		return err
@@ -65,22 +68,34 @@ func (r *Repo[T, ID]) UpdateWithConstraint(ctx context.Context, entity T, constr
 		}
 	}
 	if err := r.prepareUpdate(ctx, entity); err != nil {
+		restore()
 		return err
 	}
+	// 与普通 Update 同一版本口径：非审计的版本化实体由仓储推进版本，
+	// 两个持有同一版本的成功更新不允许都命中（后者必须 Concurrency）。
+	if r.versioned() && !r.auditFields {
+		if setter, ok := any(entity).(domain.ISettableVersion); ok && setter != nil {
+			setter.SetVersion(expectedVersion + 1)
+		}
+	}
 	if err := r.applyConstraintToEntity(entity, resource); err != nil {
+		restore()
 		return err
 	}
 	quer, err := r.query(ctx)
 	if err != nil {
+		restore()
 		return err
 	}
 	quer = quer.Where("id = ?", entity.GetID())
 	quer, err = r.applyConstraintFilters(quer, resource, expectedVersion)
 	if err != nil {
+		restore()
 		return err
 	}
 	result, err := quer.SaveWithResult(entity)
 	if err != nil {
+		restore()
 		if errors.Is(err, errors.Unsupported) {
 			return errors.NewCode(errors.Unsupported, "constrained update requires an orm model with result support")
 		}
@@ -88,9 +103,13 @@ func (r *Repo[T, ID]) UpdateWithConstraint(ctx context.Context, entity T, constr
 	}
 	affected, err := rowsAffected(result, "constrained update")
 	if err != nil {
+		restore()
 		return err
 	}
 	if affected == 0 {
+		// 写入未命中：实体版本恢复到进入时的值（含 0=省略），与普通 Update
+		// 的失败口径一致，重试同一对象不得意外命中新版本。
+		restore()
 		return r.classifyConstraintWriteMiss(ctx, entity.GetID(), expectedVersion)
 	}
 	return nil

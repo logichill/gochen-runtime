@@ -3,6 +3,7 @@ package stdsql
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"gochen-runtime/db/dialect"
 	"gochen/contextx"
 	"gochen/db"
@@ -193,6 +194,15 @@ func (d *DB) SQLDB() *sql.DB { return d.db }
 // DialectName 返回当前底层驱动名，用于上层选择 SQL 方言。
 func (d *DB) DialectName() string {
 	return d.driver
+}
+
+// DatasourceID 实现 core.IDatasourceIdentityProvider。
+// 标识由底层连接池指针派生：同一 *sql.DB（含其开启的事务）返回相同标识。
+func (d *DB) DatasourceID() string {
+	if d == nil || d.db == nil {
+		return ""
+	}
+	return fmt.Sprintf("stdsql:%p", d.db)
 }
 
 // MaxBindParameters 实现 core.IBindParameterLimitProvider，供批量操作分片。

@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"strconv"
 	"sync"
 	"testing"
 
@@ -10,66 +9,13 @@ import (
 	"gochen/observe"
 )
 
-func TestNormalizePath(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"/users", "/users"},
-		{"/users/123", "/users/:id"},
-		{"/users/123/posts", "/users/:id/posts"},
-		{"/users/123/posts/456", "/users/:id/posts/:id"},
-		{"/items/550e8400-e29b-41d4-a716-446655440000", "/items/:uuid"},
-		{"/api/v1/users", "/api/v1/users"},
-		{"/", "/"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := normalizePath(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestNormalizePathCacheEvictsOldestAtMaxEntries(t *testing.T) {
-	clearNormalizedPathCache()
-	t.Cleanup(clearNormalizedPathCache)
-
-	for i := 0; i < normalizedPathCacheMaxEntries; i++ {
-		_ = normalizePath("/items/" + strconv.Itoa(i))
-	}
-	_ = normalizePath("/users/1")
-
-	assert.Equal(t, normalizedPathCacheMaxEntries, normalizedPathCacheLen())
-	assert.Equal(t, "/users/:id", normalizePath("/users/1"))
-}
-
-func TestIsNumeric(t *testing.T) {
-	assert.True(t, isNumeric("123"))
-	assert.True(t, isNumeric("0"))
-	assert.True(t, isNumeric("999999"))
-	assert.False(t, isNumeric(""))
-	assert.False(t, isNumeric("abc"))
-	assert.False(t, isNumeric("12a"))
-	assert.False(t, isNumeric("a12"))
-}
-
-func TestIsUUID(t *testing.T) {
-	assert.True(t, isUUID("550e8400-e29b-41d4-a716-446655440000"))
-	assert.True(t, isUUID("550E8400-E29B-41D4-A716-446655440000"))
-	assert.False(t, isUUID(""))
-	assert.False(t, isUUID("123"))
-	assert.False(t, isUUID("not-a-uuid-string-here"))
-	assert.False(t, isUUID("550e8400e29b41d4a716446655440000")) // no dashes
-}
-
 func TestMetricsMiddleware_NilContext(t *testing.T) {
-	mw := MetricsMiddleware(MetricsConfig{})
+	mw, err := MetricsMiddleware(MetricsConfig{})
+	assert.NoError(t, err)
+	assert.NotNil(t, mw)
 
 	nextCalled := false
-	err := mw(nil, func() error {
+	err = mw(nil, func() error {
 		nextCalled = true
 		return nil
 	})
@@ -82,7 +28,8 @@ func TestMetricsConfig_DefaultValues(t *testing.T) {
 	cfg := MetricsConfig{}
 
 	// 验证默认配置不会 panic
-	mw := MetricsMiddleware(cfg)
+	mw, err := MetricsMiddleware(cfg)
+	assert.NoError(t, err)
 	assert.NotNil(t, mw)
 }
 
@@ -91,7 +38,8 @@ func TestMetricsConfig_WithNamespace(t *testing.T) {
 		Namespace: "myapp",
 	}
 
-	mw := MetricsMiddleware(cfg)
+	mw, err := MetricsMiddleware(cfg)
+	assert.NoError(t, err)
 	assert.NotNil(t, mw)
 }
 
@@ -101,7 +49,8 @@ func TestMetricsConfig_WithSkipPaths(t *testing.T) {
 		SkipPathPrefixes: []string{"/internal/"},
 	}
 
-	mw := MetricsMiddleware(cfg)
+	mw, err := MetricsMiddleware(cfg)
+	assert.NoError(t, err)
 	assert.NotNil(t, mw)
 }
 
@@ -112,11 +61,19 @@ type metricCall struct {
 }
 
 type recordingMetrics struct {
-	mu       sync.Mutex
-	gauges   []metricCall
-	counters []metricCall
-	hists    []metricCall
-	buckets  [][]float64
+	mu             sync.Mutex
+	gauges         []metricCall
+	counters       []metricCall
+	hists          []metricCall
+	registered     []registeredHistogram
+	registerErr    error
+}
+
+type registeredHistogram struct {
+	name    string
+	help    string
+	labels  []string
+	buckets []float64
 }
 
 func (m *recordingMetrics) Counter(name string, value int64, labels map[string]string) {
@@ -137,11 +94,19 @@ func (m *recordingMetrics) Histogram(name string, value float64, labels map[stri
 	m.hists = append(m.hists, metricCall{name: name, value: value, labels: cloneLabels(labels)})
 }
 
-func (m *recordingMetrics) HistogramWithBuckets(name string, value float64, buckets []float64, labels map[string]string) {
+func (m *recordingMetrics) RegisterHistogram(name, help string, labelNames []string, buckets []float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.hists = append(m.hists, metricCall{name: name, value: value, labels: cloneLabels(labels)})
-	m.buckets = append(m.buckets, append([]float64(nil), buckets...))
+	if m.registerErr != nil {
+		return m.registerErr
+	}
+	m.registered = append(m.registered, registeredHistogram{
+		name:    name,
+		help:    help,
+		labels:  append([]string(nil), labelNames...),
+		buckets: append([]float64(nil), buckets...),
+	})
+	return nil
 }
 
 func (m *recordingMetrics) Timer(string, map[string]string) observe.ITimer {
@@ -165,10 +130,11 @@ func cloneLabels(in map[string]string) map[string]string {
 
 func TestMetricsMiddleware_InFlightGaugeIsSet(t *testing.T) {
 	metrics := &recordingMetrics{}
-	mw := MetricsMiddleware(MetricsConfig{Metrics: metrics})
+	mw, err := MetricsMiddleware(MetricsConfig{Metrics: metrics})
+	assert.NoError(t, err)
 
 	ctx := &stubContext{path: "/users/123"}
-	err := mw(ctx, func() error { return nil })
+	err = mw(ctx, func() error { return nil })
 	assert.NoError(t, err)
 
 	metrics.mu.Lock()
@@ -177,29 +143,37 @@ func TestMetricsMiddleware_InFlightGaugeIsSet(t *testing.T) {
 	if assert.Len(t, metrics.gauges, 2) {
 		assert.Equal(t, "http_requests_in_flight", metrics.gauges[0].name)
 		assert.Equal(t, float64(1), metrics.gauges[0].value)
-		assert.Equal(t, map[string]string{"method": "GET", "path": "/users/:id"}, metrics.gauges[0].labels)
+		// stubContext 不暴露路由模板：归入固定类别，不再猜测归一化路径。
+		assert.Equal(t, map[string]string{"method": "GET", "path": "unpatterned"}, metrics.gauges[0].labels)
 
 		assert.Equal(t, "http_requests_in_flight", metrics.gauges[1].name)
 		assert.Equal(t, float64(0), metrics.gauges[1].value)
-		assert.Equal(t, map[string]string{"method": "GET", "path": "/users/:id"}, metrics.gauges[1].labels)
+		assert.Equal(t, map[string]string{"method": "GET", "path": "unpatterned"}, metrics.gauges[1].labels)
 	}
 }
 
-func TestMetricsMiddleware_Buckets_UsesBucketedHistogramWhenAvailable(t *testing.T) {
+func TestMetricsMiddleware_Buckets_RegisterAtAssembly(t *testing.T) {
 	metrics := &recordingMetrics{}
-	mw := MetricsMiddleware(MetricsConfig{
+	mw, err := MetricsMiddleware(MetricsConfig{
 		Metrics: metrics,
 		Buckets: []float64{1, 2, 3},
 	})
+	assert.NoError(t, err)
+	assert.NotNil(t, mw)
+
+	metrics.mu.Lock()
+	if assert.Len(t, metrics.registered, 1) {
+		assert.Equal(t, "http_request_duration_ms", metrics.registered[0].name)
+		assert.Equal(t, []float64{1, 2, 3}, metrics.registered[0].buckets)
+		assert.Equal(t, []string{"method", "path", "status"}, metrics.registered[0].labels)
+	}
+	metrics.mu.Unlock()
 
 	ctx := &stubContext{path: "/users/123"}
-	err := mw(ctx, func() error { return nil })
+	err = mw(ctx, func() error { return nil })
 	assert.NoError(t, err)
 
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
-
 	assert.NotEmpty(t, metrics.hists)
-	assert.NotEmpty(t, metrics.buckets)
-	assert.Equal(t, []float64{1, 2, 3}, metrics.buckets[0])
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	coredialect "gochen/db/dialect"
+	"fmt"
 	"strings"
 
 	"gochen-runtime/db/dialect"
@@ -103,6 +104,16 @@ func (t *Tx) Close() error {
 
 // SQLTx 返回底层 *sql.Tx，仅供 stdsql 适配层使用。
 func (t *Tx) SQLTx() *sql.Tx { return t.tx }
+
+// DatasourceID 实现 core.IDatasourceIdentityProvider。
+// 事务与其根连接同属一个物理数据源，返回根连接池派生的同一标识，
+// 使“事务会话归属校验”在事务内保持一致。
+func (t *Tx) DatasourceID() string {
+	if t == nil || t.db == nil {
+		return ""
+	}
+	return fmt.Sprintf("stdsql:%p", t.db)
+}
 
 // Commit 提交当前事务。
 func (t *Tx) Commit() error {

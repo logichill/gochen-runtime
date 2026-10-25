@@ -353,7 +353,36 @@ func (s *SQLCheckpointStore) validateORMTxSession(ctx context.Context) error {
 	if session.Database() == nil {
 		return errors.NewCode(errors.Unsupported, "sql checkpoint transaction session has no database handle")
 	}
+	// 检查点必须落在投影数据所在的库里：会话归属与本存储的数据源不一致，
+	// 或任一侧无法提供身份（无法验证）时 fail-closed 拒绝，与仓储口径一致。
+	storeID, storeOK := dbDatasourceID(s.db)
+	sessionID, sessionOK := orm.DatasourceIDOf(session)
+	if !storeOK || !sessionOK {
+		return errors.NewCode(errors.FailedPrecondition,
+			"cannot verify datasource ownership of the checkpoint transaction session").
+			WithContext("table", s.tableName)
+	}
+	if storeID != sessionID {
+		return errors.NewCode(errors.FailedPrecondition,
+			"checkpoint transaction session belongs to a different datasource; use a checkpoint store bound to that datasource").
+			WithContext("table", s.tableName).
+			WithContext("store_datasource", storeID).
+			WithContext("session_datasource", sessionID)
+	}
 	return nil
+}
+
+// dbDatasourceID 从通用数据库句柄提取数据源身份（可选能力）。
+func dbDatasourceID(database db.IDatabase) (string, bool) {
+	provider, ok := database.(db.IDatasourceIdentityProvider)
+	if !ok || provider == nil {
+		return "", false
+	}
+	id := provider.DatasourceID()
+	if id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 // List 列出当前表中的全部检查点，主要用于调试和监控。
