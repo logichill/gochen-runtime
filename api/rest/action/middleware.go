@@ -2,7 +2,7 @@
 //
 // 定位：**纯 Fast-Deny 性能优化**，不是安全边界。
 //
-//	真正的授权发生在 Application 层（gochen/app/security/*），
+//	真正的授权发生在 Application 层（gochen/app/crud、gochen/app/audited），
 //	因此绕过 HTTP 直接调用 Application 同样会被拦截。
 //	本中间件的价值只是把"明显无权"的请求在进入业务编排前挡掉，
 //	省掉后续的资源解析与 PDP 开销。

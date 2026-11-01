@@ -61,12 +61,12 @@ type metricCall struct {
 }
 
 type recordingMetrics struct {
-	mu             sync.Mutex
-	gauges         []metricCall
-	counters       []metricCall
-	hists          []metricCall
-	registered     []registeredHistogram
-	registerErr    error
+	mu          sync.Mutex
+	gauges      []metricCall
+	counters    []metricCall
+	hists       []metricCall
+	registered  []registeredHistogram
+	registerErr error
 }
 
 type registeredHistogram struct {

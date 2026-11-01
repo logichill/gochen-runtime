@@ -3,29 +3,34 @@ package repo
 import (
 	"context"
 
+	"gochen/domain/spec"
 	"gochen/errors"
 )
 
-// Get 按主键读取一条未软删除记录。
-func (r *Repo[T, ID]) Get(ctx context.Context, id ID) (T, error) {
-	return r.get(ctx, id, false)
+// Get 按主键读取一条未软删除记录，并按规约过滤。
+func (r *Repo[T, ID]) Get(ctx context.Context, id ID, s spec.Spec) (T, error) {
+	return r.get(ctx, id, s, false)
 }
 
 // GetWithDeleted 按主键读取记录，并允许命中软删除数据。
-func (r *Repo[T, ID]) GetWithDeleted(ctx context.Context, id ID) (T, error) {
-	return r.get(ctx, id, true)
+func (r *Repo[T, ID]) GetWithDeleted(ctx context.Context, id ID, s spec.Spec) (T, error) {
+	return r.get(ctx, id, s, true)
 }
 
 // get 统一处理按主键读取记录的公共逻辑。
-func (r *Repo[T, ID]) get(ctx context.Context, id ID, includeSoftDeleted bool) (T, error) {
+func (r *Repo[T, ID]) get(ctx context.Context, id ID, s spec.Spec, includeSoftDeleted bool) (T, error) {
 	var zero T
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return zero, err
 	}
-	quer = quer.Where("id = ?", id)
-	if r.softDelete && !includeSoftDeleted {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withID(quer, id)
+	if !includeSoftDeleted {
+		quer = r.withActive(quer)
+	}
+	quer, err = r.withReadSpec(quer, s)
+	if err != nil {
+		return zero, err
 	}
 	var entity T
 	if err := quer.First(&entity); err != nil {
@@ -37,14 +42,17 @@ func (r *Repo[T, ID]) get(ctx context.Context, id ID, includeSoftDeleted bool) (
 	return entity, nil
 }
 
-func (r *Repo[T, ID]) List(ctx context.Context, offset, limit int) ([]T, error) {
+// List 分页读取未软删除记录，并按规约过滤。
+func (r *Repo[T, ID]) List(ctx context.Context, offset, limit int, s spec.Spec) ([]T, error) {
 	var entities []T
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	quer, err = r.withReadSpec(quer, s)
+	if err != nil {
+		return nil, err
 	}
 	if offset > 0 {
 		quer = quer.Offset(offset)
@@ -58,7 +66,8 @@ func (r *Repo[T, ID]) List(ctx context.Context, offset, limit int) ([]T, error) 
 	return entities, nil
 }
 
-func (r *Repo[T, ID]) ListDeleted(ctx context.Context, offset, limit int) ([]T, error) {
+// ListDeleted 读取已软删记录，并按规约过滤。
+func (r *Repo[T, ID]) ListDeleted(ctx context.Context, offset, limit int, s spec.Spec) ([]T, error) {
 	if !r.softDelete {
 		return []T{}, nil
 	}
@@ -67,7 +76,11 @@ func (r *Repo[T, ID]) ListDeleted(ctx context.Context, offset, limit int) ([]T, 
 	if err != nil {
 		return nil, err
 	}
-	quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NOT NULL")
+	quer = r.withDeleted(quer)
+	quer, err = r.withReadSpec(quer, s)
+	if err != nil {
+		return nil, err
+	}
 	if offset > 0 {
 		quer = quer.Offset(offset)
 	}
@@ -80,14 +93,16 @@ func (r *Repo[T, ID]) ListDeleted(ctx context.Context, offset, limit int) ([]T, 
 	return entities, nil
 }
 
-// Count 统计当前仓储下未软删除记录的数量。
-func (r *Repo[T, ID]) Count(ctx context.Context) (int64, error) {
+// Count 统计当前仓储下满足规约的未软删除记录数量。
+func (r *Repo[T, ID]) Count(ctx context.Context, s spec.Spec) (int64, error) {
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	quer, err = r.withReadSpec(quer, s)
+	if err != nil {
+		return 0, err
 	}
 	count, err := quer.Count()
 	if err != nil {
@@ -96,15 +111,17 @@ func (r *Repo[T, ID]) Count(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// Exists 判断指定主键对应的未软删除记录是否存在。
-func (r *Repo[T, ID]) Exists(ctx context.Context, id ID) (bool, error) {
+// Exists 判断指定主键对应的未软删除记录是否存在，并按规约过滤。
+func (r *Repo[T, ID]) Exists(ctx context.Context, id ID, s spec.Spec) (bool, error) {
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return false, err
 	}
-	quer = quer.Where("id = ?", id)
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withID(quer, id)
+	quer = r.withActive(quer)
+	quer, err = r.withReadSpec(quer, s)
+	if err != nil {
+		return false, err
 	}
 	count, err := quer.Count()
 	if err != nil {
@@ -113,14 +130,17 @@ func (r *Repo[T, ID]) Exists(ctx context.Context, id ID) (bool, error) {
 	return count > 0, nil
 }
 
-func (r *Repo[T, ID]) ListAll(ctx context.Context) ([]T, error) {
+// ListAll 读取全部未软删除记录，并按规约过滤。
+func (r *Repo[T, ID]) ListAll(ctx context.Context, s spec.Spec) ([]T, error) {
 	var entities []T
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	quer, err = r.withReadSpec(quer, s)
+	if err != nil {
+		return nil, err
 	}
 	if err := quer.Find(&entities); err != nil {
 		return nil, errors.Wrap(err, errors.Database, "failed to list all records")
@@ -128,21 +148,22 @@ func (r *Repo[T, ID]) ListAll(ctx context.Context) ([]T, error) {
 	return entities, nil
 }
 
-// ListByIds 从存储中查询对象。
+// ListByIds 按主键集合读取未软删除记录，并按规约过滤。
 //
 // 说明：
 //   - 结果顺序不做保证，与数据库对 `id IN (...)` 的返回顺序一致；
-//   - ID 列表按占位参数预算分片下发（与 DeleteAll 同一来源），避免超出驱动的
-//     变量上限把整次查询打成运行期错误；重复 ID 在被分片时会先折叠，
-//     与单条 IN 查询的语义保持一致。
-//
-// 参数：
-// - ids：对象/实体标识列表。
-func (r *Repo[T, ID]) ListByIds(ctx context.Context, ids []ID) ([]T, error) {
+//   - ID 列表按占位参数预算分片下发，避免超出驱动的变量上限把整次查询打成
+//     运行期错误；重复 ID 在被分片时会先折叠，与单条 IN 查询的语义保持一致。
+func (r *Repo[T, ID]) ListByIds(ctx context.Context, ids []ID, s spec.Spec) ([]T, error) {
 	if len(ids) == 0 {
 		return []T{}, nil
 	}
 	base, err := r.readQuery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	base = r.withActive(base)
+	base, err = r.withReadSpec(base, s)
 	if err != nil {
 		return nil, err
 	}
@@ -158,10 +179,7 @@ func (r *Repo[T, ID]) ListByIds(ctx context.Context, ids []ID) ([]T, error) {
 	var entities []T
 	for _, chunk := range chunkSlice(ids, budget) {
 		quer := base.clone()
-		quer = quer.Where("id IN ?", chunk)
-		if r.softDelete {
-			quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
-		}
+		quer = quer.Where(r.resolver.quote(r.idColumn)+" IN ?", chunk)
 		var chunkEntities []T
 		if err := quer.Find(&chunkEntities); err != nil {
 			return nil, errors.Wrap(err, errors.Database, "failed to list records by IDs")
@@ -169,4 +187,30 @@ func (r *Repo[T, ID]) ListByIds(ctx context.Context, ids []ID) ([]T, error) {
 		entities = append(entities, chunkEntities...)
 	}
 	return entities, nil
+}
+
+func (r *Repo[T, ID]) withID(quer *queryBuilder, id ID) *queryBuilder {
+	return quer.Where(r.resolver.quote(r.idColumn)+" = ?", id)
+}
+
+func (r *Repo[T, ID]) withActive(quer *queryBuilder) *queryBuilder {
+	if !r.softDelete || r.softDeleteCols.DeletedAt == "" {
+		return quer
+	}
+	return quer.Where(r.resolver.quote(r.softDeleteCols.DeletedAt) + " IS NULL")
+}
+
+func (r *Repo[T, ID]) withDeleted(quer *queryBuilder) *queryBuilder {
+	if !r.softDelete || r.softDeleteCols.DeletedAt == "" {
+		return quer
+	}
+	return quer.Where(r.resolver.quote(r.softDeleteCols.DeletedAt) + " IS NOT NULL")
+}
+
+func (r *Repo[T, ID]) withReadSpec(quer *queryBuilder, s spec.Spec) (*queryBuilder, error) {
+	condition, err := r.specCondition(s)
+	if err != nil {
+		return nil, err
+	}
+	return applyCondition(quer, condition), nil
 }

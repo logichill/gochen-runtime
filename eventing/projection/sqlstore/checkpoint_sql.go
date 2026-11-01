@@ -440,8 +440,8 @@ func (s *SQLCheckpointStore) List(ctx context.Context) ([]*projection.Checkpoint
 	return checkpoints, nil
 }
 
-// SaveBatch 在一个事务里批量保存多条检查点记录。
-func (s *SQLCheckpointStore) SaveBatch(ctx context.Context, checkpoints []*projection.Checkpoint) error {
+// SaveBulk 在一个事务里批量保存多条检查点记录。
+func (s *SQLCheckpointStore) SaveBulk(ctx context.Context, checkpoints []*projection.Checkpoint) error {
 	if len(checkpoints) == 0 {
 		return nil
 	}

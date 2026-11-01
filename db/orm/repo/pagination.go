@@ -5,13 +5,14 @@ import (
 	"math"
 
 	"gochen/app/query"
+	"gochen/domain/spec"
 	"gochen/errors"
 )
 
 const defaultMaxPageSize = 1000
 
 // ListPage 从存储中查询对象。
-func (r *Repo[T, ID]) ListPage(ctx context.Context, request *query.PaginationOptions) (*query.PagedResult[T], error) {
+func (r *Repo[T, ID]) ListPage(ctx context.Context, request *query.PaginationOptions, s spec.Spec) (*query.PagedResult[T], error) {
 	var entities []T
 	var total int64
 
@@ -30,8 +31,9 @@ func (r *Repo[T, ID]) ListPage(ctx context.Context, request *query.PaginationOpt
 	if err != nil {
 		return nil, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	if quer, err = r.withReadSpec(quer, s); err != nil {
+		return nil, err
 	}
 	if !request.Filters.IsZero() {
 		quer, err = quer.withQueryFilters(request.Filters)

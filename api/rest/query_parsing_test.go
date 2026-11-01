@@ -66,7 +66,14 @@ func TestValidateSchemaSortsRejectsNonSortableField(t *testing.T) {
 	}
 }
 
-func TestValidateBatchEntitiesAddsIndexAndShortCircuits(t *testing.T) {
+type fakeEntity struct {
+	ID int64
+}
+
+func (e *fakeEntity) GetID() int64       { return e.ID }
+func (e *fakeEntity) GetVersion() uint64 { return 0 }
+
+func TestValidateBulkEntitiesAddsIndexAndShortCircuits(t *testing.T) {
 	calls := 0
 	rb := &RouteBuilder[*fakeEntity, int64]{
 		config: &RouteConfig[int64]{},
@@ -79,7 +86,7 @@ func TestValidateBatchEntitiesAddsIndexAndShortCircuits(t *testing.T) {
 		return nil
 	}
 
-	err := rb.validateBatchEntities([]*fakeEntity{{ID: 1}, {ID: 2}, {ID: 3}})
+	err := rb.validateBulkEntities([]*fakeEntity{{ID: 1}, {ID: 2}, {ID: 3}})
 	if !errors.Is(err, errors.InvalidInput) {
 		t.Fatalf("expected InvalidInput, got %v", err)
 	}

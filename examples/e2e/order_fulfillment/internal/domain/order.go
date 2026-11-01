@@ -18,7 +18,7 @@ const (
 
 // Order 订单聚合根实体
 type Order struct {
-	ID          int64       `json:"id" db:"id"`
+	ID          int64       `json:"id" db:"id" role:"id"`
 	CustomerID  int64       `json:"customer_id" db:"customer_id"`
 	ItemID      string      `json:"item_id" db:"item_id"`
 	Quantity    int         `json:"quantity" db:"quantity"`
@@ -30,6 +30,7 @@ type Order struct {
 // 确保实现 domain.IEntity 与 domain.ISettableID
 var _ domain.IEntity[int64] = (*Order)(nil)
 var _ domain.ISettableID[int64] = (*Order)(nil)
+var _ domain.ISettableVersion = (*Order)(nil)
 var _ domain.IValidatable = (*Order)(nil)
 
 func (o *Order) GetID() int64 {
@@ -50,6 +51,12 @@ func (o *Order) GetVersion() uint64 {
 		return 0
 	}
 	return o.Version
+}
+
+func (o *Order) SetVersion(version uint64) {
+	if o != nil {
+		o.Version = version
+	}
 }
 
 func (o *Order) Validate() error {

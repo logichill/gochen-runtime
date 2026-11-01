@@ -65,7 +65,34 @@ func main() {
 
 ---
 
-## 3. 相关文档
+## 3. 在 Host 启动链路中的位置
+
+```text
+Host.Prepare
+  └─ bootstrap.Prepare
+       ├─ 使用 config.WithHTTPServer 注入的 server，或创建 nethttp.Server
+       ├─ 创建 BasePath 路由组与 Host 级中间件
+       └─ 注册健康/监控路由
+
+Host.StartBackground
+  └─ 模块 RegisterRoutes
+       └─ rest.Mount / quick.Module
+            └─ http.RegisterRoute
+
+Host.Run        → server.Start(addr)
+Host.Shutdown   → server.Stop(ctx)
+```
+
+`http/nethttp` 提供 `httpx.IServer` 与 `httpx.IRouteGroup` 的标准库实现；`http` 提供配置、静态处理与路由方法分派等共享实现。Host 只依赖 `httpx` 契约，HTTP 适配器可替换。
+
+## 4. 依赖关系
+
+- 下游实现：`http/nethttp` 实现 `gochen/httpx` 的 Server、Context、RouteGroup。
+- 上游使用：`host/internal/bootstrap` 默认装配 `nethttp.Server`；`api/rest` 通过 `http.RegisterRoute` 分派路由方法。
+- Core 契约：`httpx`、`contextx`、`errors`、`codec/jsoncodec`、`observe/logging`、限流与熔断策略。
+- 适配器一致性测试：`http/contracttest`。
+
+## 5. 相关文档
 
 - Core HTTP 抽象与统一响应助手：`gochen` 仓库 `httpx/README.md`
 - 自动化 REST CRUD 路由生成：[`gochen-runtime/api/rest/README.md`](../api/rest/README.md)

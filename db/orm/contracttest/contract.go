@@ -8,23 +8,26 @@ import (
 
 	"gochen-runtime/db/orm/repo"
 	"gochen/db/orm"
+	"gochen/domain/spec"
 	"gochen/errors"
 )
 
 type record struct {
-	ID      int64  `db:"id" gorm:"column:id;primaryKey"`
+	ID      int64  `db:"id" gorm:"column:id;primaryKey" role:"id"`
 	Name    string `db:"name" gorm:"column:name"`
 	Version uint64 `db:"version" gorm:"column:version"`
 }
 
-func (r *record) GetID() int64       { return r.ID }
-func (r *record) GetVersion() uint64 { return r.Version }
+func (r *record) GetID() int64        { return r.ID }
+func (r *record) GetVersion() uint64  { return r.Version }
+func (r *record) SetVersion(v uint64) { r.Version = v }
 
 type panicRecord record
 
-func (r *panicRecord) GetID() int64       { panic("entity GetID panic") }
-func (r *panicRecord) GetVersion() uint64 { return r.Version }
-func (r *panicRecord) SetID(id int64)     { r.ID = id }
+func (r *panicRecord) GetID() int64        { panic("entity GetID panic") }
+func (r *panicRecord) GetVersion() uint64  { return r.Version }
+func (r *panicRecord) SetVersion(v uint64) { r.Version = v }
+func (r *panicRecord) SetID(id int64)      { r.ID = id }
 
 type updatePanicRecord record
 
@@ -35,7 +38,8 @@ func (r *updatePanicRecord) GetID() int64 {
 	return r.ID
 }
 
-func (r *updatePanicRecord) GetVersion() uint64 { return r.Version }
+func (r *updatePanicRecord) GetVersion() uint64  { return r.Version }
+func (r *updatePanicRecord) SetVersion(v uint64) { r.Version = v }
 
 // Run 使用独立数据库工厂验证适配器；工厂负责通过 t.Cleanup 关闭数据库。
 // 返回的 ORM 必须暴露 Database，数据库须支持标准建表语句和事务。
@@ -94,28 +98,28 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 			t.Fatal(err)
 		}
 		for _, row := range []*record{{ID: 1, Name: "another", Version: 1}, {ID: 2, Name: "first", Version: 1}} {
-			if err := repository.Create(context.Background(), row); !errors.Is(err, errors.Conflict) || errors.Code(err) != errors.Conflict {
+			if err := repository.Create(context.Background(), row, spec.All()); !errors.Is(err, errors.Conflict) || errors.Code(err) != errors.Conflict {
 				t.Errorf("duplicate create = %v, want Conflict as the outer error code", err)
 			}
 		}
-		if err := repository.Create(context.Background(), &record{ID: 2, Name: "invalid", Version: 1}); errors.Code(err) != errors.Database {
+		if err := repository.Create(context.Background(), &record{ID: 2, Name: "invalid", Version: 1}, spec.All()); errors.Code(err) != errors.Database {
 			t.Fatalf("CHECK violation = %v, want Database", err)
 		}
 	})
 
-	t.Run("BatchConflictRollback", func(t *testing.T) {
+	t.Run("BulkConflictRollback", func(t *testing.T) {
 		adapter, model := fixture(t)
 		repository, err := repo.NewRepo[*record, int64](adapter, "contract_records")
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = repository.CreateAll(context.Background(), []*record{{ID: 2, Name: "second", Version: 1}, {ID: 3, Name: "first", Version: 1}})
+		err = repository.CreateBulk(context.Background(), []*record{{ID: 2, Name: "second", Version: 1}, {ID: 3, Name: "first", Version: 1}}, spec.All())
 		if errors.Code(err) != errors.Conflict {
-			t.Fatalf("batch create = %v, want Conflict", err)
+			t.Fatalf("bulk create = %v, want Conflict", err)
 		}
 		count, err := model.Count(context.Background())
 		if err != nil || count != 1 {
-			t.Fatalf("partial batch survived: count=%d err=%v", count, err)
+			t.Fatalf("partial bulk survived: count=%d err=%v", count, err)
 		}
 	})
 	t.Run("UpdateConflict", func(t *testing.T) {
@@ -127,11 +131,11 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.Update(context.Background(), &record{ID: 2, Name: "first", Version: 1}); errors.Code(err) != errors.Conflict {
+		if err := repository.Update(context.Background(), &record{ID: 2, Name: "first", Version: 1}, spec.All()); errors.Code(err) != errors.Conflict {
 			t.Fatalf("unique update conflict = %v, want Conflict", err)
 		}
 	})
-	t.Run("BatchUpdateConflictRollback", func(t *testing.T) {
+	t.Run("BulkUpdateConflictRollback", func(t *testing.T) {
 		adapter, model := fixture(t)
 		if err := model.Create(context.Background(), &record{ID: 2, Name: "second", Version: 1}); err != nil {
 			t.Fatal(err)
@@ -140,22 +144,22 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = repository.UpdateAll(context.Background(), []*record{
-			{ID: 1, Name: "updated", Version: 2},
-			{ID: 2, Name: "updated", Version: 2},
-		})
+		err = repository.UpdateBulk(context.Background(), []*record{
+			{ID: 1, Name: "updated", Version: 1},
+			{ID: 2, Name: "updated", Version: 1},
+		}, spec.All())
 		if errors.Code(err) != errors.Conflict {
-			t.Fatalf("batch update = %v, want Conflict", err)
+			t.Fatalf("bulk update = %v, want Conflict", err)
 		}
 		var row record
 		if err := model.First(context.Background(), &row, orm.WithWhere("id = ?", 1)); err != nil {
 			t.Fatal(err)
 		}
 		if row.Name != "first" || row.Version != 1 {
-			t.Fatalf("partial batch update survived: %+v", row)
+			t.Fatalf("partial bulk update survived: %+v", row)
 		}
 	})
-	t.Run("ModelBatchRollback", func(t *testing.T) {
+	t.Run("ModelBulkRollback", func(t *testing.T) {
 		_, model := fixture(t)
 		err := model.Create(context.Background(), &record{ID: 2, Name: "second", Version: 1}, &record{ID: 3, Name: "first", Version: 1})
 		if err == nil {
@@ -163,10 +167,10 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 		}
 		count, err := model.Count(context.Background())
 		if err != nil || count != 1 {
-			t.Fatalf("partial model batch survived: count=%d err=%v", count, err)
+			t.Fatalf("partial model bulk survived: count=%d err=%v", count, err)
 		}
 	})
-	t.Run("BatchPanicReleasesTransaction", func(t *testing.T) {
+	t.Run("BulkPanicReleasesTransaction", func(t *testing.T) {
 		adapter, model := fixture(t)
 		repository, err := repo.NewRepo[*panicRecord, int64](adapter, "contract_records")
 		if err != nil {
@@ -180,7 +184,7 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 					t.Fatalf("panic=%v, want entity GetID panic", got)
 				}
 			}()
-			_ = repository.CreateAll(ctx, []*panicRecord{{ID: 2, Name: "second", Version: 1}})
+			_ = repository.CreateBulk(ctx, []*panicRecord{{ID: 2, Name: "second", Version: 1}}, spec.All())
 		}()
 		queryCtx, cancelQuery := context.WithTimeout(context.Background(), time.Second)
 		defer cancelQuery()
@@ -189,7 +193,7 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 			t.Fatalf("transaction not released after panic: count=%d err=%v", count, err)
 		}
 	})
-	t.Run("BatchUpdatePanicRollsBackWrittenRecords", func(t *testing.T) {
+	t.Run("BulkUpdatePanicRollsBackWrittenRecords", func(t *testing.T) {
 		adapter, model := fixture(t)
 		repository, err := repo.NewRepo[*updatePanicRecord, int64](adapter, "contract_records")
 		if err != nil {
@@ -201,10 +205,10 @@ func Run(t *testing.T, factory func(*testing.T) orm.IOrm) {
 					t.Fatalf("panic = %v, want update GetID panic", got)
 				}
 			}()
-			_ = repository.UpdateAll(context.Background(), []*updatePanicRecord{
-				{ID: 1, Name: "updated", Version: 2},
+			_ = repository.UpdateBulk(context.Background(), []*updatePanicRecord{
+				{ID: 1, Name: "updated", Version: 1},
 				{ID: 3, Name: "panics", Version: 1},
-			})
+			}, spec.All())
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

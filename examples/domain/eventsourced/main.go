@@ -8,6 +8,8 @@ import (
 	"gochen-runtime/quick"
 	appes "gochen/app/eventsourced"
 	esstore "gochen/app/eventsourced/eventstore"
+	"gochen/auth"
+	"gochen/contextx"
 	"gochen/domain"
 	deventsourced "gochen/domain/eventsourced"
 	"gochen/eventing/registry"
@@ -72,23 +74,11 @@ func (a *BankAccount) ApplyMoneyWithdrawn(evt *MoneyWithdrawn) {
 	a.Balance -= evt.Amount
 }
 
-// 3. 命令定义
-type DepositCommand struct {
-	AccountID int64
-	Amount    int64
-}
-
-func (c *DepositCommand) AggregateID() int64 { return c.AccountID }
-
-type WithdrawCommand struct {
-	AccountID int64
-	Amount    int64
-}
-
-func (c *WithdrawCommand) AggregateID() int64 { return c.AccountID }
-
 func main() {
-	ctx := context.Background()
+	ctx, err := contextx.WithOperator(context.Background(), "demo-user")
+	if err != nil {
+		log.Fatalf("set operator failed: %v", err)
+	}
 	fmt.Println("=== Gochen Event Sourcing 示例 ===")
 
 	// 1. 初始化注册表与存储
@@ -120,42 +110,50 @@ func main() {
 		log.Fatalf("create repository failed: %v", err)
 	}
 
-	// 2. 初始化命令服务
-	cmdService, err := appes.NewEventSourcedService[*BankAccount, int64](repo, nil)
+	// 2. 初始化事件溯源应用：授权、匹配、命令后校验与审计统一由 Application 编排
+	app, err := appes.NewApplication[*BankAccount, int64](repo, appes.Options[*BankAccount, int64]{
+		Resource:   "bank.account",
+		Authorizer: auth.Allow(),
+		Actions: []auth.Action{
+			{Name: "deposit", Permission: "bank.account:api:deposit", Kind: auth.KindUpdate},
+			{Name: "withdraw", Permission: "bank.account:api:withdraw", Kind: auth.KindUpdate},
+		},
+		History: memStore,
+	})
 	if err != nil {
-		log.Fatalf("create command service failed: %v", err)
+		log.Fatalf("create application failed: %v", err)
 	}
-
-	// 注册命令处理器
-	_ = cmdService.RegisterCommandHandler(&DepositCommand{}, func(ctx context.Context, c appes.IEventSourcedCommand[int64], agg *BankAccount) error {
-		cmd := c.(*DepositCommand)
-		return agg.Deposit(cmd.Amount)
-	})
-	_ = cmdService.RegisterCommandHandler(&WithdrawCommand{}, func(ctx context.Context, c appes.IEventSourcedCommand[int64], agg *BankAccount) error {
-		cmd := c.(*WithdrawCommand)
-		return agg.Withdraw(cmd.Amount)
-	})
 
 	// 3. 执行一系列命令
 	accountID := int64(888)
 
-	fmt.Printf("\n[1] 存入 1000 元...\n")
-	if err := cmdService.ExecuteCommand(ctx, &DepositCommand{AccountID: accountID, Amount: 1000}); err != nil {
-		log.Fatalf("deposit failed: %v", err)
+	fmt.Printf("\n[1] 开户并存入 1000 元...\n")
+	_, err = app.ExecuteNew(ctx, appes.ActionCreate, func(ctx context.Context) (*BankAccount, error) {
+		acc := NewBankAccount(metaReg, accountID)
+		return acc, acc.Deposit(1000)
+	}, appes.WithReason("initial funding"))
+	if err != nil {
+		log.Fatalf("create account failed: %v", err)
 	}
 
 	fmt.Printf("[2] 消费 350 元...\n")
-	if err := cmdService.ExecuteCommand(ctx, &WithdrawCommand{AccountID: accountID, Amount: 350}); err != nil {
+	_, err = app.Execute(ctx, "withdraw", accountID, func(ctx context.Context, acc *BankAccount) error {
+		return acc.Withdraw(350)
+	})
+	if err != nil {
 		log.Fatalf("withdraw failed: %v", err)
 	}
 
 	fmt.Printf("[3] 存入 200 元...\n")
-	if err := cmdService.ExecuteCommand(ctx, &DepositCommand{AccountID: accountID, Amount: 200}); err != nil {
+	_, err = app.Execute(ctx, "deposit", accountID, func(ctx context.Context, acc *BankAccount) error {
+		return acc.Deposit(200)
+	})
+	if err != nil {
 		log.Fatalf("deposit failed: %v", err)
 	}
 
 	// 4. 重放并验证聚合状态
-	acc, err := repo.Get(ctx, accountID)
+	acc, err := app.Get(ctx, accountID)
 	if err != nil {
 		log.Fatalf("get aggregate failed: %v", err)
 	}
@@ -165,19 +163,22 @@ func main() {
 	fmt.Printf("当前余额: %d (预期: 850)\n", acc.Balance)
 	fmt.Printf("当前版本: %d (预期: 3)\n", acc.GetVersion())
 
-	// 5. 查看事件流
-	events, err := memStore.LoadEvents(ctx, "BankAccount", accountID, 0)
+	// 5. 审计轨迹：操作人、动作、原因与关联 ID 均来自事件元数据
+	entries, err := app.AuditTrail(ctx, accountID, 0, 100)
 	if err != nil {
-		log.Fatalf("load events failed: %v", err)
+		log.Fatalf("load audit trail failed: %v", err)
 	}
-	fmt.Printf("\n=== 历史事件流 (%d 条事件) ===\n", len(events))
-	for i, e := range events {
-		fmt.Printf("  [%d] Version=%d Type=%-15s ID=%s\n", i+1, e.Version, e.Type, e.ID)
+	fmt.Printf("\n=== 审计轨迹 (%d 条事件) ===\n", len(entries))
+	for _, entry := range entries {
+		fmt.Printf("  [%d] Type=%-15s Operator=%-9s Action=%-8s Reason=%s\n",
+			entry.Version, entry.EventType, entry.ActorID, entry.Action, entry.Reason)
 	}
 
 	// 6. 验证领域规则拦截（余额不足）
 	fmt.Printf("\n[4] 尝试透支 1000 元 (预期触发业务规则拦截)...\n")
-	err = cmdService.ExecuteCommand(ctx, &WithdrawCommand{AccountID: accountID, Amount: 1000})
+	_, err = app.Execute(ctx, "withdraw", accountID, func(ctx context.Context, acc *BankAccount) error {
+		return acc.Withdraw(1000)
+	})
 	if err != nil {
 		fmt.Printf("  -> 成功拦截: %v\n", err)
 	} else {

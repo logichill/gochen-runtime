@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"gochen/domain/spec"
 	"testing"
 
 	"gochen-runtime/db/orm/lite"
@@ -15,15 +16,15 @@ import (
 
 // runnerItem 投影事务 runner 回归测试用的最小实体（可写版本字段）。
 type runnerItem struct {
-	ID      int64  `json:"id"`
+	ID      int64  `json:"id" role:"id"`
 	Version uint64 `json:"version"`
 	Name    string `json:"name"`
 }
 
-func (i *runnerItem) GetID() int64         { return i.ID }
-func (i *runnerItem) GetVersion() uint64   { return i.Version }
-func (i *runnerItem) SetID(id int64)       { i.ID = id }
-func (i *runnerItem) SetVersion(v uint64)  { i.Version = v }
+func (i *runnerItem) GetID() int64        { return i.ID }
+func (i *runnerItem) GetVersion() uint64  { return i.Version }
+func (i *runnerItem) SetID(id int64)      { i.ID = id }
+func (i *runnerItem) SetVersion(v uint64) { i.Version = v }
 
 func newRunnerFixture(tb testing.TB, name string) (db.IDatabase, *repo.Repo[*runnerItem, int64], *SQLCheckpointTxRunner) {
 	tb.Helper()
@@ -62,7 +63,7 @@ func TestRegressionRunnerTx_InnerRepoFailureBlocksCommit(t *testing.T) {
 	innerErr := errors.NewCode(errors.InvalidInput, "abort inner")
 	err := runner.WithinTx(context.Background(), func(txCtx context.Context) error {
 		err := repository.WithinTx(txCtx, func(inner context.Context) error {
-			if err := repository.Create(inner, &runnerItem{ID: 601, Name: "failed-inner"}); err != nil {
+			if err := repository.Create(inner, &runnerItem{ID: 601, Name: "failed-inner"}, spec.All()); err != nil {
 				return err
 			}
 			return innerErr
@@ -81,7 +82,7 @@ func TestRegressionRunnerTx_SuccessPathCommits(t *testing.T) {
 	database, repository, runner := newRunnerFixture(t, "reg-runner-ok")
 
 	err := runner.WithinTx(context.Background(), func(txCtx context.Context) error {
-		return repository.Create(txCtx, &runnerItem{ID: 602, Name: "ok"})
+		return repository.Create(txCtx, &runnerItem{ID: 602, Name: "ok"}, spec.All())
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, countRunnerRows(t, database, 602))

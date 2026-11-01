@@ -22,10 +22,10 @@ type ExecutionMetadata struct {
 
 type principalContextKey struct{}
 
-// Principal 表达当前操作主体的最小授权语义。
+// Principal 表达当前操作主体的最小授权语义；主体与租户使用不透明字符串标识。
 type Principal struct {
-	SubjectID       int64
-	HomeTenantID    int64
+	SubjectID       string
+	HomeTenantID    string
 	HomeScopeID     int64
 	ActiveScopeID   int64
 	ActiveBindingID int64
@@ -38,8 +38,8 @@ type Principal struct {
 
 func (p Principal) Clone() Principal {
 	cloned := Principal{
-		SubjectID:        normalize.PositiveID(p.SubjectID),
-		HomeTenantID:     normalize.PositiveID(p.HomeTenantID),
+		SubjectID:        strings.TrimSpace(p.SubjectID),
+		HomeTenantID:     strings.TrimSpace(p.HomeTenantID),
 		HomeScopeID:      normalize.PositiveID(p.HomeScopeID),
 		ActiveScopeID:    normalize.PositiveID(p.ActiveScopeID),
 		ActiveBindingID:  normalize.PositiveID(p.ActiveBindingID),
@@ -115,7 +115,7 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 		return principal.Clone(), true
 	}
 	principal := Principal{SubjectID: contextx.UserID(ctx)}
-	if principal.SubjectID == 0 {
+	if principal.SubjectID == "" {
 		return Principal{}, false
 	}
 	return principal.Clone(), true

@@ -2,7 +2,7 @@
 //
 // 关键点：
 //   - 判定发生在 PDP（scoped.IAuthorizer），返回结构化 Decision；
-//   - allow 决策被投影为 WriteConstraint，经受控通道交给 Repo 合并进原子 WHERE；
+//   - allow 决策携带授权资源清单，仓储据此界定写入边界；
 //   - 范围外的资源直接判 deny，而不是"查出来再过滤"。
 package main
 
@@ -36,9 +36,10 @@ func main() {
 	readDecision := mustDecision(authorizer.Authorize(ctx, readAction, target))
 	log.Printf("read:  effect=%s resources=%d", readDecision.Effect, len(readDecision.AuthorizedResources))
 
-	// allow 决策 → 写约束：这份约束随后经受控通道交给 Repo。
-	if resource, ok := readDecision.WriteConstraint().Single(); ok {
-		log.Printf("       constraint kind=%s scope=%d", resource.Kind, resource.ManagedScopeID)
+	// allow 决策携带授权资源清单，调用方据此界定作用对象。
+	if len(readDecision.AuthorizedResources) > 0 {
+		resource := readDecision.AuthorizedResources[0]
+		log.Printf("       authorized kind=%s scope=%d", resource.Kind, resource.ManagedScopeID)
 	}
 
 	// 同一主体缺少 write 动作 → 拒绝。

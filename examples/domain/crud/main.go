@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"time"
 
 	"gochen-runtime/api/rest"
 	"gochen/app/crud"
-	"gochen/app/query"
+	"gochen/auth"
 	domcrud "gochen/domain/crud"
 	"gochen/httpx"
 	"gochen/testkit"
@@ -22,91 +23,80 @@ type User struct {
 	ActivatedAt *time.Time `json:"activated_at,omitempty"`
 }
 
-// 扩展仓储：增加激活方法
-type ExtUserRepo struct {
-	*testkit.MemoryRepository[*User, int64]
-}
-
-// Activate 把指定用户标记为已激活。
-func (r *ExtUserRepo) Activate(ctx context.Context, id int64) error {
-	u, err := r.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if u.Active {
-		return nil
-	}
-	now := time.Now()
-	u.Active = true
-	u.ActivatedAt = &now
-	return r.Update(ctx, u)
-}
-
-// 扩展服务：封装业务方法
-type UserApplication struct {
-	crud.IApplication[*User, int64]
-	repo *ExtUserRepo
-}
-
-// NewUserApplication 创建带扩展业务方法的用户服务包装器。
-func NewUserApplication(repo *ExtUserRepo, base crud.IApplication[*User, int64]) *UserApplication {
-	return &UserApplication{IApplication: base, repo: repo}
-}
-
-// Activate 复用扩展仓储完成激活业务。
-func (s *UserApplication) Activate(ctx context.Context, id int64) error {
-	return s.repo.Activate(ctx, id)
-}
-
-// main 演示基础 CRUD 应用服务与 REST 路由的组合方式。
+// main 演示基础 CRUD 应用与 Descriptor 驱动的 REST 路由。
+//
+// 业务动作（activate）通过 rest.Action 注册，仍由 Application 的 Execute
+// 完成授权、事务与钩子；路由层只做解码与编排。
 func main() {
 	log.Println("=== Basic CRUD Example ===")
 
-	// 1) 依赖（内存模拟）
-	baseRepo := testkit.NewMemoryRepository[*User](testkit.NewInt64Sequence(1))
-	userRepo := &ExtUserRepo{MemoryRepository: baseRepo}
-	router := testkit.NewRecordingRouter()
-
-	// 2) 服务
-	baseSvc, err := crud.NewApplication(userRepo, nil)
+	repo := testkit.NewMemoryRepository[*User, int64](testkit.NewInt64Sequence(1))
+	app, err := crud.NewApplication[*User, int64](repo, crud.Options[*User, int64]{
+		Resource:   "user",
+		Authorizer: auth.Allow(),
+		Actions: []auth.Action{
+			{Name: "activate", Kind: auth.KindUpdate, Label: "激活用户"},
+		},
+	})
 	if err != nil {
-		log.Fatalf("failed to create application service: %v", err)
+		log.Fatalf("failed to create application: %v", err)
 	}
-	svc := NewUserApplication(userRepo, baseSvc)
 
-	// 3) 注册 RESTful API
-	if err := rest.Register(router, svc,
-		func(rb *rest.ApiBuilder[*User, int64]) {
-			rb.Route(func(cfg *rest.RouteConfig[int64]) {
-				cfg.Routing.EnableBatch = false
+	router := testkit.NewRecordingRouter()
+	if err := rest.Mount[*User, int64](router, app, rest.WithBasePath[*User, int64]("/users")); err != nil {
+		log.Fatalf("failed to mount standard routes: %v", err)
+	}
+	if err := rest.Action[*User, int64](
+		router, app, http.MethodPost, "/users/:id/activate", "activate",
+		func(ctx context.Context, c httpx.IContext, app rest.Application[*User, int64]) error {
+			id, err := httpx.ParseInt64Param(c, "id")
+			if err != nil {
+				return err
+			}
+			_, err = app.Execute(ctx, "activate", id, func(_ context.Context, user *User) error {
+				if user.Active {
+					return nil
+				}
+				now := time.Now()
+				user.Active = true
+				user.ActivatedAt = &now
+				return nil
 			})
+			return err
 		},
 	); err != nil {
-		log.Fatalf("failed to register API: %v", err)
+		log.Fatalf("failed to register business action: %v", err)
 	}
-
-	// 3.1 注册一个扩展业务方法：激活用户（示例）
-	router.POST("/users/:id/activate", func(ctx httpx.IContext) error {
-		id, err := httpx.ParseInt64Param(ctx, "id")
-		if err != nil {
-			return err
-		}
-		return svc.Activate(ctx.RequestContext(), id)
-	})
 	router.PrintRoutes()
 
-	// 4) 演示创建/查询/分页
-	if err := svc.Create(context.Background(), &User{Name: "张三", Email: "zhangsan@example.com"}); err != nil {
+	ctx := context.Background()
+	if err := app.Create(ctx, &User{Name: "张三", Email: "zhangsan@example.com"}); err != nil {
 		log.Fatalf("failed to create user: %v", err)
 	}
-	got, err := svc.Get(context.Background(), 1)
+	got, err := app.Get(ctx, 1)
 	if err != nil {
 		log.Fatalf("failed to get user: %v", err)
 	}
 	log.Printf("got user: %+v", got)
-	page, err := svc.ListPage(context.Background(), &query.PaginationOptions{Page: 1, Size: 10})
+
+	activated, err := app.Execute(ctx, "activate", 1, func(_ context.Context, user *User) error {
+		user.Active = true
+		now := time.Now()
+		user.ActivatedAt = &now
+		return nil
+	})
 	if err != nil {
-		log.Fatalf("failed to list page: %v", err)
+		log.Fatalf("failed to activate user: %v", err)
 	}
-	log.Printf("pagination: total=%d, items=%d", page.Total, len(page.Data))
+	log.Printf("activated: active=%v at=%v", activated.Active, activated.ActivatedAt != nil)
+
+	items, err := app.List(ctx, 0, 10)
+	if err != nil {
+		log.Fatalf("failed to list: %v", err)
+	}
+	total, err := app.Count(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("pagination: total=%d, items=%d", total, len(items))
 }

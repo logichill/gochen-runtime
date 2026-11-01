@@ -9,21 +9,28 @@ import (
 )
 
 type queryBuilder struct {
-	ctx   context.Context
-	model orm.IModel
-	opts  []orm.QueryOption
+	ctx      context.Context
+	model    orm.IModel
+	resolver *columnResolver
+	opts     []orm.QueryOption
 }
 
-// newQueryBuilder 创建绑定了上下文与模型入口的查询构建器。
-func newQueryBuilder(model orm.IModel, ctx context.Context) *queryBuilder {
+// newQueryBuilder 创建绑定了上下文、模型入口与列解析器的查询构建器。
+func newQueryBuilder(model orm.IModel, resolver *columnResolver, ctx context.Context) *queryBuilder {
 	return &queryBuilder{
-		ctx:   ctx,
-		model: model,
+		ctx:      ctx,
+		model:    model,
+		resolver: resolver,
 	}
 }
 
 func (quer *queryBuilder) clone() *queryBuilder {
-	return &queryBuilder{ctx: quer.ctx, model: quer.model, opts: append([]orm.QueryOption(nil), quer.opts...)}
+	return &queryBuilder{
+		ctx:      quer.ctx,
+		model:    quer.model,
+		resolver: quer.resolver,
+		opts:     append([]orm.QueryOption(nil), quer.opts...),
+	}
 }
 
 // Where 追加一段带参数的 WHERE 条件。

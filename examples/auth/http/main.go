@@ -1,7 +1,7 @@
 // 演示 HTTP 路由级 Action 快速拦截（Fast-Deny）。
 //
 // 重要定位：本中间件**不是安全边界**。
-// 真正的授权发生在 Application 层（gochen/app/security/*），
+// 真正的授权发生在 Application 层（`auth.IAuthorizer`），
 // 因此绕过 HTTP 直接调用 Application 同样会被拦截。
 // 这里只是把"明显无权"的请求在进入业务编排前挡掉，省掉后续开销。
 package main

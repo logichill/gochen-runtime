@@ -47,6 +47,9 @@ func requireUint64JSONField(body map[string]json.RawMessage, field string) (uint
 	if matched == "" {
 		return 0, errors.NewCode(errors.InvalidInput, "missing required field").WithContext("field", field)
 	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return 0, errors.NewCode(errors.InvalidInput, "invalid field").WithContext("field", field)
+	}
 	var v uint64
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return 0, errors.NewCode(errors.InvalidInput, "invalid field").WithContext("field", field)

@@ -1,53 +1,84 @@
 package rest
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"gochen-runtime/http/request"
+	"gochen/app/query"
 	"gochen/errors"
 	"gochen/httpx"
 )
 
 func (rb *RouteBuilder[T, ID]) handleList(c httpx.IContext) error {
-	if rb.config.Query.EnablePagination {
-		return rb.handlePagedList(c)
-	}
-
 	ctx, err := rb.serviceContext(c)
 	if err != nil {
 		return err
 	}
-
-	query, err := rb.parseQueryParams(c)
+	if !rb.config.Query.EnablePagination {
+		opts, err := parseUnpagedOptions(c, rb.config)
+		if err != nil {
+			return err
+		}
+		data, err := rb.listPage(ctx, opts)
+		if err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(data)))
+	}
+	opts, err := rb.parsePaginationOptions(c)
 	if err != nil {
 		return err
 	}
-	result, err := rb.service.ListByQuery(ctx, query)
+	data, err := rb.listPage(ctx, opts)
 	if err != nil {
 		return err
 	}
-
-	wrappedData := rb.config.Response.ResponseWrapper(result)
-	return c.JSON(http.StatusOK, httpx.JSONValue(wrappedData))
+	total, err := rb.service.QueryCount(ctx, query.QueryOptions{Filters: opts.Filters, Advanced: opts.Advanced})
+	if err != nil {
+		return err
+	}
+	result := newPagedResult(data, total, opts.Page, opts.Size)
+	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(result)))
 }
 
-func (rb *RouteBuilder[T, ID]) handlePagedList(c httpx.IContext) error {
-	ctx, err := rb.serviceContext(c)
-	if err != nil {
-		return err
+func (rb *RouteBuilder[T, ID]) listPage(ctx context.Context, opts *query.PaginationOptions) ([]T, error) {
+	if hasConditionalQuery(opts) {
+		return rb.service.Query(ctx, query.QueryOptions{
+			Offset:   opts.Offset(),
+			Limit:    opts.Size,
+			Fields:   opts.Fields,
+			Sorts:    opts.Sorts,
+			Filters:  opts.Filters,
+			Advanced: opts.Advanced,
+		})
 	}
+	return rb.service.List(ctx, opts.Offset(), opts.Size)
+}
 
-	options, err := rb.parsePaginationOptions(c)
-	if err != nil {
-		return err
-	}
-	result, err := rb.service.ListPage(ctx, options)
-	if err != nil {
-		return err
-	}
+func hasConditionalQuery(opts *query.PaginationOptions) bool {
+	return opts != nil && (!opts.Filters.IsZero() || len(opts.Sorts) > 0 || len(opts.Fields) > 0 || !opts.Advanced.IsZero())
+}
 
-	wrappedData := rb.config.Response.ResponseWrapper(result)
-	return c.JSON(http.StatusOK, httpx.JSONValue(wrappedData))
+func newPagedResult[T any](data []T, total int64, page, size int) query.PagedResult[T] {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = defaultPageSizeValue
+	}
+	totalPages := int((total + int64(size) - 1) / int64(size))
+	return query.PagedResult[T]{
+		Data:       data,
+		Total:      total,
+		Page:       page,
+		Size:       size,
+		TotalPages: totalPages,
+		HasNext:    page < totalPages,
+		HasPrev:    page > 1,
+	}
 }
 
 func (rb *RouteBuilder[T, ID]) handleGet(c httpx.IContext) error {
@@ -59,14 +90,11 @@ func (rb *RouteBuilder[T, ID]) handleGet(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-
 	entity, err := rb.service.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-
-	wrappedData := rb.config.Response.ResponseWrapper(entity)
-	return c.JSON(http.StatusOK, httpx.JSONValue(wrappedData))
+	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(entity)))
 }
 
 func (rb *RouteBuilder[T, ID]) handleCreate(c httpx.IContext) error {
@@ -77,135 +105,122 @@ func (rb *RouteBuilder[T, ID]) handleCreate(c httpx.IContext) error {
 		}
 		return errors.Wrap(err, errors.InvalidInput, "invalid request data")
 	}
-
-	// 执行自定义验证
-	if rb.config.Body.Validator != nil {
-		if err := rb.config.Body.Validator(entity); err != nil {
-			return err
-		}
+	if err := rb.validateBody(entity); err != nil {
+		return err
 	}
-
 	ctx, err := rb.serviceContext(c)
 	if err != nil {
 		return err
 	}
-	if rb.auditedEnabled {
-		auditCtx, _, err := rb.mustAuditedContext(c)
-		if err != nil {
-			return err
-		}
-		ctx = auditCtx
-	}
 	if err := rb.service.Create(ctx, entity); err != nil {
 		return err
 	}
-
-	result := map[string]any{
-		"id": entity.GetID(),
-	}
-	wrappedData := rb.config.Response.ResponseWrapper(result)
-
-	// 根据配置选择返回 201 或 200
-	statusCode := http.StatusOK
+	result := map[string]any{"id": entity.GetID()}
+	status := http.StatusOK
 	if rb.config.Response.UseHTTP201ForCreate {
-		statusCode = http.StatusCreated
+		status = http.StatusCreated
 	}
-	return c.JSON(statusCode, httpx.JSONValue(wrappedData))
+	return c.JSON(status, httpx.JSONValue(rb.config.Response.ResponseWrapper(result)))
 }
 
-// handleUpdate 更新实体；audited 场景要求显式 version，并禁止通过更新篡改审计/软删字段。
 func (rb *RouteBuilder[T, ID]) handleUpdate(c httpx.IContext) error {
 	ctx, err := rb.serviceContext(c)
 	if err != nil {
 		return err
 	}
-	if rb.auditedEnabled {
-		auditCtx, _, err := rb.mustAuditedContext(c)
-		if err != nil {
-			return err
-		}
-		ctx = auditCtx
-	}
-
 	id, err := rb.parseID(c)
 	if err != nil {
 		return err
 	}
-
 	entity, err := rb.service.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 
-	updateBody, err := rb.auditedUpdateBody(c, entity, id)
+	var body []byte
+	if rb.isAudited() {
+		var fields map[string]json.RawMessage
+		body, fields, err = readJSONBodyObject(c)
+		if err != nil {
+			return err
+		}
+		if err := rejectAuditedUpdateForbiddenFields(fields); err != nil {
+			return err
+		}
+		expected, err := requireUint64JSONField(fields, "version")
+		if err != nil {
+			return err
+		}
+		if got := entity.GetVersion(); expected != got {
+			return errors.NewCode(errors.Concurrency, "concurrency conflict").
+				WithContext("id", id).
+				WithContext("expected_version", expected).
+				WithContext("actual_version", got)
+		}
+	}
+	if body != nil {
+		err = bindJSONBodyIntoEntity(body, &entity)
+	} else {
+		err = bindJSONIntoEntity(c, &entity)
+	}
 	if err != nil {
+		if errors.Is(err, errors.PayloadTooLarge) {
+			return err
+		}
+		return errors.Wrap(err, errors.InvalidInput, "invalid request data")
+	}
+	if err := ensureEntityIDMatchesPath(&entity, id); err != nil {
 		return err
 	}
-	if err := rb.bindAndValidateUpdate(c, &entity, id, updateBody); err != nil {
+	if err := rb.validateBody(entity); err != nil {
 		return err
 	}
-
 	if err := rb.service.Update(ctx, entity); err != nil {
 		return err
 	}
-
-	wrappedData := rb.config.Response.ResponseWrapper(entity)
-	return c.JSON(http.StatusOK, httpx.JSONValue(wrappedData))
+	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(entity)))
 }
 
-func (rb *RouteBuilder[T, ID]) bindAndValidateUpdate(c httpx.IContext, entity *T, id ID, updateBody []byte) error {
-	var bindErr error
-	if updateBody != nil {
-		bindErr = bindJSONBodyIntoEntity(updateBody, entity)
-	} else {
-		bindErr = bindJSONIntoEntity(c, entity)
-	}
-	if bindErr != nil {
-		if errors.Is(bindErr, errors.PayloadTooLarge) {
-			return bindErr
-		}
-		return errors.Wrap(bindErr, errors.InvalidInput, "invalid request data")
-	}
-	if err := ensureEntityIDMatchesPath(entity, id); err != nil {
-		return err
-	}
-	if rb.config.Body.Validator != nil {
-		if err := rb.config.Body.Validator(*entity); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// handleDelete 删除实体；audited 场景走软删，并显式禁止用 query param 触发 purge。
 func (rb *RouteBuilder[T, ID]) handleDelete(c httpx.IContext) error {
-	// 明确不支持通过 query param 触发 purge，避免语义歧义与误用。
 	if strings.TrimSpace(c.Query("purge")) != "" {
 		return errors.NewCode(errors.InvalidInput, "purge query param is not supported; use DELETE /:id/purge")
 	}
-
-	id, err := rb.parseID(c)
-	if err != nil {
-		return err
-	}
-
 	ctx, err := rb.serviceContext(c)
 	if err != nil {
 		return err
 	}
-	if rb.auditedEnabled {
-		auditCtx, _, err := rb.mustAuditedContext(c)
-		if err != nil {
-			return err
-		}
-		ctx = auditCtx
-		if err := rb.auditedService.Delete(ctx, id); err != nil {
-			return err
-		}
-	} else if err := rb.service.Delete(ctx, id); err != nil {
+	id, err := rb.parseID(c)
+	if err != nil {
 		return err
 	}
+	if err := rb.service.Delete(ctx, id); err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(nil)))
+}
 
-	wrappedData := rb.config.Response.ResponseWrapper(nil)
-	return c.JSON(http.StatusOK, httpx.JSONValue(wrappedData))
+func (rb *RouteBuilder[T, ID]) validateBody(entity any) error {
+	if rb.config.Body.Validator == nil {
+		return nil
+	}
+	return rb.config.Body.Validator(entity)
+}
+
+func (rb *RouteBuilder[T, ID]) isAudited() bool {
+	_, ok := any(rb.service).(LifecycleApplication[T, ID])
+	return ok
+}
+
+func decodeStrictInto[T any](c httpx.IContext, target *T) error {
+	body, err := c.Body()
+	if err != nil {
+		if errors.Is(err, errors.PayloadTooLarge) {
+			return err
+		}
+		return errors.Wrap(err, errors.InvalidInput, "failed to read request body")
+	}
+	if err := request.DecodeStrictJSON(body, target); err != nil {
+		return errors.Wrap(err, errors.InvalidInput, "invalid request data")
+	}
+	return nil
 }

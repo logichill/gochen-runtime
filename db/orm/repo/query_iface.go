@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"gochen/app/query"
+	"gochen/domain/spec"
 	"gochen/errors"
 )
 
@@ -50,14 +51,15 @@ func (r *Repo[T, ID]) applySelectFields(quer *queryBuilder, fields []string) (*q
 //
 // 说明：
 // - Query 执行通用查询（实现 app/query.IQueryableRepository）
-func (r *Repo[T, ID]) Query(ctx context.Context, opts query.QueryOptions) ([]T, error) {
+func (r *Repo[T, ID]) Query(ctx context.Context, opts query.QueryOptions, s spec.Spec) ([]T, error) {
 	var entities []T
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	if quer, err = r.withReadSpec(quer, s); err != nil {
+		return nil, err
 	}
 	if quer, err = r.applySelectFields(quer, opts.Fields); err != nil {
 		return nil, err
@@ -87,15 +89,16 @@ func (r *Repo[T, ID]) Query(ctx context.Context, opts query.QueryOptions) ([]T, 
 //
 // 说明：
 // - QueryOne 查询单条记录（实现 app/query.IQueryableRepository）
-func (r *Repo[T, ID]) QueryOne(ctx context.Context, opts query.QueryOptions) (T, error) {
+func (r *Repo[T, ID]) QueryOne(ctx context.Context, opts query.QueryOptions, s spec.Spec) (T, error) {
 	var entity T
 	var zero T
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return zero, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	if quer, err = r.withReadSpec(quer, s); err != nil {
+		return zero, err
 	}
 	if quer, err = r.applySelectFields(quer, opts.Fields); err != nil {
 		return zero, err
@@ -123,13 +126,14 @@ func (r *Repo[T, ID]) QueryOne(ctx context.Context, opts query.QueryOptions) (T,
 //
 // 说明：
 // - QueryCount 查询数量（实现 app/query.IQueryableRepository）
-func (r *Repo[T, ID]) QueryCount(ctx context.Context, opts query.QueryOptions) (int64, error) {
+func (r *Repo[T, ID]) QueryCount(ctx context.Context, opts query.QueryOptions, s spec.Spec) (int64, error) {
 	quer, err := r.readQuery(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if r.softDelete {
-		quer = quer.Where(r.softDeleteCols.DeletedAt + " IS NULL")
+	quer = r.withActive(quer)
+	if quer, err = r.withReadSpec(quer, s); err != nil {
+		return 0, err
 	}
 	if quer, err = applyQueryFilters(quer, opts); err != nil {
 		return 0, err

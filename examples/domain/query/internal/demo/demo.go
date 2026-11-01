@@ -12,6 +12,7 @@
 package demo
 
 import (
+	"gochen/domain/spec"
 	"context"
 	"log"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 	"gochen-runtime/http/nethttp"
 	"gochen/app/crud"
 	"gochen/app/query"
+	"gochen/auth"
 	"gochen/domain"
 	"gochen/errors"
 )
@@ -55,45 +57,45 @@ var _ domain.IEntity[int64] = (*User)(nil)
 // 让示例主体可以只聚焦 Query / QueryCount 这条主线。
 type ReadOnlyRepoBase[T domain.IEntity[ID], ID comparable] struct{}
 
-func (ReadOnlyRepoBase[T, ID]) Create(context.Context, T) error {
+func (ReadOnlyRepoBase[T, ID]) Create(context.Context, T, spec.Spec) error {
 	return errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) Update(context.Context, T) error {
+func (ReadOnlyRepoBase[T, ID]) Update(context.Context, T, spec.Spec) error {
 	return errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) Delete(context.Context, ID) error {
+func (ReadOnlyRepoBase[T, ID]) Delete(context.Context, T, spec.Spec) error {
 	return errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) Get(context.Context, ID) (T, error) {
+func (ReadOnlyRepoBase[T, ID]) Get(context.Context, ID, spec.Spec) (T, error) {
 	var zero T
 	return zero, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) List(context.Context, int, int) ([]T, error) {
+func (ReadOnlyRepoBase[T, ID]) List(context.Context, int, int, spec.Spec) ([]T, error) {
 	return nil, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) Count(context.Context) (int64, error) {
+func (ReadOnlyRepoBase[T, ID]) Count(context.Context, spec.Spec) (int64, error) {
 	return 0, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) Exists(context.Context, ID) (bool, error) {
+func (ReadOnlyRepoBase[T, ID]) Exists(context.Context, ID, spec.Spec) (bool, error) {
 	return false, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) Query(context.Context, query.QueryOptions) ([]T, error) {
+func (ReadOnlyRepoBase[T, ID]) Query(context.Context, query.QueryOptions, spec.Spec) ([]T, error) {
 	return nil, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) QueryOne(context.Context, query.QueryOptions) (T, error) {
+func (ReadOnlyRepoBase[T, ID]) QueryOne(context.Context, query.QueryOptions, spec.Spec) (T, error) {
 	var zero T
 	return zero, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
-func (ReadOnlyRepoBase[T, ID]) QueryCount(context.Context, query.QueryOptions) (int64, error) {
+func (ReadOnlyRepoBase[T, ID]) QueryCount(context.Context, query.QueryOptions, spec.Spec) (int64, error) {
 	return 0, errors.NewCode(errors.Unsupported, "demo repo only supports query")
 }
 
@@ -119,7 +121,7 @@ func NewQueryableUserRepo(items []*User) *QueryableUserRepo {
 // 翻译给底层查询构建器。
 //
 // 这个 demo 则故意在内存中做同样的事，目的是把数据流转看清楚。
-func (r *QueryableUserRepo) Query(_ context.Context, opts query.QueryOptions) ([]*User, error) {
+func (r *QueryableUserRepo) Query(_ context.Context, opts query.QueryOptions, _ spec.Spec) ([]*User, error) {
 	filtered, err := r.FilterOnly(opts.Filters)
 	if err != nil {
 		return nil, err
@@ -128,8 +130,8 @@ func (r *QueryableUserRepo) Query(_ context.Context, opts query.QueryOptions) ([
 	return PaginateUsers(filtered, opts.Offset, opts.Limit), nil
 }
 
-func (r *QueryableUserRepo) QueryOne(ctx context.Context, opts query.QueryOptions) (*User, error) {
-	items, err := r.Query(ctx, opts)
+func (r *QueryableUserRepo) QueryOne(ctx context.Context, opts query.QueryOptions, spec spec.Spec) (*User, error) {
+	items, err := r.Query(ctx, opts, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +141,7 @@ func (r *QueryableUserRepo) QueryOne(ctx context.Context, opts query.QueryOption
 	return items[0], nil
 }
 
-func (r *QueryableUserRepo) QueryCount(_ context.Context, opts query.QueryOptions) (int64, error) {
+func (r *QueryableUserRepo) QueryCount(_ context.Context, opts query.QueryOptions, _ spec.Spec) (int64, error) {
 	filtered, err := r.FilterOnly(opts.Filters)
 	if err != nil {
 		return 0, err
@@ -339,10 +341,12 @@ func PaginateUsers(users []*User, offset, limit int) []*User {
 	return out
 }
 
-// NewApplication 复用通用 CRUD application，
-// 目的是证明“查询主线”并不要求额外写一个特殊 app service。
+// NewApplication 构造只读查询应用；授权器在此显式选择，仓储能力在构造期绑定。
 func NewApplication(repo *QueryableUserRepo) *crud.Application[*User, int64] {
-	app, err := crud.NewApplication[*User, int64](repo, nil)
+	app, err := crud.NewReadApplication[*User, int64](repo, crud.Options[*User, int64]{
+		Resource:   "user",
+		Authorizer: auth.Allow(),
+	})
 	Must(err)
 	return app
 }

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,11 +16,10 @@ import (
 	"gochen-runtime/db/orm/lite"
 	"gochen-runtime/db/orm/repo"
 	"gochen-runtime/db/sql/stdsql"
-	"gochen-runtime/host/authz"
 	"gochen-runtime/host/config"
 	"gochen-runtime/quick"
 	"gochen/app/crud"
-	"gochen/auth/action"
+	"gochen/auth"
 	"gochen/contextx"
 	"gochen/db"
 	"gochen/db/orm"
@@ -74,28 +73,30 @@ func setupTestDB(t *testing.T) orm.IOrm {
 	return engine
 }
 
+func newQuickApp(t *testing.T, r *repo.Repo[*TestQuickEntity, int64]) *crud.Application[*TestQuickEntity, int64] {
+	t.Helper()
+	app, err := quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{
+		Resource:   "quick_item",
+		Authorizer: auth.Allow(),
+	})
+	require.NoError(t, err)
+	return app
+}
+
 func TestQuick_FullPipeline(t *testing.T) {
 	engine := setupTestDB(t)
 
 	// 1. Repo
-	r, err := quick.ScopedRepo[*TestQuickEntity, int64](engine, "test_quick_entities", "quick_item")
+	r, err := quick.IsolatedRepo[*TestQuickEntity, int64](engine, "test_quick_entities",
+		repo.WithResourceKind[*TestQuickEntity, int64]("quick_item"))
 	require.NoError(t, err)
 	assert.Equal(t, "quick_item", r.ResourceKind())
 
-	// 2. App directly from Repo (1 line)
-	app, err := quick.ScopedAppFromRepo[*TestQuickEntity, int64](r, "quick_item", func(e *TestQuickEntity) int64 {
-		return e.OrgID
-	})
-	require.NoError(t, err)
+	// 2. App directly from Repo
+	app := newQuickApp(t, r)
 
 	// 3. Verify App functionality
 	ctx, err := contextx.WithTenantID(context.Background(), "tenant-test")
-	require.NoError(t, err)
-	ctx, err = authz.WithPrincipal(ctx, authz.Principal{
-		SubjectID:     1,
-		ActiveScopeID: 100,
-		Permissions:   []string{"quick_item:api:create", "quick_item:api:read", "quick_item:api:list"},
-	})
 	require.NoError(t, err)
 
 	item := &TestQuickEntity{
@@ -106,8 +107,7 @@ func TestQuick_FullPipeline(t *testing.T) {
 	item.SetID(1)
 	item.SetTenantID("tenant-test")
 
-	err = app.Create(ctx, item)
-	require.NoError(t, err)
+	require.NoError(t, app.Create(ctx, item))
 
 	fetched, err := app.Get(ctx, 1)
 	require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestQuick_FullPipeline(t *testing.T) {
 	defer cancel()
 
 	err = srv.Start(runCtx)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if err != nil && !stderrors.Is(err, context.Canceled) && !stderrors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("unexpected server start error: %v", err)
 	}
 }
@@ -144,25 +144,13 @@ func TestQuick_EndToEnd_HTTPRoundTrip(t *testing.T) {
 	engine := setupTestDB(t)
 
 	// 1. Repo & App 装配
-	r, err := quick.ScopedRepo[*TestQuickEntity, int64](engine, "test_quick_entities", "quick_item")
+	r, err := quick.IsolatedRepo[*TestQuickEntity, int64](engine, "test_quick_entities")
 	require.NoError(t, err)
+	app := newQuickApp(t, r)
 
-	securedApp, err := quick.ScopedAppFromRepo[*TestQuickEntity, int64](r, "quick_item", func(e *TestQuickEntity) int64 {
-		return e.OrgID
-	})
-	require.NoError(t, err)
-
-	// 2. 模拟认证鉴权中间件注入租户与 Principal
-	authMw := func(c gochenhttp.IContext, next func() error) error {
-		pCtx, err := authz.WithPrincipal(c.RequestContext(), authz.Principal{
-			SubjectID:     1,
-			ActiveScopeID: 200,
-			Permissions:   []string{"quick_item:api:*"},
-		})
-		if err != nil {
-			return err
-		}
-		pCtx, err = contextx.WithTenantID(pCtx, "tenant-roundtrip")
+	// 2. 模拟认证中间件注入租户
+	tenantMw := func(c gochenhttp.IContext, next func() error) error {
+		pCtx, err := contextx.WithTenantID(c.RequestContext(), "tenant-roundtrip")
 		if err != nil {
 			return err
 		}
@@ -171,7 +159,9 @@ func TestQuick_EndToEnd_HTTPRoundTrip(t *testing.T) {
 	}
 
 	// 3. 模块声明与路由挂载
-	orderModule := quick.Module("items", quick.RESTRegistrar[*TestQuickEntity, int64](securedApp), quick.WithMiddlewares(authMw))
+	itemModule := quick.Module("items",
+		quick.RESTRegistrar[*TestQuickEntity, int64](app),
+		quick.WithMiddlewares(tenantMw))
 
 	port := getFreePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,7 +169,7 @@ func TestQuick_EndToEnd_HTTPRoundTrip(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- quick.New(config.WithName("roundtrip-service"), config.WithPort(port)).Modules(orderModule).Run(ctx)
+		errCh <- quick.New(config.WithName("roundtrip-service"), config.WithPort(port)).Modules(itemModule).Run(ctx)
 	}()
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d/api/v1/items", port)
@@ -256,91 +246,48 @@ func TestQuick_EndToEnd_HTTPRoundTrip(t *testing.T) {
 	// 8. 验证优雅停机
 	cancel()
 	err = <-errCh
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil && !stderrors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected stop error: %v", err)
 	}
 }
 
-func TestQuick_AppFromExistingBaseApp(t *testing.T) {
-	engine := setupTestDB(t)
-
-	r, err := quick.ScopedRepo[*TestQuickEntity, int64](engine, "test_quick_entities", "quick_item")
-	require.NoError(t, err)
-
-	baseApp, err := quick.App[*TestQuickEntity, int64](r)
-	require.NoError(t, err)
-
-	// Pass existing baseApp to ScopedApp
-	scopedApp, err := quick.ScopedApp[*TestQuickEntity, int64](baseApp, "quick_item", func(e *TestQuickEntity) int64 {
-		return e.OrgID
-	})
-	require.NoError(t, err)
-	require.NotNil(t, scopedApp)
-}
-
-func TestQuick_ActionApp(t *testing.T) {
+func TestQuick_InvalidInputs(t *testing.T) {
 	engine := setupTestDB(t)
 
 	r, err := quick.IsolatedRepo[*TestQuickEntity, int64](engine, "test_quick_entities")
 	require.NoError(t, err)
 
-	mockChecker := action.ActionCheckerFunc(func(ctx context.Context, actionCode string) error {
-		return nil
-	})
-
-	actionApp, err := quick.ActionAppFromRepo[*TestQuickEntity, int64](r, mockChecker, "quick_item")
-	require.NoError(t, err)
-	require.NotNil(t, actionApp)
-
-	baseApp, err := quick.App[*TestQuickEntity, int64](r)
-	require.NoError(t, err)
-
-	actionAppFromBase, err := quick.ActionApp[*TestQuickEntity, int64](baseApp, mockChecker, "quick_item")
-	require.NoError(t, err)
-	require.NotNil(t, actionAppFromBase)
-}
-
-func TestQuick_InvalidInputs(t *testing.T) {
-	// ScopedApp nil app
-	_, err := quick.ScopedApp[*TestQuickEntity, int64](nil, "kind", func(e *TestQuickEntity) int64 { return 1 })
-	require.Error(t, err)
-
-	// ScopedApp typed-nil app
-	var typedNilApp *crud.Application[*TestQuickEntity, int64]
-	_, err = quick.ScopedApp[*TestQuickEntity, int64](typedNilApp, "kind", func(e *TestQuickEntity) int64 { return 1 })
-	require.Error(t, err)
-
-	// ScopedAppFromRepo nil repository
-	_, err = quick.ScopedAppFromRepo[*TestQuickEntity, int64](nil, "kind", func(e *TestQuickEntity) int64 { return 1 })
-	require.Error(t, err)
-
-	// ScopedAppFromRepo typed-nil repository
-	var typedNilRepo *repo.Repo[*TestQuickEntity, int64]
-	_, err = quick.ScopedAppFromRepo[*TestQuickEntity, int64](typedNilRepo, "kind", func(e *TestQuickEntity) int64 { return 1 })
-	require.Error(t, err)
-
-	// Empty kind
-	_, err = quick.ScopedAppFromRepo[*TestQuickEntity, int64](typedNilRepo, "", func(e *TestQuickEntity) int64 { return 1 })
-	require.Error(t, err)
-
-	// ActionApp nil checker
-	_, err = quick.ActionApp[*TestQuickEntity, int64](nil, nil, "prefix")
-	require.Error(t, err)
-
-	// ActionAppFromRepo nil repo
-	_, err = quick.ActionAppFromRepo[*TestQuickEntity, int64](nil, nil, "prefix")
-	require.Error(t, err)
-
 	// App nil repository
-	_, err = quick.App[*TestQuickEntity, int64](nil)
+	_, err = quick.App[*TestQuickEntity, int64](nil, crud.Options[*TestQuickEntity, int64]{
+		Resource:   "quick_item",
+		Authorizer: auth.Allow(),
+	})
 	require.Error(t, err)
 
 	// App typed-nil repository
-	_, err = quick.App[*TestQuickEntity, int64](typedNilRepo)
+	var typedNilRepo *repo.Repo[*TestQuickEntity, int64]
+	_, err = quick.App[*TestQuickEntity, int64](typedNilRepo, crud.Options[*TestQuickEntity, int64]{
+		Resource:   "quick_item",
+		Authorizer: auth.Allow(),
+	})
 	require.Error(t, err)
 
-	// ScopedRepo whitespace kind
-	_, err = quick.ScopedRepo[*TestQuickEntity, int64](nil, "table", "   ")
+	// App without explicit authorizer
+	_, err = quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{
+		Resource: "quick_item",
+	})
+	require.Error(t, err)
+
+	// App without resource name
+	_, err = quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{
+		Authorizer: auth.Allow(),
+	})
+	require.Error(t, err)
+
+	// Repo with conflicting isolation columns
+	_, err = quick.Repo[*TestQuickEntity, int64](engine, "test_quick_entities",
+		repo.WithIsolation[*TestQuickEntity, int64](repo.IsolationCols{Column: "tenant_id"}),
+		repo.WithIsolation[*TestQuickEntity, int64](repo.IsolationCols{Column: "org_id"}))
 	require.Error(t, err)
 
 	// Port above the valid range must fail before startup.

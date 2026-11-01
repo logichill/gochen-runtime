@@ -24,6 +24,7 @@ import (
 	"gochen-runtime/examples/e2e/order_fulfillment/internal/services"
 	"gochen-runtime/http/nethttp"
 	"gochen/app/crud"
+	"gochen/auth"
 	"gochen/db"
 	"gochen/errors"
 	"gochen/eventing"
@@ -60,6 +61,20 @@ type AppSystem struct {
 
 	eventsMu       sync.Mutex
 	ReceivedEvents []string
+
+	// 事件流版本独立于实体乐观锁版本：前者按聚合事件序号递增。
+	eventVersionsMu sync.Mutex
+	eventVersions   map[int64]uint64
+}
+
+func (s *AppSystem) nextEventVersion(aggregateID int64) uint64 {
+	s.eventVersionsMu.Lock()
+	defer s.eventVersionsMu.Unlock()
+	if s.eventVersions == nil {
+		s.eventVersions = make(map[int64]uint64)
+	}
+	s.eventVersions[aggregateID]++
+	return s.eventVersions[aggregateID]
 }
 
 // BootstrapSystem 初始化并装配整个系统的核心与驱动组件
@@ -97,7 +112,10 @@ func BootstrapSystem(ctx context.Context) (*AppSystem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create order repo: %w", err)
 	}
-	orderApp, err := crud.NewApplication[*domain.Order, int64](orderRepo, nil)
+	orderApp, err := crud.NewApplication[*domain.Order, int64](orderRepo, crud.Options[*domain.Order, int64]{
+		Resource:   "order",
+		Authorizer: auth.Allow(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create order app: %w", err)
 	}
@@ -272,10 +290,7 @@ func registerCommandHandlers(sys *AppSystem) {
 			return err
 		}
 		// 写入 EventStore 与 Outbox 领域事件
-		eventVersion := order.Version
-		if eventVersion == 0 {
-			eventVersion = 1
-		}
+		eventVersion := sys.nextEventVersion(order.ID)
 		evt := eventing.NewEventWithID[int64](
 			uuid.NewString(),
 			order.ID,
@@ -302,10 +317,7 @@ func registerCommandHandlers(sys *AppSystem) {
 			return err
 		}
 		// 写入 EventStore 与 Outbox 取消事件
-		eventVersion := order.Version
-		if eventVersion == 0 {
-			eventVersion = 1
-		}
+		eventVersion := sys.nextEventVersion(order.ID)
 		evt := eventing.NewEventWithID[int64](
 			uuid.NewString(),
 			order.ID,

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"log"
 	"net"
@@ -16,17 +16,37 @@ import (
 	"gochen-runtime/host/authz"
 	"gochen-runtime/host/config"
 	"gochen-runtime/quick"
+	"gochen/app/crud"
+	"gochen/auth"
+	authscoped "gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/db"
 	domcrud "gochen/domain/crud"
+	"gochen/domain/spec"
+	"gochen/errors"
 )
 
 // Order 演示租户隔离与数据范围实体
 type Order struct {
 	domcrud.TenantEntity[int64]
-	OrgID  int64  `json:"org_id"`
+	OrgID  int64  `json:"org_id" role:"scope"`
 	Title  string `json:"title"`
 	Amount int64  `json:"amount"`
+}
+
+// scopeResolver 把激活范围下推为 @scope 规约，并声明所需词汇。
+type scopeResolver struct{}
+
+func (scopeResolver) Vocabulary() auth.Vocabulary {
+	return auth.Vocabulary{Roles: []spec.Role{spec.RoleScope}}
+}
+
+func (scopeResolver) ResolveSpec(ctx context.Context, _ auth.Request) (spec.Spec, []auth.Assignment, error) {
+	principal, ok := authz.PrincipalFromContext(ctx)
+	if !ok || principal.ActiveScopeID <= 0 {
+		return spec.Spec{}, nil, errors.NewCode(errors.Unauthorized, "active scope is required")
+	}
+	return spec.Eq(spec.RoleScope, principal.ActiveScopeID), nil, nil
 }
 
 func (o *Order) Validate() error { return nil }
@@ -76,26 +96,30 @@ func main() {
 		log.Fatalf("failed to create orm engine: %v", err)
 	}
 
-	// 2. 极简装配：直接生成带 L2 隔离与 L3 数据范围的受保护 App（无需手动中转 baseApp）
-	orderRepo, err := quick.ScopedRepo[*Order, int64](ormEngine, "orders", "order",
-		repo.WithIsolation[*Order, int64](repo.IsolationCols{Column: "tenant_id"}),
+	// 2. 极简装配：隔离在 Repo 构造期显式声明，数据范围由授权器下推为规约。
+	orderRepo, err := quick.IsolatedRepo[*Order, int64](ormEngine, "orders",
+		repo.WithResourceKind[*Order, int64]("order"),
 	)
 	if err != nil {
-		log.Fatalf("failed to create scoped repo: %v", err)
+		log.Fatalf("failed to create isolated repo: %v", err)
 	}
 
-	securedApp, err := quick.ScopedAppFromRepo[*Order, int64](
-		orderRepo,
-		"order",
-		func(o *Order) int64 { return o.OrgID },
-	)
+	authorizer, err := authscoped.New(authz.NewActionChecker(), scopeResolver{})
 	if err != nil {
-		log.Fatalf("failed to secure app: %v", err)
+		log.Fatalf("failed to build authorizer: %v", err)
 	}
 
-	// 3. 业务查询：通过 List 获取当前租户 (tenant-apple) 与数据范围 (OrgID=1001) 下的订单
+	orderApp, err := quick.App[*Order, int64](orderRepo, crud.Options[*Order, int64]{
+		Resource:   "order",
+		Authorizer: authorizer,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 3. 业务查询：租户隔离 + 数据范围（@scope 角色字段）共同生效
 	userCtx := mustPrincipalContext("tenant-apple", 1001, "order:api:read", "order:api:list")
-	orders, err := securedApp.List(userCtx, 0, 10)
+	orders, err := orderApp.List(userCtx, 0, 10)
 	if err != nil {
 		log.Fatalf("failed to list orders: %v", err)
 	}
@@ -106,8 +130,8 @@ func main() {
 			o.GetID(), o.Title, o.Amount, o.GetTenantID(), o.OrgID, o.GetVersion())
 	}
 
-	// 4. 模块声明与微服务生命周期启动 (通过 quick.Module 与 quick.New)
-	orderModule := quick.Module("order", quick.RESTRegistrar[*Order, int64](securedApp))
+	// 4. 模块声明与微服务生命周期启动；路由由 Descriptor 推导。
+	orderModule := quick.Module("order", quick.RESTRegistrar[*Order, int64](orderApp))
 	server, err := quick.New(config.WithName("order-service"), config.WithPort(freePort())).Modules(orderModule).Build()
 	if err != nil {
 		log.Fatalf("failed to create quick server: %v", err)
@@ -116,7 +140,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	if err := server.Start(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if err := server.Start(ctx); err != nil && !stderrors.Is(err, context.Canceled) && !stderrors.Is(err, context.DeadlineExceeded) {
 		log.Fatalf("server run failed: %v", err)
 	}
 }
@@ -142,7 +166,7 @@ func mustPrincipalContext(tenantID string, activeScopeID int64, permissions ...s
 		log.Fatal(err)
 	}
 	ctx, err = authz.WithPrincipal(ctx, authz.Principal{
-		SubjectID:     1,
+		SubjectID:     "1",
 		ActiveScopeID: activeScopeID,
 		Permissions:   permissions,
 	})

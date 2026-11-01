@@ -98,8 +98,8 @@ func AccessLog(cfg AccessLogConfig) httpx.Middleware {
 			if v := contextx.TenantID(reqCtx); v != "" {
 				fields = append(fields, logging.String("tenant_id", v))
 			}
-			if v := contextx.UserID(reqCtx); v != 0 {
-				fields = append(fields, logging.Int64("user_id", v))
+			if v := contextx.UserID(reqCtx); v != "" {
+				fields = append(fields, logging.String("user_id", v))
 			}
 		}
 

@@ -66,9 +66,9 @@ func TestSQLCheckpointStore_InvalidTableNameRejectedAcrossSQLPaths(t *testing.T)
 			},
 		},
 		{
-			name: "SaveBatch",
+			name: "SaveBulk",
 			run: func() error {
-				return store.SaveBatch(ctx, []*projection.Checkpoint{checkpoint.Clone()})
+				return store.SaveBulk(ctx, []*projection.Checkpoint{checkpoint.Clone()})
 			},
 		},
 	}
@@ -132,7 +132,7 @@ func TestSQLCheckpointStore_NilDBReturnsInvalidInput(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, errors.InvalidInput, errors.Code(err))
 
-	err = store.SaveBatch(ctx, []*projection.Checkpoint{checkpoint})
+	err = store.SaveBulk(ctx, []*projection.Checkpoint{checkpoint})
 	require.Error(t, err)
 	require.Equal(t, errors.InvalidInput, errors.Code(err))
 }
@@ -156,8 +156,8 @@ func TestSQLCheckpointStore_ValidTableNameBehavior(t *testing.T) {
 	require.Len(t, listed, 1)
 
 	next := projection.NewCheckpoint("valid-table-batch", 2, "event-2", time.Now())
-	require.NoError(t, store.SaveBatch(ctx, []*projection.Checkpoint{next}))
-	require.NoError(t, store.SaveBatch(ctx, nil))
+	require.NoError(t, store.SaveBulk(ctx, []*projection.Checkpoint{next}))
+	require.NoError(t, store.SaveBulk(ctx, nil))
 
 	require.NoError(t, store.Delete(ctx, checkpoint.ProjectionName))
 	_, err = store.Load(ctx, checkpoint.ProjectionName)
@@ -181,14 +181,14 @@ func TestSQLCheckpointStore_SaveWithDB_RowsAffectedErrorKeepsSuccessfulProgress(
 	require.Equal(t, "event-2", loaded.LastEventID)
 }
 
-func TestSQLCheckpointStore_SaveBatch_DoesNotMoveCheckpointBackwards(t *testing.T) {
+func TestSQLCheckpointStore_SaveBulk_DoesNotMoveCheckpointBackwards(t *testing.T) {
 	ctx := context.Background()
 	database := newProjectionCheckpointTestDB(t)
 	store := NewSQLCheckpointStore(database, "projection_checkpoints")
 	require.NoError(t, store.CreateTable(ctx))
 
 	require.NoError(t, store.SaveWithDB(ctx, database, projection.NewCheckpoint("batch-forward-only", 5, "event-5", time.Now())))
-	require.NoError(t, store.SaveBatch(ctx, []*projection.Checkpoint{
+	require.NoError(t, store.SaveBulk(ctx, []*projection.Checkpoint{
 		projection.NewCheckpoint("batch-forward-only", 3, "event-3", time.Now()),
 	}))
 
@@ -198,13 +198,13 @@ func TestSQLCheckpointStore_SaveBatch_DoesNotMoveCheckpointBackwards(t *testing.
 	require.Equal(t, "event-5", loaded.LastEventID)
 }
 
-func TestSQLCheckpointStore_SaveBatch_RejectsInvalidCheckpoint(t *testing.T) {
+func TestSQLCheckpointStore_SaveBulk_RejectsInvalidCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	database := newProjectionCheckpointTestDB(t)
 	store := NewSQLCheckpointStore(database, "projection_checkpoints")
 	require.NoError(t, store.CreateTable(ctx))
 
-	err := store.SaveBatch(ctx, []*projection.Checkpoint{
+	err := store.SaveBulk(ctx, []*projection.Checkpoint{
 		projection.NewCheckpoint("ok", 1, "event-1", time.Now()),
 		nil,
 	})

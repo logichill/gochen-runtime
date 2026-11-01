@@ -413,3 +413,21 @@ func parsePaginationOptions[ID comparable](c httpx.IContext, cfg *RouteConfig[ID
 
 	return options, nil
 }
+
+// parseUnpagedOptions 在关闭分页的路由上只解析过滤/排序/字段，忽略 page/size 参数。
+func parseUnpagedOptions[ID comparable](c httpx.IContext, cfg *RouteConfig[ID]) (*query.PaginationOptions, error) {
+	if c == nil {
+		return nil, errors.NewCode(errors.InvalidInput, "ctx is nil")
+	}
+	allow := buildAllowLists(cfg)
+	request, err := parseQueryCommon(c, allow)
+	if err != nil {
+		return nil, err
+	}
+	return &query.PaginationOptions{
+		Page:    1,
+		Filters: request.Filters.Clone(),
+		Sorts:   append([]query.Sort(nil), request.Sorts...),
+		Fields:  append([]string(nil), request.Fields...),
+	}, nil
+}

@@ -36,7 +36,7 @@
 
 1. **Host 模块契约**：canonical API 为 `host/module`；`host/module/runtime` 只提供 Host 实现，不重复转出模块类型和构造函数。
 2. **Quick 门面**：`quick` 是唯一的便捷装配门面（Host 启动、REST 注册、Service、Repo 工厂），底层子包保留复杂场景的显式定制通道。装配与列名约定见 `gochen` 仓库 `docs/guides/quick-assembly.md`。
-3. **安全能力落点**：Application 层用装饰器（`security`）；Repository 层一律用**构造期显式选项**（`db/orm/repo.WithIsolation` / `WithResourceKind` / `WithScope`）表达安全约束，禁止包装 `IRepository`——否则可选能力接口会丢失或被假冒。
+3. **安全能力落点**：Application 构造时接收 `auth.IAuthorizer`，用例入口产生的 `spec.Spec` 显式传给 Repository。Repository 构造期通过 `db/orm/repo.WithIsolation` / `WithResourceKind` 声明隔离与资源，可选能力由仓储本体提供，禁止包装 `IRepository`。
 4. **HTTP middleware**：路径跳过规则与响应状态解析由包内共享 primitive 统一，相关 capability interface 不作为公共 API 暴露。
 5. **SQL migration**：分句与人工 review guard 复用本仓库 `db/sqlscan` 词法原语；本仓库仅保留 migration 特有的 `#` 行注释规则。
 

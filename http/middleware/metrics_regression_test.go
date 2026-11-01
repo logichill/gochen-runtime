@@ -118,11 +118,11 @@ func TestRegressionF06_BucketsRequireRegistrar(t *testing.T) {
 // 分桶在装配期返回错误，而不是推迟到首个请求以 panic 暴露。
 func TestRegressionF06_InvalidBucketsFailAtAssembly(t *testing.T) {
 	invalid := [][]float64{
-		{100, 50},              // 乱序
-		{10, 10},               // 非严格递增
-		{-1, 1, 5},             // 非正数
-		{1, 2, math.NaN()},     // 非有限
-		{1, 2, math.Inf(1)},    // 非有限
+		{100, 50},           // 乱序
+		{10, 10},            // 非严格递增
+		{-1, 1, 5},          // 非正数
+		{1, 2, math.NaN()},  // 非有限
+		{1, 2, math.Inf(1)}, // 非有限
 	}
 	for _, buckets := range invalid {
 		_, err := MetricsMiddleware(MetricsConfig{

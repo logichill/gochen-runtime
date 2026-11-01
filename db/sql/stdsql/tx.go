@@ -3,8 +3,8 @@ package stdsql
 import (
 	"context"
 	"database/sql"
-	coredialect "gochen/db/dialect"
 	"fmt"
+	coredialect "gochen/db/dialect"
 	"strings"
 
 	"gochen-runtime/db/dialect"
