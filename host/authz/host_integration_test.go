@@ -9,7 +9,6 @@ import (
 	"gochen-runtime/host/module"
 	"gochen-runtime/host/module/assembly"
 	"gochen-runtime/host/module/runtime"
-	"gochen/auth/scoped"
 	"gochen/testkit/require"
 )
 
@@ -36,11 +35,6 @@ func TestHostRegistersModuleAuthzFromDescriptor(t *testing.T) {
 				Description: "allow read demo data",
 				Scopes:      []string{"tenant"},
 			}},
-			ResourceResolvers: []scoped.ITypedResourceResolver{
-				scoped.TypedResourceResolver[*registryTestAuthzTarget](func(target *registryTestAuthzTarget) (scoped.Resource, bool) {
-					return scoped.Resource{Kind: "demo.target", ID: "1"}, target != nil
-				}),
-			},
 		}},
 	})
 
@@ -60,8 +54,6 @@ func TestHostRegistersModuleAuthzFromDescriptor(t *testing.T) {
 	require.Equal(t, 1, len(permissions))
 	require.Equal(t, "demo:api:read", permissions[0])
 
-	_, ok := registry.Resolve(&registryTestAuthzTarget{})
-	require.True(t, ok, "模块声明的资源解析器必须已注册")
 }
 
 func TestHostSyncsModuleAuthzCatalogAfterRegistration(t *testing.T) {

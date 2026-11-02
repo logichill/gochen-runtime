@@ -53,9 +53,11 @@ if err := app.Run(context.Background()); err != nil {
 - `api/rest/`：基于契约的自动化 REST CRUD 路由生成器
 - `http/`：基于 Go 标准库 `net/http` 的 HTTP 服务实现、中间件与请求上下文
 - `db/`：SQL Builder、Lite ORM、Repo 仓储、Schema 迁移与差异比对
-- `auth/`、`security/`：SQL 权限存储与安全 PEP 装配门面
+- `auth/`、`host/authz/`：SQL 权限存储、权限目录、动作检查与参数化范围解析
 - `config/`：多源配置加载与校验
 - `process/`：Workflow SQL 存储与分布式锁实现
 - `eventing/`：SQL Event Store、Outbox 与 Projection 引擎
 - `quick/`：极简快速装配门面（Quick Host / Rest / Repo）
 - `examples/`：端到端与驱动层可运行示例
+
+资源仓储通过 `db/orm/repo.WithResourceContract` 配置维度能力，默认保护全部维度；普通更新落实版本、保护值与授权条件。Transfer 在同源事务中执行条件更新和实际后像回读。`AuditResource` 将资源契约绑定到完整 JSON 快照、类型化维度列和隔离列，AuditStore 构造校验真实表列。外部迁移使用 `api/rest.Transfer`，要求幂等键及调用方版本，见 [REST 接入](api/rest/README.md)。

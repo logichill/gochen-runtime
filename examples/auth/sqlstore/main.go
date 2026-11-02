@@ -16,8 +16,8 @@ import (
 	"gochen-runtime/auth/sqlstore"
 	"gochen-runtime/db/sql/stdsql"
 
+	"gochen/auth"
 	"gochen/auth/governance"
-	"gochen/auth/scoped"
 	"gochen/db"
 	"gochen/errors"
 )
@@ -72,11 +72,10 @@ func main() {
 	)
 	must(err)
 
-	decision, err := governed.Authorize(ctx, "report:api:read",
-		scoped.Resource{Kind: "report", ID: "r-1", ManagedScopeID: 1001})
+	decision, err := governed.Authorize(ctx, auth.Request{Resource: "report", Action: "read", Permission: "report:api:read", IDs: []string{"r-1"}})
 	must(err)
 
-	log.Printf("decision: effect=%s snapshot=%s", decision.Effect, decision.SnapshotVersion)
+	log.Printf("decision: allowed=%t snapshot=%s", decision.Allowed, decision.SnapshotVersion)
 	if decision.SnapshotVersion != "policy-v7" {
 		log.Fatalf("unexpected snapshot version: %q", decision.SnapshotVersion)
 	}
@@ -87,8 +86,7 @@ func main() {
 		recorded[0].Action, recorded[0].Effect, recorded[0].SnapshotVersion, len(recorded[0].Resources))
 
 	// 第二次判定命中 TTL 缓存，复用同一策略版本。
-	second, err := governed.Authorize(ctx, "report:api:read",
-		scoped.Resource{Kind: "report", ID: "r-2", ManagedScopeID: 1001})
+	second, err := governed.Authorize(ctx, auth.Request{Resource: "report", Action: "read", Permission: "report:api:read", IDs: []string{"r-2"}})
 	must(err)
 	log.Printf("second decision reuses snapshot=%v", second.SnapshotVersion == decision.SnapshotVersion)
 
@@ -98,18 +96,11 @@ func main() {
 			return governance.PolicySnapshot{}, errors.NewCode(errors.ServiceUnavailable, "snapshot store down")
 		})))
 	must(err)
-	_, err = broken.Authorize(ctx, "report:api:read")
+	_, err = broken.Authorize(ctx, auth.Request{Resource: "report", Action: "read", Permission: "report:api:read"})
 	log.Printf("snapshot unavailable -> forbidden=%v", errors.Is(err, errors.Forbidden))
 }
 
-func mustAuthorizer() scoped.IAuthorizer {
-	authorizer, err := scoped.NewAuthorizer(nil, scoped.EvaluatorFunc(
-		func(_ context.Context, _ string, resources []scoped.Resource) (scoped.Decision, error) {
-			return scoped.Allow(resources...), nil
-		}))
-	must(err)
-	return authorizer
-}
+func mustAuthorizer() auth.IAuthorizer { return auth.Allow() }
 
 // auditFunc 把函数适配成 IAuthzAuditStore。
 type auditFunc func(entry governance.AuthzLogEntry) error

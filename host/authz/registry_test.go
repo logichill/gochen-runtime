@@ -1,7 +1,6 @@
 package authz
 
 import (
-	"gochen/auth/scoped"
 	"testing"
 
 	"gochen/errors"
@@ -34,11 +33,6 @@ func TestRegistryRegisterModule_CollectsCatalog(t *testing.T) {
 				RiskLevel:   "high",
 			},
 		},
-		ResourceResolvers: []scoped.ITypedResourceResolver{
-			scoped.TypedResourceResolver[*registryTestFoo](func(target *registryTestFoo) (scoped.Resource, bool) {
-				return scoped.Resource{Kind: "demo.foo", ID: "foo"}, target != nil
-			}),
-		},
 	})
 	if err != nil {
 		t.Fatalf("RegisterModule failed: %v", err)
@@ -62,13 +56,6 @@ func TestRegistryRegisterModule_CollectsCatalog(t *testing.T) {
 		t.Fatalf("unexpected merged definition for demo:api:write: %#v", got)
 	}
 
-	resource, ok := registry.Resolve(&registryTestFoo{ID: 1})
-	if !ok {
-		t.Fatal("expected foo resource to resolve")
-	}
-	if resource.Kind != "demo.foo" || resource.ID != "foo" {
-		t.Fatalf("unexpected resource: %#v", resource)
-	}
 }
 
 func TestRegistryRegisterModule_RejectsCrossModuleConflicts(t *testing.T) {
@@ -78,11 +65,6 @@ func TestRegistryRegisterModule_RejectsCrossModuleConflicts(t *testing.T) {
 		ModuleName: "Demo A",
 		Permissions: []string{
 			"demo:api:read",
-		},
-		ResourceResolvers: []scoped.ITypedResourceResolver{
-			scoped.TypedResourceResolver[*registryTestFoo](func(target *registryTestFoo) (scoped.Resource, bool) {
-				return scoped.Resource{Kind: "demo.foo"}, target != nil
-			}),
 		},
 	}); err != nil {
 		t.Fatalf("seed RegisterModule failed: %v", err)
@@ -98,29 +80,6 @@ func TestRegistryRegisterModule_RejectsCrossModuleConflicts(t *testing.T) {
 		t.Fatal("expected duplicate permission to fail")
 	}
 
-	if err := registry.RegisterModule(ModuleRegistration{
-		ModuleID:   "demo-c",
-		ModuleName: "Demo C",
-		ResourceResolvers: []scoped.ITypedResourceResolver{
-			scoped.TypedResourceResolver[*registryTestFoo](func(target *registryTestFoo) (scoped.Resource, bool) {
-				return scoped.Resource{Kind: "demo.foo"}, target != nil
-			}),
-		},
-	}); err == nil {
-		t.Fatal("expected duplicate resolver target to fail")
-	}
-
-	if err := registry.RegisterModule(ModuleRegistration{
-		ModuleID:   "demo-d",
-		ModuleName: "Demo D",
-		ResourceResolvers: []scoped.ITypedResourceResolver{
-			scoped.TypedResourceResolver[*registryTestBar](func(target *registryTestBar) (scoped.Resource, bool) {
-				return scoped.Resource{Kind: "demo.bar"}, target != nil
-			}),
-		},
-	}); err != nil {
-		t.Fatalf("expected distinct resolver target to pass, got %v", err)
-	}
 }
 
 func TestRegistryRegisterModule_RejectsInvalidPermissionCode(t *testing.T) {

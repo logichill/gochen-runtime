@@ -26,7 +26,8 @@ func main() {
 
 	// 这一步相当于项目启动期：准备 schema、repo、application。
 	cfg := demo.NewRouteConfig()
-	repo := demo.NewQueryableUserRepo(demo.SampleUsers())
+	repo, err := demo.NewQueryableUserRepo(demo.SampleUsers())
+	demo.Must(err)
 	app := demo.NewApplication(repo)
 
 	// 正常查询：

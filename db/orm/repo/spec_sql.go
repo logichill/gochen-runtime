@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"gochen/db/orm"
+	"gochen/domain/meta"
 	"gochen/domain/spec"
 	"gochen/errors"
 )
@@ -40,14 +41,14 @@ func translateSpec(
 		}
 		return orm.Condition{Expr: column + " = ?", Args: []any{value}}, nil
 	case spec.KindIn:
-		column, err := specColumn(s.Field(), resolver)
+		column, err := specColumn(s.Ref(), resolver)
 		if err != nil {
 			return orm.Condition{}, err
 		}
 		values := s.Values()
 		args := make([]any, 0, len(values))
 		for _, raw := range values {
-			value, err := convertSpecValue(s.Field(), raw, resolver)
+			value, err := convertSpecValue(s.Ref(), raw, resolver)
 			if err != nil {
 				return orm.Condition{}, err
 			}
@@ -58,7 +59,7 @@ func translateSpec(
 		}
 		return orm.Condition{Expr: column + " IN ?", Args: []any{args}}, nil
 	case spec.KindIsNull:
-		column, err := specColumn(s.Field(), resolver)
+		column, err := specColumn(s.Ref(), resolver)
 		if err != nil {
 			return orm.Condition{}, err
 		}
@@ -83,6 +84,12 @@ func translateSpec(
 		}
 		if len(exprs) == 0 {
 			return orm.Condition{}, nil
+		}
+		if s.IsAll() {
+			return orm.Condition{}, nil
+		}
+		if s.IsNone() {
+			return orm.Condition{Expr: "1 = 0"}, nil
 		}
 		return orm.Condition{Expr: strings.Join(exprs, operator), Args: args}, nil
 	case spec.KindNamed:
@@ -122,8 +129,8 @@ func applyCondition(quer *queryBuilder, condition orm.Condition) *queryBuilder {
 	return quer.Where(condition.Expr, condition.Args...)
 }
 
-func specColumn(field string, resolver *columnResolver) (string, error) {
-	_, column, ok := resolver.resolveColumn(field)
+func specColumn(field meta.Ref, resolver *columnResolver) (string, error) {
+	_, column, ok := resolver.resolveRef(field)
 	if !ok {
 		return "", errors.NewCode(errors.Internal, "spec references an unknown field").
 			WithContext("field", field)
@@ -132,24 +139,31 @@ func specColumn(field string, resolver *columnResolver) (string, error) {
 }
 
 func specValue(s spec.Spec, resolver *columnResolver) (string, any, error) {
-	column, err := specColumn(s.Field(), resolver)
+	column, err := specColumn(s.Ref(), resolver)
 	if err != nil {
 		return "", nil, err
 	}
-	value, err := convertSpecValue(s.Field(), s.Value(), resolver)
+	value, err := convertSpecValue(s.Ref(), s.Value(), resolver)
 	if err != nil {
 		return "", nil, err
 	}
 	return column, value, nil
 }
 
-func convertSpecValue(field string, raw any, resolver *columnResolver) (any, error) {
-	metaField, _, ok := resolver.resolveColumn(field)
+func convertSpecValue(field meta.Ref, raw any, resolver *columnResolver) (any, error) {
+	metaField, _, ok := resolver.resolveRef(field)
 	if !ok {
 		return nil, errors.NewCode(errors.Internal, "spec references an unknown field").
 			WithContext("field", field)
 	}
-	converted, err := metaField.Convert(raw)
+	conversionField := metaField
+	if metaField.Identity && resolver.identityType != nil {
+		conversionField.Type = resolver.identityType
+	}
+	converted, err := conversionField.Convert(raw)
+	if err == nil && conversionField.Type != metaField.Type {
+		converted, err = metaField.Convert(converted.Interface())
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, errors.Internal, "spec value conversion failed").
 			WithContext("field", field)

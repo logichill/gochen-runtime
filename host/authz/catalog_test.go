@@ -7,7 +7,6 @@ import (
 	"gochen-runtime/host"
 	"gochen-runtime/host/authz"
 	"gochen-runtime/host/capability"
-	"gochen/auth/scoped"
 	"gochen/testkit/require"
 )
 
@@ -45,11 +44,6 @@ func TestCatalogRegistrarRegistersDeclaredPermissions(t *testing.T) {
 			Description: "allow write demo data",
 			Scopes:      []string{"tenant"},
 		}},
-		ResourceResolvers: []scoped.ITypedResourceResolver{
-			scoped.TypedResourceResolver[*catalogTarget](func(target *catalogTarget) (scoped.Resource, bool) {
-				return scoped.Resource{Kind: "demo.target"}, target != nil
-			}),
-		},
 	})
 
 	require.NoError(t, registrar.RegisterModuleCatalog(context.Background(), entriesFor(m)))
@@ -68,7 +62,6 @@ func TestCatalogRegistrarRegistersDeclaredPermissions(t *testing.T) {
 	require.Equal(t, 1, len(write.Scopes))
 	require.Equal(t, "tenant", write.Scopes[0])
 
-	require.Equal(t, 1, len(reg.ResourceResolvers))
 }
 
 // 未声明目录的模块不得产生空注册项。

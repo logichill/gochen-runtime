@@ -30,7 +30,10 @@ type User struct {
 func main() {
 	log.Println("=== Basic CRUD Example ===")
 
-	repo := testkit.NewMemoryRepository[*User, int64](testkit.NewInt64Sequence(1))
+	repo, repositoryErr := testkit.NewMemoryRepository[*User, int64](testkit.NewInt64Sequence(1))
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 	app, err := crud.NewApplication[*User, int64](repo, crud.Options[*User, int64]{
 		Resource:   "user",
 		Authorizer: auth.Allow(),

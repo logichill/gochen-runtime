@@ -18,7 +18,7 @@ const (
 
 // Order 订单聚合根实体
 type Order struct {
-	ID          int64       `json:"id" db:"id" role:"id"`
+	ID          int64       `json:"id" db:"id" entity:"id"`
 	CustomerID  int64       `json:"customer_id" db:"customer_id"`
 	ItemID      string      `json:"item_id" db:"item_id"`
 	Quantity    int         `json:"quantity" db:"quantity"`

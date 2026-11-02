@@ -23,7 +23,6 @@ import (
 	"context"
 
 	"gochen-runtime/host/capability"
-	"gochen/auth/scoped"
 	"gochen/errors"
 )
 
@@ -36,7 +35,6 @@ type IAuthzRegistry interface {
 	Module(moduleID string) (ModuleRegistration, bool)
 	Modules() []ModuleRegistration
 	Permissions() []string
-	Resolve(target any) (scoped.Resource, bool)
 	InstallModuleCatalogSync(ModuleCatalogSyncFunc) error
 	SyncModuleCatalog(ModuleRegistration) error
 }
@@ -58,16 +56,12 @@ type Catalog struct {
 
 	// PermissionDefinitions 模块声明的权限元数据目录。
 	PermissionDefinitions []PermissionDefinition
-
-	// ResourceResolvers 模块声明的资源解析器目录。
-	ResourceResolvers []scoped.ITypedResourceResolver
 }
 
 // IsEmpty 判断目录是否没有任何声明。
 func (c Catalog) IsEmpty() bool {
 	return len(c.Permissions) == 0 &&
-		len(c.PermissionDefinitions) == 0 &&
-		len(c.ResourceResolvers) == 0
+		len(c.PermissionDefinitions) == 0
 }
 
 // catalogRegistrar 把模块声明的权限目录登记进 IAuthzRegistry。
@@ -125,7 +119,7 @@ func registrationFor(entry capability.ModuleCatalogEntry) (ModuleRegistration, b
 	if provider, ok := entry.Module.(IModuleAuthzProvider); ok {
 		reg := provider.AuthzRegistration()
 		reg.ModuleID = moduleID
-		if len(reg.Permissions) == 0 && len(reg.PermissionDefinitions) == 0 && len(reg.ResourceResolvers) == 0 {
+		if len(reg.Permissions) == 0 && len(reg.PermissionDefinitions) == 0 {
 			return ModuleRegistration{}, false
 		}
 		return reg, true
@@ -145,7 +139,6 @@ func registrationFor(entry capability.ModuleCatalogEntry) (ModuleRegistration, b
 		ModuleName:            entry.Module.Name(),
 		Permissions:           PermissionCodes(definitions...),
 		PermissionDefinitions: definitions,
-		ResourceResolvers:     append([]scoped.ITypedResourceResolver(nil), catalog.ResourceResolvers...),
 	}, true
 }
 
@@ -163,7 +156,6 @@ func catalogFrom(entry capability.ModuleCatalogEntry) (Catalog, bool) {
 		}
 		merged.Permissions = append(merged.Permissions, catalog.Permissions...)
 		merged.PermissionDefinitions = append(merged.PermissionDefinitions, catalog.PermissionDefinitions...)
-		merged.ResourceResolvers = append(merged.ResourceResolvers, catalog.ResourceResolvers...)
 	}
 	if merged.IsEmpty() {
 		return Catalog{}, false

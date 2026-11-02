@@ -11,8 +11,6 @@ import (
 	"gochen/contextx"
 	coredialect "gochen/db/dialect"
 	"gochen/db/orm"
-	"gochen/domain"
-	"gochen/domain/crud"
 	entitymeta "gochen/domain/meta"
 	"gochen/errors"
 )
@@ -35,7 +33,8 @@ type columnResolver struct {
 	dialect  coredialect.IDialect
 	fields   []resolvedField
 	byName   map[string]int
-	byRole   map[entitymeta.Role]int
+	// identityType 保留审计文本列对应的业务标识转换类型。
+	identityType reflect.Type
 }
 
 func newColumnResolver(metadata *entitymeta.Metadata, modelMeta *orm.ModelMeta, d coredialect.IDialect) (*columnResolver, error) {
@@ -70,7 +69,6 @@ func newColumnResolver(metadata *entitymeta.Metadata, modelMeta *orm.ModelMeta, 
 		metadata: metadata,
 		dialect:  d,
 		byName:   make(map[string]int),
-		byRole:   make(map[entitymeta.Role]int),
 	}
 	// 适配器已解析出列映射时，它是唯一权威来源；否则按与 lite 适配器相同的
 	// 标签与类型规则筛选可持久化字段，避免把切片、普通结构体等写成不存在的列。
@@ -107,19 +105,26 @@ func newColumnResolver(metadata *entitymeta.Metadata, modelMeta *orm.ModelMeta, 
 		resolver.byName[field.Name] = index
 		resolver.byName[column] = index
 		resolver.byName[toSnakeCase(field.Name)] = index
-		if field.Role != "" {
-			resolver.byRole[field.Role] = index
-		}
 	}
 	return resolver, nil
 }
 
 func (r *columnResolver) primaryKeyColumn() string {
-	index, ok := r.byRole[entitymeta.RoleID]
+	field, ok := r.metadata.IDField()
 	if !ok {
 		return ""
 	}
-	return r.fields[index].column
+	column, _ := r.columnOf(field.Name)
+	return column
+}
+
+// resolveRef 按实体字段身份解析类型化引用，保持物理列映射局部化。
+func (r *columnResolver) resolveRef(ref entitymeta.Ref) (entitymeta.Field, string, bool) {
+	field, err := r.metadata.Resolve(ref)
+	if err != nil {
+		return entitymeta.Field{}, "", false
+	}
+	return r.resolveColumn(field.Name)
 }
 
 // resolveColumn 解析字段名、列名或字段角色，返回领域字段与持久化列。
@@ -144,10 +149,6 @@ func (r *columnResolver) columnOf(name string) (string, bool) {
 }
 
 func (r *columnResolver) lookup(name string) (int, bool) {
-	if strings.HasPrefix(name, "@") {
-		index, ok := r.byRole[entitymeta.Role(name)]
-		return index, ok
-	}
 	index, ok := r.byName[name]
 	return index, ok
 }
@@ -234,9 +235,10 @@ func toSnakeCase(value string) string {
 }
 
 // columnFromStructField 与 lite 适配器保持同一套标签解析规则。
-// skip 表示字段被显式排除（gorm/db/json 的 "-"）。
+// skip 表示字段被 ORM/db 标签排除，或仅声明 JSON 隐藏且没有 ORM 标签。
 func columnFromStructField(field reflect.StructField) (column string, skip bool) {
 	gormTag := field.Tag.Get("gorm")
+	hasGormTag := strings.TrimSpace(gormTag) != ""
 	if gormTag != "" {
 		for _, part := range strings.Split(gormTag, ";") {
 			part = strings.TrimSpace(part)
@@ -258,7 +260,7 @@ func columnFromStructField(field reflect.StructField) (column string, skip bool)
 	jsonTag := field.Tag.Get("json")
 	column = strings.Split(jsonTag, ",")[0]
 	if column == "-" {
-		return "", true
+		return "", !hasGormTag
 	}
 	return column, false
 }
@@ -498,22 +500,4 @@ func (r *Repo[T, ID]) guardCrossIsolationWrite(ctx context.Context) error {
 		WithContext("isolation_column", column).
 		WithContext("reason", credential.Reason).
 		WithContext("operator", credential.Operator)
-}
-
-// validateIsolationEntity 在构造期校验：按租户隔离的实体必须能承载归属标记。
-func validateIsolationEntity[T domain.IEntity[ID], ID comparable](isolationColumn string, customResolve bool) error {
-	if strings.TrimSpace(isolationColumn) == "" {
-		return nil
-	}
-	if customResolve {
-		return nil
-	}
-	var zero T
-	if _, ok := any(zero).(crud.ITenantEntity[ID]); !ok {
-		return errors.NewCode(errors.Unsupported,
-			"repository isolates by tenant but entity does not implement domain/crud.ITenantEntity "+
-				"(supply IsolationCols.Resolve if this repository isolates by something other than the tenant)").
-			WithContext("isolation_column", isolationColumn)
-	}
-	return nil
 }

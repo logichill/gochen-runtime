@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"gochen/domain/spec"
+	"reflect"
+	"strings"
 	"time"
 
 	"gochen-runtime/internal/sqlresult"
 	"gochen/contextx"
+	"gochen/db/dialect"
 	"gochen/db/orm"
 	"gochen/domain"
 	"gochen/domain/audited"
@@ -120,20 +123,6 @@ func rowsAffected(result interface{ RowsAffected() (int64, error) }, action stri
 	return sqlresult.ReadRowsAffected(result, action+" did not return a result", "failed to read "+action+" result")
 }
 
-// requireWriteSpec 校验写路径规约：必须是纯谓词，且 Create 不得引用 RoleID。
-func requireWriteSpec(s spec.Spec, creating bool) error {
-	if err := s.Err(); err != nil {
-		return errors.Wrap(err, errors.Internal, "invalid spec")
-	}
-	if s.HasNamed() {
-		return errors.NewCode(errors.Internal, "write spec must not contain named conditions")
-	}
-	if creating && s.ReferencesRole(spec.RoleID) {
-		return errors.NewCode(errors.Internal, "create spec must not reference the id role")
-	}
-	return nil
-}
-
 // checkWriteSpec 用内存解释器对实体做写入前 WITH CHECK。
 func (r *Repo[T, ID]) checkWriteSpec(s spec.Spec, entity T) error {
 	ok, err := spec.NewInterpreter().Match(s, entity)
@@ -155,12 +144,10 @@ func (r *Repo[T, ID]) versioned() bool {
 // immutableColumns 返回永不出现在 UPDATE SET 中的列：
 // 主键与访问控制角色列。隔离列即使没有角色标签也按访问控制列处理。
 func (r *Repo[T, ID]) immutableColumns() map[string]struct{} {
-	columns := []string{r.idColumn, r.access.tenant, r.access.scope, r.access.owner, r.access.isolation}
-	excluded := make(map[string]struct{}, len(columns))
-	for _, column := range columns {
-		if column != "" {
-			excluded[column] = struct{}{}
-		}
+	excluded := make(map[string]struct{})
+	for _, field := range r.execution.ProtectedFields() {
+		column, _ := r.resolver.columnOf(field.Name)
+		excluded[column] = struct{}{}
 	}
 	return excluded
 }
@@ -200,19 +187,90 @@ func (r *Repo[T, ID]) probeExists(ctx context.Context, id ID, condition orm.Cond
 }
 
 // classifyWriteMiss 把“写入命中 0 行”分为 NotFound 与 Concurrency。
-func (r *Repo[T, ID]) classifyWriteMiss(ctx context.Context, id ID, condition orm.Condition, expectedVersion uint64) error {
-	found, err := r.probeExists(ctx, id, condition, false)
+func (r *Repo[T, ID]) classifyWriteMiss(ctx context.Context, id ID, condition orm.Condition, expectedVersion uint64, submitted map[string]any) error {
+	quer, err := r.query(ctx)
 	if err != nil {
 		return err
 	}
-	if found && r.versioned() {
+	quer = applyCondition(r.withActive(r.withID(quer, id)), condition)
+	var existing T
+	if err := quer.First(&existing); err != nil {
+		if errors.Is(err, errors.NotFound) {
+			return notFoundError(id)
+		}
+		return errors.Wrap(err, errors.Database, "failed to classify write miss")
+	}
+	if r.versioned() && existing.GetVersion() != expectedVersion {
 		return concurrencyError(id, expectedVersion)
 	}
-	return notFoundError(id)
+	if submitted != nil {
+		if err := r.execution.CheckProtected(submitted, existing); err != nil {
+			return err
+		}
+	}
+	return errors.NewCode(errors.Internal, "conditional write missed a matching record")
+}
+
+func (r *Repo[T, ID]) protectedCondition(values map[string]any) (orm.Condition, error) {
+	var expressions []string
+	var args []any
+	for _, field := range r.execution.ProtectedFields() {
+		if field.Identity {
+			continue
+		}
+		column, _ := r.resolver.columnOf(field.Name)
+		value := values[field.Name]
+		if value == nil {
+			expressions = append(expressions, r.resolver.quote(column)+" IS NULL")
+		} else {
+			expression := r.resolver.quote(column) + " = ?"
+			if reflect.TypeOf(value).Kind() == reflect.String {
+				// 保护字符串按字节精确比较，保持与内存字段比较一致。
+				switch r.resolver.dialect.Name() {
+				case dialect.NameSQLite:
+					expression = "CAST(" + r.resolver.quote(column) + " AS BLOB) = CAST(? AS BLOB)"
+				case dialect.NameMySQL:
+					expression = "CAST(" + r.resolver.quote(column) + " AS BINARY) = CAST(? AS BINARY)"
+				case dialect.NamePostgres:
+					expression = "convert_to(CAST(" + r.resolver.quote(column) + " AS TEXT), 'UTF8') = convert_to(CAST(? AS TEXT), 'UTF8')"
+				default:
+					return orm.Condition{}, errors.NewCode(errors.Unsupported, "protected string comparison requires a supported SQL dialect")
+				}
+			}
+			expressions = append(expressions, expression)
+			args = append(args, value)
+		}
+	}
+	return orm.Condition{Expr: strings.Join(expressions, " AND "), Args: args}, nil
+}
+
+func (r *Repo[T, ID]) checkIsolationInput(ctx context.Context, entity T) error {
+	if r.access.isolation == "" {
+		return nil
+	}
+	key, err := r.resolveIsolationKey(ctx)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		return r.isolationKeyMissingError(r.access.isolation)
+	}
+	expected, err := r.access.isolationField.Convert(key)
+	if err != nil {
+		return err
+	}
+	current, ok := r.access.isolationField.Value(entity)
+	if !ok {
+		return errors.NewCode(errors.InvalidInput, "isolation field cannot be read")
+	}
+	if !reflect.DeepEqual(current.Interface(), expected.Interface()) {
+		return errors.NewCode(errors.Forbidden, "ordinary update changes isolation field")
+	}
+	return nil
 }
 
 // classifyRestoreMiss 把“恢复命中 0 行”分为 NotFound、Conflict 与 Concurrency。
-func (r *Repo[T, ID]) classifyRestoreMiss(ctx context.Context, id ID, condition orm.Condition, expectedVersion uint64) error {
+func (r *Repo[T, ID]) classifyRestoreMiss(ctx context.Context, id ID, condition orm.Condition, expectedVersion uint64, submitted map[string]any) error {
 	quer, err := r.query(ctx)
 	if err != nil {
 		return err
@@ -233,7 +291,13 @@ func (r *Repo[T, ID]) classifyRestoreMiss(ctx context.Context, id ID, condition 
 	if !deletable.IsDeleted() {
 		return errors.NewCode(errors.Conflict, "entity is not deleted").WithContext("id", id)
 	}
-	return concurrencyError(id, expectedVersion)
+	if existing.GetVersion() != expectedVersion {
+		return concurrencyError(id, expectedVersion)
+	}
+	if err := r.execution.CheckProtected(submitted, existing); err != nil {
+		return err
+	}
+	return errors.NewCode(errors.Internal, "restore did not match an otherwise eligible row")
 }
 
 // Create 创建并持久化一条实体记录。
@@ -241,7 +305,7 @@ func (r *Repo[T, ID]) Create(ctx context.Context, entity T, s spec.Spec) error {
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, true); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, true); err != nil {
 		return err
 	}
 	if err := r.prepareCreate(ctx, entity); err != nil {
@@ -272,11 +336,21 @@ func (r *Repo[T, ID]) Update(ctx context.Context, entity T, s spec.Spec) error {
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, false); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, false); err != nil {
 		return err
 	}
 	condition, err := r.writeSpecCondition(s)
 	if err != nil {
+		return err
+	}
+	protected, err := r.execution.CaptureProtected(entity)
+	if err != nil {
+		return err
+	}
+	if err := r.checkIsolationInput(ctx, entity); err != nil {
+		if errors.Is(err, errors.Forbidden) {
+			return r.classifyWriteMiss(ctx, entity.GetID(), condition, entity.GetVersion(), protected)
+		}
 		return err
 	}
 	expectedVersion := entity.GetVersion()
@@ -301,6 +375,12 @@ func (r *Repo[T, ID]) Update(ctx context.Context, entity T, s spec.Spec) error {
 		quer = quer.Where(r.resolver.quote(r.access.version)+" = ?", expectedVersion)
 	}
 	quer = applyCondition(quer, condition)
+	guard, err := r.protectedCondition(protected)
+	if err != nil {
+		restoreEntityVersion(entity, expectedVersion)
+		return err
+	}
+	quer = applyCondition(quer, guard)
 
 	values, err := r.updateValues(entity)
 	if err != nil {
@@ -319,7 +399,7 @@ func (r *Repo[T, ID]) Update(ctx context.Context, entity T, s spec.Spec) error {
 	}
 	if affected == 0 {
 		restoreEntityVersion(entity, expectedVersion)
-		return r.classifyWriteMiss(ctx, entity.GetID(), condition, expectedVersion)
+		return r.classifyWriteMiss(ctx, entity.GetID(), condition, expectedVersion, protected)
 	}
 	return nil
 }
@@ -329,7 +409,7 @@ func (r *Repo[T, ID]) Delete(ctx context.Context, entity T, s spec.Spec) error {
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, false); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, false); err != nil {
 		return err
 	}
 	condition, err := r.writeSpecCondition(s)
@@ -358,7 +438,7 @@ func (r *Repo[T, ID]) Delete(ctx context.Context, entity T, s spec.Spec) error {
 		return err
 	}
 	if affected == 0 {
-		return r.classifyWriteMiss(ctx, entity.GetID(), condition, expectedVersion)
+		return r.classifyWriteMiss(ctx, entity.GetID(), condition, expectedVersion, nil)
 	}
 	return nil
 }
@@ -368,7 +448,7 @@ func (r *Repo[T, ID]) Purge(ctx context.Context, entity T, s spec.Spec) error {
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, false); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, false); err != nil {
 		return err
 	}
 	condition, err := r.writeSpecCondition(s)
@@ -396,7 +476,7 @@ func (r *Repo[T, ID]) Purge(ctx context.Context, entity T, s spec.Spec) error {
 		return err
 	}
 	if affected == 0 {
-		return r.classifyWriteMiss(ctx, entity.GetID(), condition, expectedVersion)
+		return r.classifyWriteMiss(ctx, entity.GetID(), condition, expectedVersion, nil)
 	}
 	return nil
 }
@@ -409,11 +489,21 @@ func (r *Repo[T, ID]) Restore(ctx context.Context, entity T, s spec.Spec) error 
 	if !r.softDelete {
 		return errors.NewCode(errors.Unsupported, "restore requires a soft-deletable entity")
 	}
-	if err := requireWriteSpec(s, false); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, false); err != nil {
 		return err
 	}
 	condition, err := r.writeSpecCondition(s)
 	if err != nil {
+		return err
+	}
+	protected, err := r.execution.CaptureProtected(entity)
+	if err != nil {
+		return err
+	}
+	if err := r.checkIsolationInput(ctx, entity); err != nil {
+		if errors.Is(err, errors.Forbidden) {
+			return r.classifyRestoreMiss(ctx, entity.GetID(), condition, entity.GetVersion(), protected)
+		}
 		return err
 	}
 	expectedVersion := entity.GetVersion()
@@ -434,6 +524,12 @@ func (r *Repo[T, ID]) Restore(ctx context.Context, entity T, s spec.Spec) error 
 	}
 	quer = r.withID(quer, entity.GetID())
 	quer = r.withDeleted(quer)
+	guard, err := r.protectedCondition(protected)
+	if err != nil {
+		restoreEntityVersion(entity, expectedVersion)
+		return err
+	}
+	quer = applyCondition(quer, guard)
 	if r.versioned() {
 		quer = quer.Where(r.resolver.quote(r.access.version)+" = ?", expectedVersion)
 	}
@@ -456,7 +552,7 @@ func (r *Repo[T, ID]) Restore(ctx context.Context, entity T, s spec.Spec) error 
 	}
 	if affected == 0 {
 		restoreEntityVersion(entity, expectedVersion)
-		return r.classifyRestoreMiss(ctx, entity.GetID(), condition, expectedVersion)
+		return r.classifyRestoreMiss(ctx, entity.GetID(), condition, expectedVersion, protected)
 	}
 	return nil
 }
@@ -469,7 +565,7 @@ func (r *Repo[T, ID]) CreateBulk(ctx context.Context, entities []T, s spec.Spec)
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, true); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, true); err != nil {
 		return err
 	}
 	return r.WithinTx(ctx, func(txCtx context.Context) error {
@@ -502,7 +598,7 @@ func (r *Repo[T, ID]) UpdateBulk(ctx context.Context, entities []T, s spec.Spec)
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, false); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, false); err != nil {
 		return err
 	}
 	return r.WithinTx(ctx, func(txCtx context.Context) error {
@@ -523,7 +619,7 @@ func (r *Repo[T, ID]) DeleteBulk(ctx context.Context, entities []T, s spec.Spec)
 	if err := r.guardCrossIsolationWrite(ctx); err != nil {
 		return err
 	}
-	if err := requireWriteSpec(s, false); err != nil {
+	if err := r.execution.ValidateWriteSpec(s, false); err != nil {
 		return err
 	}
 	return r.WithinTx(ctx, func(txCtx context.Context) error {

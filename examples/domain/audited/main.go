@@ -32,7 +32,10 @@ func (a *Article) Validate() error { return nil }
 // main 演示审计型应用、Descriptor 驱动的标准路由与业务动作。
 func main() {
 	log.Println("=== Audited Demo ===")
-	repo := testkit.NewAuditedMemoryRepository[*Article, int64](testkit.NewInt64Sequence(1))
+	repo, repositoryErr := testkit.NewAuditedMemoryRepository[*Article, int64](testkit.NewInt64Sequence(1))
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 	app, err := appaudited.NewApplication[*Article, int64](repo, repo, appaudited.Options[*Article, int64]{
 		Options: appcrud.Options[*Article, int64]{
 			Resource:   "article",

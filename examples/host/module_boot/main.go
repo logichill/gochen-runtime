@@ -8,7 +8,6 @@ import (
 	"gochen-runtime/host"
 	"gochen-runtime/host/authz"
 	"gochen-runtime/host/config"
-	"gochen/auth/scoped"
 	"gochen/httpx"
 	"gochen/testkit"
 )
@@ -58,18 +57,6 @@ func NewCatalogModule() (host.IModule, error) {
 		RouteRegistrar(NewCatalogRoutes).
 		Extension(authz.Catalog{
 			PermissionDefinitions: catalogPermissions.Definitions(),
-			ResourceResolvers: []scoped.ITypedResourceResolver{
-				scoped.TypedResourceResolver[*catalogItem](func(item *catalogItem) (scoped.Resource, bool) {
-					if item == nil {
-						return scoped.Resource{}, false
-					}
-					return scoped.Resource{
-						Kind:     "catalog.item",
-						ID:       item.ID,
-						TenantID: item.TenantID,
-					}, true
-				}),
-			},
 		}).
 		Build()
 }
@@ -101,6 +88,4 @@ func main() {
 		log.Printf("  %s", permission)
 	}
 
-	resource, ok := registry.Resolve(&catalogItem{ID: "item-1", TenantID: "tenant-a"})
-	log.Printf("resource resolved: %t %#v", ok, resource)
 }

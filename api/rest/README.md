@@ -2,7 +2,7 @@
 
 `api/rest` 把 `Application.Descriptor()` 声明的动作映射为 HTTP 路由。路由集合由 Descriptor 决定，不再提供 `Enable*` 开关，也不通过 `WithXxx` 注入服务能力：应用没有声明的动作不会被注册，声明了生命周期动作却没有实现 `LifecycleApplication` 会在装配期直接报错。
 
-设计背景见 `docs/architecture/core-design.md`（D14/D17）。
+设计背景见工作区根 `core-design.md`（D14/D17），正式接入契约见 gochen 仓库 `docs/architecture/layered-authz.md`。
 
 ## 1. 入口
 
@@ -11,15 +11,20 @@
 | `rest.Mount(group, app, opts...)` | 一次性挂载标准路由；推荐 |
 | `builder, err := rest.NewRouteBuilder(app, opts...)` | 需要先构造再 `Register(group)` 时使用 |
 | `rest.Action(group, app, method, path, action, handler, opts...)` | 注册 Descriptor 已声明的业务动作 |
+| `rest.Transfer(group, app, runner, path, action, opts...)` | 显式注册带调用方版本与幂等键的 POST 迁移动作 |
 | `rest.Describe(app, opts...)` | 只推导 Descriptor 与路由表，不注册任何路由 |
 | `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error`，供 `quick.Module` 使用 |
 
 `Mount` 只做这几件事：校验 Descriptor、推导路由、包装中间件与错误映射、可选地登记启动清单。handler 本身只解码请求并调用 Application。
 
 ```go
+authorizer, err := authscoped.New(checker, resolver)
+if err != nil {
+	return err
+}
 app, err := crud.NewApplication[*User, int64](repo, crud.Options[*User, int64]{
 	Resource:   "user",
-	Authorizer: authscoped.New(checker, resolver),
+	Authorizer: authorizer,
 })
 if err != nil {
 	return err
@@ -104,6 +109,16 @@ if err := rest.Action[*Article, int64](router, app,
 直接注册到 `IRouteGroup` 的路由不经过 Descriptor 声明检查。
 
 ## 4. 配置项
+
+### 迁移入口
+
+`rest.Transfer` 要求应用声明 KindTransfer、ReceiveAction 和 Dimensions，并实现 ITransferApplication。Runner 使用 tracked 模式，存储支持幂等结果和并发预占。目标存在性及接收权限由应用授权器判定。
+
+POST 请求提供 `Idempotency-Key`，body 形如 `{"expected_version":0,"targets":[{"dimension":"department","value":7}]}`。版本 0 合法，缺失或 null 返回 InvalidInput。幂等键绑定主体、租户、资源、动作和实体；相同有效键返回首次 Result.Operation.ID 与结果。过期键产生新操作，继续验证原调用方版本。提交后失败和已存储 degraded 结果均返回 HTTP 200，设置 `X-Execution-Status: degraded`。
+
+REST 将原始幂等键与资源身份交给 `operation.Runner.ExecuteTransfer`，与命令入口共用主体、租户和资源的作用域绑定及输入校验。直接 Application.Transfer 在事务前生成 OperationID；仓储在两阶段授权前检查上下文事务与自身绑定的 ORM 会话，已活动事务中的调用返回 FailedPrecondition。
+
+### 普通路由配置
 
 `RouteConfig` 按关注点分组，常用 Option：
 

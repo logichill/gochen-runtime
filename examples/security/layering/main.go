@@ -12,20 +12,23 @@
 package main
 
 import (
-	"gochen/domain/spec"
 	"context"
-	"fmt"
+	"gochen-runtime/host/authz"
+	"gochen/app"
+	"gochen/app/crud"
+	"gochen/auth"
+	"gochen/domain/meta"
+	"gochen/domain/spec"
 	"log"
 	"time"
 
-	"gochen-runtime/host/authz"
-	"gochen/app/crud"
-	"gochen/auth"
 	authaction "gochen/auth/action"
 	"gochen/auth/governance"
+
 	authscoped "gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/domain"
+
 	domcrud "gochen/domain/crud"
 	"gochen/errors"
 	"gochen/testkit"
@@ -89,7 +92,10 @@ func main() {
 	log.SetFlags(0)
 
 	// ---------- L0 Plain：auth.Allow()，不校验任何动作 ----------
-	plainRepo := testkit.NewMemoryRepository[*Order, int64](testkit.NewInt64Sequence(1))
+	plainRepo, repositoryErr := testkit.NewMemoryRepository[*Order, int64](testkit.NewInt64Sequence(1))
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 	plain := newApp[*Order, int64](plainRepo, auth.Allow(), "order")
 	ctx := context.Background()
 	if err := plain.Create(ctx, &Order{Customer: "alice", Amount: 100}); err != nil {
@@ -110,7 +116,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	rbacRepo := testkit.NewMemoryRepository[*Order, int64](testkit.NewInt64Sequence(1))
+	rbacRepo, repositoryErr := testkit.NewMemoryRepository[*Order, int64](testkit.NewInt64Sequence(1))
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 	secured := newApp[*Order, int64](rbacRepo, rbac, "order")
 
 	order := &Order{Customer: "alice", Amount: 250}
@@ -128,9 +137,9 @@ func main() {
 	}
 	log.Printf("L1 action: bob get allowed, customer=%s", got.Customer)
 
-	// 无 operator（未认证）→ 拒绝；授权失败在 Application 层统一收敛为 Forbidden。
+	// 未认证请求返回 Unauthorized，Application 保留授权器的错误码。
 	err = secured.Create(context.Background(), &Order{Customer: "anon"})
-	log.Printf("L1 action: anonymous create -> forbidden=%v (%v)", errors.Is(err, errors.Forbidden), err)
+	log.Printf("L1 action: anonymous create -> unauthorized=%v (%v)", errors.Is(err, errors.Unauthorized), err)
 
 	// ---------- L2 Isolated：Repo 构造期显式声明，Application 代码零改动 ----------
 	demoIsolation()
@@ -144,17 +153,20 @@ func main() {
 
 // TenantOrder 是租户隔离实体——嵌入 TenantEntity 即实现 ITenantEntity。
 type TenantOrder struct {
-	domcrud.TenantEntity[int64]
+	auth.TenantEntity[int64]
 	Customer string `json:"customer"`
 }
 
 func (o *TenantOrder) Validate() error { return nil }
 
 func demoIsolation() {
-	repo := testkit.NewMemoryRepository[*TenantOrder, int64](
+	repo, repositoryErr := testkit.NewMemoryRepository[*TenantOrder, int64](
 		testkit.NewInt64Sequence(1),
 		testkit.WithMemoryIsolation[*TenantOrder, int64](),
 	)
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 	app := newApp[*TenantOrder, int64](repo, auth.Allow(), "tenant_order")
 
 	ctxA, ctxB := mustTenantContext("tenant-a"), mustTenantContext("tenant-b")
@@ -207,12 +219,15 @@ func (a *reconciliationAudit) RecordCrossIsolationRead(_ context.Context, read t
 
 func demoCrossIsolation() {
 	audit := &reconciliationAudit{}
-	repo := testkit.NewMemoryRepository[*TenantOrder, int64](
+	repo, repositoryErr := testkit.NewMemoryRepository[*TenantOrder, int64](
 		testkit.NewInt64Sequence(1),
 		testkit.WithMemoryIsolation[*TenantOrder, int64](),
 		// 第一道闸（构造期）：声明这张表有被开闸的资格，并交出留痕出口。
 		testkit.WithMemoryCrossIsolationReads[*TenantOrder, int64](audit),
 	)
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 	app := newApp[*TenantOrder, int64](repo, auth.Allow(), "tenant_order")
 
 	if err := app.Create(mustTenantContext("tenant-a"), &TenantOrder{Customer: "alice"}); err != nil {
@@ -245,10 +260,14 @@ func demoCrossIsolation() {
 	log.Printf("L2 valve: write under an open valve -> forbidden=%v (%v)", errors.Is(err, errors.Forbidden), err)
 
 	// 缺构造期声明：同一份凭据落到没声明阀门的仓储上完全惰性。
-	strict := newApp[*TenantOrder, int64](testkit.NewMemoryRepository[*TenantOrder, int64](
+	strictRepo, err := testkit.NewMemoryRepository[*TenantOrder, int64](
 		testkit.NewInt64Sequence(1),
 		testkit.WithMemoryIsolation[*TenantOrder, int64](),
-	), auth.Allow(), "tenant_order")
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	strict := newApp[*TenantOrder, int64](strictRepo, auth.Allow(), "tenant_order")
 	_, err = strict.Count(reconCtx)
 	log.Printf("L2 valve: credential alone is inert -> forbidden=%v", errors.Is(err, errors.Forbidden))
 }
@@ -282,17 +301,17 @@ func mustPrincipalContext(activeScopeID int64, permissions ...string) context.Co
 // ScopedOrder 是带数据范围的实体；ScopeID 通过 role 标签声明为范围字段。
 type ScopedOrder struct {
 	domcrud.Entity[int64]
-	ScopeID  int64  `json:"scope_id" role:"scope"`
+	ScopeID  int64  `json:"scope_id" dim:"scope"`
 	Customer string `json:"customer"`
 }
 
 func (o *ScopedOrder) Validate() error { return nil }
 
-// scopedResolver 把激活范围下推为 @scope 规约，并声明所需词汇。
+// scopedResolver 将激活范围映射为 scope 维度条件，并声明所需词汇。
 type scopedResolver struct{}
 
 func (scopedResolver) Vocabulary() auth.Vocabulary {
-	return auth.Vocabulary{Roles: []spec.Role{spec.RoleScope}}
+	return auth.Vocabulary{Refs: []meta.Ref{meta.ByDimension("scope")}, Assignable: []meta.Dimension{"scope"}}
 }
 
 func (scopedResolver) ResolveSpec(ctx context.Context, _ auth.Request) (spec.Spec, []auth.Assignment, error) {
@@ -302,13 +321,16 @@ func (scopedResolver) ResolveSpec(ctx context.Context, _ auth.Request) (spec.Spe
 	}
 	// 读/改/删都只看当前激活范围；创建由服务端赋值落点，
 	// 客户端预填范围冲突时由执行骨架拒绝。
-	return spec.Eq(spec.RoleScope, principal.ActiveScopeID),
-		[]auth.Assignment{{Role: spec.RoleScope, Value: principal.ActiveScopeID}}, nil
+	return spec.Eq(meta.ByDimension("scope"), principal.ActiveScopeID),
+		[]auth.Assignment{{Dimension: "scope", Value: principal.ActiveScopeID}}, nil
 }
 
 // demoScoped 演示 L3：动作码 + 行级规约，写入范围由服务端赋值落定。
 func demoScoped() {
-	repo := testkit.NewMemoryRepository[*ScopedOrder, int64](testkit.NewInt64Sequence(1))
+	repo, repositoryErr := testkit.NewMemoryRepository[*ScopedOrder, int64](testkit.NewInt64Sequence(1), testkit.WithMemoryResourceContract[*ScopedOrder, int64](app.ResourceContract{Assignable: []meta.Dimension{"scope"}}))
+	if repositoryErr != nil {
+		panic(repositoryErr)
+	}
 
 	authorizer, err := authscoped.New(authz.NewActionChecker(), scopedResolver{})
 	if err != nil {
@@ -341,23 +363,14 @@ func demoScoped() {
 
 	// 未认证：ctx 里没有 Principal → 拒绝。
 	err = app.Create(context.Background(), &ScopedOrder{Customer: "anon"})
-	log.Printf("L3 scoped: anonymous create -> forbidden=%v", errors.Is(err, errors.Forbidden))
+	log.Printf("L3 scoped: anonymous create -> unauthorized=%v", errors.Is(err, errors.Unauthorized))
 
 	demoGovernance()
 }
 
-// demoGovernance 演示 L4：治理装饰的是 PDP（scoped.IAuthorizer），不是 Application。
+// demoGovernance 演示 L4：治理包装统一的 auth.IAuthorizer。
 func demoGovernance() {
-	pdp, err := authscoped.NewAuthorizer(
-		authscoped.TypedResourceResolver(func(o *ScopedOrder) (authscoped.Resource, bool) {
-			return authscoped.Resource{
-				Kind:           "scoped_order",
-				ID:             fmt.Sprint(o.GetID()),
-				ManagedScopeID: o.ScopeID,
-			}, true
-		}),
-		authz.NewEvaluator(),
-	)
+	pdp, err := authscoped.New(authz.NewActionChecker(), scopedResolver{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -377,7 +390,7 @@ func demoGovernance() {
 		log.Fatal(err)
 	}
 
-	if err := governed.Require(mustPrincipalContext(101, "scoped_order:api:read"), "scoped_order:api:read"); err != nil {
+	if _, err := governed.Authorize(mustPrincipalContext(101, "scoped_order:api:read"), auth.Request{Resource: "scoped_order", Action: "read", Permission: "scoped_order:api:read"}); err != nil {
 		log.Fatalf("L4 governed: require failed: %v", err)
 	}
 

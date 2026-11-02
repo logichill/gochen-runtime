@@ -13,7 +13,7 @@ import (
 )
 
 type record struct {
-	ID      int64  `db:"id" gorm:"column:id;primaryKey" role:"id"`
+	ID      int64  `db:"id" gorm:"column:id;primaryKey" entity:"id"`
 	Name    string `db:"name" gorm:"column:name"`
 	Version uint64 `db:"version" gorm:"column:version"`
 }

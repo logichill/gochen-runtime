@@ -23,14 +23,13 @@ import (
 	"gochen/contextx"
 	"gochen/db"
 	"gochen/db/orm"
-	domcrud "gochen/domain/crud"
 	gochenhttp "gochen/httpx"
 	"gochen/testkit/assert"
 	"gochen/testkit/require"
 )
 
 type TestQuickEntity struct {
-	domcrud.TenantEntity[int64]
+	auth.TenantEntity[int64]
 	OrgID  int64  `json:"org_id" db:"org_id"`
 	Title  string `json:"title" db:"title"`
 	Amount int64  `json:"amount" db:"amount"`

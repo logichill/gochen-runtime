@@ -2,11 +2,12 @@ package repo_test
 
 import (
 	"context"
+	"gochen-runtime/db/orm/lite"
+	"gochen/domain/meta"
 	"gochen/domain/spec"
 	"testing"
 	"time"
 
-	"gochen-runtime/db/orm/lite"
 	repopkg "gochen-runtime/db/orm/repo"
 	"gochen-runtime/db/sql/stdsql"
 	"gochen/contextx"
@@ -21,9 +22,9 @@ import (
 
 type specItem struct {
 	crud.Entity[int64]
-	TenantID       string  `json:"tenant_id" role:"tenant" managed:"true"`
-	ManagedScopeID int64   `json:"managed_scope_id" role:"scope" managed:"true"`
-	OwnerID        string  `json:"owner_id" role:"owner" managed:"true"`
+	TenantID       string  `json:"tenant_id" dim:"tenant" managed:"true"`
+	ManagedScopeID int64   `json:"managed_scope_id" dim:"scope" managed:"true"`
+	OwnerID        string  `json:"owner_id" dim:"owner" managed:"true"`
 	Name           string  `json:"name"`
 	Amount         int64   `json:"amount"`
 	Note           *string `json:"note"`
@@ -36,7 +37,7 @@ type auditedItem struct {
 
 type tenantItem struct {
 	crud.Entity[int64]
-	TenantID string `json:"tenant_id" role:"tenant" managed:"true"`
+	TenantID string `json:"tenant_id" dim:"tenant" managed:"true"`
 	Name     string `json:"name"`
 }
 
@@ -136,21 +137,21 @@ func TestSpecReadTranslation(t *testing.T) {
 		return items
 	}
 
-	if got := list(spec.Eq("Name", "beta")); len(got) != 1 || got[0].ID != 2 {
+	if got := list(spec.Eq(meta.ByField("Name"), "beta")); len(got) != 1 || got[0].ID != 2 {
 		t.Fatalf("Eq(Name)=%+v", got)
 	}
-	if got := list(spec.Eq("TenantID", "t1")); len(got) != 2 {
+	if got := list(spec.Eq(meta.ByField("TenantID"), "t1")); len(got) != 2 {
 		t.Fatalf("Eq(@tenant)=%d rows, want 2", len(got))
 	}
-	if got := list(spec.In("Amount", 1, 3)); len(got) != 2 {
+	if got := list(spec.In(meta.ByField("Amount"), 1, 3)); len(got) != 2 {
 		t.Fatalf("In(Amount)=%d rows, want 2", len(got))
 	}
-	if got := list(spec.IsNull("Note")); len(got) != 2 {
+	if got := list(spec.IsNull(meta.ByField("Note"))); len(got) != 2 {
 		t.Fatalf("IsNull(Note)=%d rows, want 2", len(got))
 	}
 	combined := spec.And(
-		spec.Eq("TenantID", "t1"),
-		spec.Or(spec.Eq("Name", "alpha"), spec.Eq("Name", "gamma")),
+		spec.Eq(meta.ByField("TenantID"), "t1"),
+		spec.Or(spec.Eq(meta.ByField("Name"), "alpha"), spec.Eq(meta.ByField("Name"), "gamma")),
 	)
 	if got := list(combined); len(got) != 1 || got[0].ID != 1 {
 		t.Fatalf("And/Or=%+v", got)
@@ -162,10 +163,10 @@ func TestSpecReadTranslation(t *testing.T) {
 		t.Fatalf("Named(3)=%d rows, want 1", len(got))
 	}
 
-	_, err := repository.List(ctx, 0, 100, spec.Eq("Missing", 1))
+	_, err := repository.List(ctx, 0, 100, spec.Eq(meta.ByField("Missing"), 1))
 	requireCode(t, err, errors.Internal, "unknown spec field")
 
-	_, err = repository.Get(ctx, 1, spec.Eq(spec.RoleOwner, "u2"))
+	_, err = repository.Get(ctx, 1, spec.Eq(meta.ByDimension("owner"), "u2"))
 	requireCode(t, err, errors.NotFound, "Get with non-matching spec")
 }
 
@@ -174,17 +175,17 @@ func TestWriteSpecWithCheck(t *testing.T) {
 	ctx := context.Background()
 
 	item := &specItem{Entity: crud.Entity[int64]{ID: 1}, TenantID: "t1", ManagedScopeID: 10, OwnerID: "u1", Name: "alpha"}
-	requireNoError(t, repository.Create(ctx, item, spec.Eq(spec.RoleOwner, "u1")), "create within scope")
+	requireNoError(t, repository.Create(ctx, item, spec.Eq(meta.ByDimension("owner"), "u1")), "create within scope")
 
 	mismatch := &specItem{Entity: crud.Entity[int64]{ID: 2}, TenantID: "t2", ManagedScopeID: 10, OwnerID: "u1", Name: "beta"}
-	requireCode(t, repository.Create(ctx, mismatch, spec.Eq(spec.RoleOwner, "u2")), errors.Forbidden, "create outside scope")
+	requireCode(t, repository.Create(ctx, mismatch, spec.Eq(meta.ByDimension("owner"), "u2")), errors.Forbidden, "create outside scope")
 
-	requireCode(t, repository.Create(ctx, &specItem{Entity: crud.Entity[int64]{ID: 3}, TenantID: "t1", ManagedScopeID: 10, OwnerID: "u1"}, spec.Eq(spec.RoleID, 3)), errors.Internal, "create spec references id role")
+	requireCode(t, repository.Create(ctx, &specItem{Entity: crud.Entity[int64]{ID: 3}, TenantID: "t1", ManagedScopeID: 10, OwnerID: "u1"}, spec.Eq(meta.ID(), 3)), errors.Internal, "create spec references id role")
 	requireCode(t, repository.Create(ctx, &specItem{Entity: crud.Entity[int64]{ID: 4}, TenantID: "t1", ManagedScopeID: 10, OwnerID: "u1"}, spec.Named("amount_at_least", 1)), errors.Internal, "create spec with named condition")
 	requireCode(t, repository.Update(ctx, item, spec.Named("amount_at_least", 1)), errors.Internal, "update spec with named condition")
 
 	item.Name = "changed"
-	requireCode(t, repository.Update(ctx, item, spec.Eq(spec.RoleOwner, "u2")), errors.Forbidden, "update outside scope")
+	requireCode(t, repository.Update(ctx, item, spec.Eq(meta.ByDimension("owner"), "u2")), errors.Forbidden, "update outside scope")
 }
 
 func TestUpdateMissClassificationAndImmutability(t *testing.T) {
@@ -211,7 +212,11 @@ func TestUpdateMissClassificationAndImmutability(t *testing.T) {
 	current.TenantID = "hijacked"
 	current.ManagedScopeID = 999
 	current.OwnerID = "hijacked"
-	requireNoError(t, repository.Update(ctx, current, spec.All()), "update")
+	requireCode(t, repository.Update(ctx, current, spec.All()), errors.Forbidden, "protected input")
+	current.TenantID = "t1"
+	current.ManagedScopeID = 10
+	current.OwnerID = "u1"
+	requireNoError(t, repository.Update(ctx, current, spec.All()), "payload update")
 	if current.Version != 1 {
 		t.Fatalf("entity version=%d, want 1", current.Version)
 	}
@@ -350,7 +355,9 @@ func TestIsolationStampAndStrictBoundary(t *testing.T) {
 	requireNoError(t, err, "Get in tenant")
 	loaded.TenantID = "tenant-b"
 	loaded.Name = "renamed"
-	requireNoError(t, repository.Update(ctxA, loaded, spec.All()), "update")
+	requireCode(t, repository.Update(ctxA, loaded, spec.All()), errors.Forbidden, "isolation input")
+	loaded.TenantID = "tenant-a"
+	requireNoError(t, repository.Update(ctxA, loaded, spec.All()), "payload update")
 	row = engine.Database().QueryRow(ctxA, `SELECT tenant_id FROM tenant_items WHERE id = ?`, 1)
 	requireNoError(t, row.Scan(&tenant), "scan tenant after update")
 	if tenant != "tenant-a" {
@@ -366,116 +373,4 @@ func TestIsolationStampAndStrictBoundary(t *testing.T) {
 
 	err = repository.Update(ctxB, &tenantItem{Entity: crud.Entity[int64]{ID: 1}}, spec.All())
 	requireCode(t, err, errors.NotFound, "cross-tenant probe must not leak existence")
-}
-
-func TestAuditStoreD11FieldsAndSpecRestriction(t *testing.T) {
-	engine := newEngine(t)
-	execSQL(t, engine, `CREATE TABLE audit_records (
-		id INTEGER PRIMARY KEY,
-		resource_kind TEXT NOT NULL DEFAULT '',
-		entity_id TEXT NOT NULL,
-		action TEXT NOT NULL,
-		operator TEXT NOT NULL,
-		initiator TEXT NOT NULL DEFAULT '',
-		reason TEXT NOT NULL DEFAULT '',
-		correlation_id TEXT NOT NULL DEFAULT '',
-		tenant_id TEXT NOT NULL DEFAULT '',
-		scope_id INTEGER NOT NULL DEFAULT 0,
-		owner_id TEXT NOT NULL DEFAULT '',
-		timestamp TIMESTAMP NOT NULL,
-		changes TEXT NOT NULL DEFAULT '',
-		metadata TEXT NOT NULL DEFAULT '')`)
-	store, err := repopkg.NewAuditStore(engine, "audit_records", &counterGen{})
-	requireNoError(t, err, "NewAuditStore")
-
-	ctx := context.Background()
-	timestamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	id, err := store.SaveAuditRecord(ctx, audited.AuditRecord{
-		ResourceKind:  "erp.order",
-		EntityID:      "42",
-		Action:        "submit",
-		Operator:      "alice",
-		Initiator:     "bob",
-		Reason:        "month-end close",
-		CorrelationID: "corr-1",
-		TenantID:      "t1",
-		ScopeID:       7,
-		OwnerID:       "u1",
-		Timestamp:     timestamp,
-		Changes:       []byte(`{"name":{"old":"a","new":"b"}}`),
-		Metadata:      []byte(`{"source":"test"}`),
-	})
-	requireNoError(t, err, "SaveAuditRecord")
-	if id == 0 {
-		t.Fatal("audit id was not generated")
-	}
-
-	ctx, err = contextx.WithTenantID(ctx, "t1")
-	requireNoError(t, err, "WithTenantID")
-	ctx = audited.WithAuditResourceKind(ctx, "erp.order")
-	records, err := store.ListAuditRecords(ctx, "42", 0, 10, spec.Eq(spec.RoleScope, 7))
-	requireNoError(t, err, "ListAuditRecords")
-	if len(records) != 1 {
-		t.Fatalf("audit records=%d, want 1", len(records))
-	}
-	record := records[0]
-	if record.Action != "submit" || record.Operator != "alice" || record.Initiator != "bob" ||
-		record.Reason != "month-end close" || record.CorrelationID != "corr-1" ||
-		record.TenantID != "t1" || record.ScopeID != 7 || record.OwnerID != "u1" {
-		t.Fatalf("audit fields not round-tripped: %+v", record)
-	}
-	if !record.Timestamp.Equal(timestamp) {
-		t.Fatalf("timestamp=%v, want %v", record.Timestamp, timestamp)
-	}
-	if string(record.Changes) != `{"name":{"old":"a","new":"b"}}` {
-		t.Fatalf("changes=%s", record.Changes)
-	}
-
-	for _, boundary := range []struct{ kind, tenant string }{{"invoice", "t1"}, {"erp.order", "t2"}, {"erp.order", ""}} {
-		_, err := store.SaveAuditRecord(ctx, audited.AuditRecord{ResourceKind: boundary.kind, TenantID: boundary.tenant, EntityID: "42", Action: "update", Operator: "tester", ScopeID: 7})
-		requireNoError(t, err, "seed other audit boundary")
-	}
-	for _, tenant := range []string{"t1", "t2", ""} {
-		readCtx := context.Background()
-		if tenant != "" {
-			readCtx, err = contextx.WithTenantID(readCtx, tenant)
-			requireNoError(t, err, "audit tenant")
-		}
-		readCtx = audited.WithAuditResourceKind(readCtx, "erp.order")
-		visible, err := store.ListAuditRecords(readCtx, "42", 0, 10, spec.All())
-		requireNoError(t, err, "isolated audit read")
-		if len(visible) != 1 || visible[0].TenantID != tenant || visible[0].ResourceKind != "erp.order" {
-			t.Fatalf("tenant %q leaked audit rows: %+v", tenant, visible)
-		}
-	}
-
-	none, err := store.ListAuditRecords(ctx, "42", 0, 10, spec.Eq(spec.RoleOwner, "u2"))
-	requireNoError(t, err, "ListAuditRecords mismatch")
-	if len(none) != 0 {
-		t.Fatalf("owner filter returned %d records", len(none))
-	}
-
-	_, err = store.ListAuditRecords(ctx, "42", 0, 10, spec.Eq("Operator", "alice"))
-	requireCode(t, err, errors.Internal, "audit spec restricted to boundary roles")
-	_, err = store.ListAuditRecords(ctx, "42", 0, 10, spec.Named("recent"))
-	requireCode(t, err, errors.Internal, "audit spec named condition")
-
-	if err := store.SaveAuditRecords(ctx, []audited.AuditRecord{
-		{EntityID: "42", ResourceKind: "erp.order", TenantID: "t1", Action: "approve", Operator: "alice"},
-		{EntityID: "42", ResourceKind: "erp.order", TenantID: "t1", Action: "reject", Operator: ""},
-	}); errors.Code(err) != errors.InvalidInput {
-		t.Fatalf("bulk audit validation=%v, want InvalidInput", err)
-	}
-	afterBulk, err := store.ListAuditRecords(ctx, "42", 0, 10, spec.All())
-	requireNoError(t, err, "ListAuditRecords after failed bulk")
-	if len(afterBulk) != 1 {
-		t.Fatalf("failed bulk left partial audit rows: %d", len(afterBulk))
-	}
-
-	if store.DataSourceID() == "" {
-		t.Fatal("audit store must expose its datasource identity")
-	}
-	if empty, err := store.ListAuditRecords(ctx, "", 0, 10, spec.All()); !errors.Is(err, errors.InvalidInput) {
-		t.Fatalf("empty entityID=%v %v, want InvalidInput", empty, err)
-	}
 }

@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"gochen/domain/meta"
+
 	stderrors "errors"
 	"fmt"
 	"log"
 	"net"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"gochen-runtime/db/orm/lite"
 	"gochen-runtime/db/orm/repo"
@@ -18,27 +18,29 @@ import (
 	"gochen-runtime/quick"
 	"gochen/app/crud"
 	"gochen/auth"
+
+	_ "modernc.org/sqlite"
+
 	authscoped "gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/db"
-	domcrud "gochen/domain/crud"
 	"gochen/domain/spec"
 	"gochen/errors"
 )
 
 // Order 演示租户隔离与数据范围实体
 type Order struct {
-	domcrud.TenantEntity[int64]
-	OrgID  int64  `json:"org_id" role:"scope"`
+	auth.TenantEntity[int64]
+	OrgID  int64  `json:"org_id" dim:"scope"`
 	Title  string `json:"title"`
 	Amount int64  `json:"amount"`
 }
 
-// scopeResolver 把激活范围下推为 @scope 规约，并声明所需词汇。
+// scopeResolver 将激活范围映射为 scope 维度条件，并声明所需词汇。
 type scopeResolver struct{}
 
 func (scopeResolver) Vocabulary() auth.Vocabulary {
-	return auth.Vocabulary{Roles: []spec.Role{spec.RoleScope}}
+	return auth.Vocabulary{Refs: []meta.Ref{meta.ByDimension("scope")}}
 }
 
 func (scopeResolver) ResolveSpec(ctx context.Context, _ auth.Request) (spec.Spec, []auth.Assignment, error) {
@@ -46,7 +48,7 @@ func (scopeResolver) ResolveSpec(ctx context.Context, _ auth.Request) (spec.Spec
 	if !ok || principal.ActiveScopeID <= 0 {
 		return spec.Spec{}, nil, errors.NewCode(errors.Unauthorized, "active scope is required")
 	}
-	return spec.Eq(spec.RoleScope, principal.ActiveScopeID), nil, nil
+	return spec.Eq(meta.ByDimension("scope"), principal.ActiveScopeID), nil, nil
 }
 
 func (o *Order) Validate() error { return nil }
@@ -117,7 +119,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 3. 业务查询：租户隔离 + 数据范围（@scope 角色字段）共同生效
+	// 3. 业务查询：租户隔离与 scope 维度条件共同生效。
 	userCtx := mustPrincipalContext("tenant-apple", 1001, "order:api:read", "order:api:list")
 	orders, err := orderApp.List(userCtx, 0, 10)
 	if err != nil {

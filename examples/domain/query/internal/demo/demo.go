@@ -12,7 +12,6 @@
 package demo
 
 import (
-	"gochen/domain/spec"
 	"context"
 	"log"
 	"net/http/httptest"
@@ -22,10 +21,13 @@ import (
 
 	"gochen-runtime/api/rest"
 	"gochen-runtime/http/nethttp"
+	"gochen/app"
 	"gochen/app/crud"
 	"gochen/app/query"
 	"gochen/auth"
 	"gochen/domain"
+	"gochen/domain/meta"
+	"gochen/domain/spec"
 	"gochen/errors"
 )
 
@@ -40,7 +42,7 @@ import (
 // 两个 demo 都复用这份定义，避免“默认推导”和“业务自定义 filter”
 // 各自维护一套几乎相同的样板实体。
 type User struct {
-	ID        int64     `json:"id" query:"nofilter,select"`
+	ID        int64     `json:"id" entity:"id" query:"nofilter,select"`
 	Name      string    `json:"name"`
 	Active    bool      `json:"active"`
 	Score     int       `json:"score" query:"ops=eq|gte|lte,sort,select"`
@@ -105,12 +107,24 @@ func (ReadOnlyRepoBase[T, ID]) QueryCount(context.Context, query.QueryOptions, s
 // 接住统一查询结构的过程。
 type QueryableUserRepo struct {
 	ReadOnlyRepoBase[*User, int64]
-	Items []*User
+	Items     []*User
+	execution app.ExecutionDescriptor
 }
 
-func NewQueryableUserRepo(items []*User) *QueryableUserRepo {
-	return &QueryableUserRepo{Items: items}
+func NewQueryableUserRepo(items []*User) (*QueryableUserRepo, error) {
+	metadata, err := meta.Describe[*User]()
+	if err != nil {
+		return nil, err
+	}
+	execution, err := app.BindContract(metadata, app.ResourceContract{})
+	if err != nil {
+		return nil, err
+	}
+	return &QueryableUserRepo{Items: items, execution: execution}, nil
 }
+
+// ExecutionDescriptor 返回查询资源构造期绑定的有效契约。
+func (r *QueryableUserRepo) ExecutionDescriptor() app.ExecutionDescriptor { return r.execution }
 
 // Query 模拟“仓储直接接住结构化查询对象”的场景。
 //

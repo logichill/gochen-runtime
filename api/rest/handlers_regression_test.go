@@ -37,7 +37,10 @@ type timestampHandlerEntity struct {
 
 func TestBulkUpdatePreservesEmbeddedManagedTimestamps(t *testing.T) {
 	ctx := context.Background()
-	repo := testkit.NewMemoryRepository[*timestampHandlerEntity, int64](testkit.NewInt64Sequence(1))
+	repo, repositoryErr := testkit.NewMemoryRepository[*timestampHandlerEntity, int64](testkit.NewInt64Sequence(1))
+	if repositoryErr != nil {
+		t.Fatal(repositoryErr)
+	}
 	app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()})
 	require.NoError(t, err)
 	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -58,7 +61,10 @@ func auditedHandlerFixture(t *testing.T) (context.Context, *appaudited.Applicati
 	t.Helper()
 	ctx, err := contextx.WithOperator(context.Background(), "tester")
 	require.NoError(t, err)
-	repo := testkit.NewAuditedMemoryRepository[*handlerEntity, int64](nil)
+	repo, repositoryErr := testkit.NewAuditedMemoryRepository[*handlerEntity, int64](nil)
+	if repositoryErr != nil {
+		t.Fatal(repositoryErr)
+	}
 	app, err := appaudited.NewApplication(repo, repo, appaudited.Options[*handlerEntity, int64]{Options: crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()}})
 	require.NoError(t, err)
 	for i, name := range []string{"A", "B"} {

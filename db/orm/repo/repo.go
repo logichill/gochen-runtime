@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"gochen-runtime/db/sql/safeident"
+	"gochen/app"
 	"gochen/db"
 	"gochen/db/orm"
 	"gochen/domain"
@@ -22,7 +23,7 @@ import (
 //   - ID: 主键类型，需满足 comparable 约束（如 int64、string、uuid.UUID 等）
 //
 // 仓储只按规约执行：读取按规约过滤，写入在落库前以规约做 WITH CHECK；
-// 访问控制角色列（tenant/scope/owner）永不出现在 UPDATE 的 SET 中。
+// 普通 UPDATE 的 SET 排除有效契约中的受保护字段。
 type Repo[T domain.IEntity[ID], ID comparable] struct {
 	orm        orm.IOrm
 	model      orm.IModel
@@ -35,7 +36,9 @@ type Repo[T domain.IEntity[ID], ID comparable] struct {
 	table        string
 	idColumn     string
 
-	access accessColumns
+	access    accessColumns
+	contract  app.ResourceContract
+	execution app.ExecutionDescriptor
 
 	isolationDeclared   bool
 	isolationConfigs    []IsolationCols
@@ -60,9 +63,6 @@ type Repo[T domain.IEntity[ID], ID comparable] struct {
 type accessColumns struct {
 	isolation      string
 	isolationField entitymeta.Field
-	tenant         string
-	scope          string
-	owner          string
 	version        string
 	versionField   entitymeta.Field
 }
@@ -183,32 +183,8 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 	r.idColumn = resolver.primaryKeyColumn()
 	if r.idColumn == "" {
 		return nil, errors.NewCode(errors.InvalidInput,
-			"entity must declare an id role field (role:\"id\") so the repository can address rows").
+			"entity must declare an identity field (entity:\"id\") so the repository can address rows").
 			WithContext("resource_kind", r.resourceKind)
-	}
-
-	// 角色列：由 domain/meta 的字段角色决定，不再通过选项声明。
-	for _, role := range []entitymeta.Role{entitymeta.RoleTenant, entitymeta.RoleScope, entitymeta.RoleOwner} {
-		field, ok := metadata.RoleField(role)
-		if !ok {
-			continue
-		}
-		column, ok := resolver.columnOf(field.Name)
-		if !ok {
-			return nil, errors.NewCode(errors.InvalidInput,
-				"role field does not map to a persisted column").
-				WithContext("resource_kind", r.resourceKind).
-				WithContext("role", string(role)).
-				WithContext("field", field.Name)
-		}
-		switch role {
-		case entitymeta.RoleTenant:
-			r.access.tenant = column
-		case entitymeta.RoleScope:
-			r.access.scope = column
-		case entitymeta.RoleOwner:
-			r.access.owner = column
-		}
 	}
 
 	if r.access.isolation != "" {
@@ -220,9 +196,33 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 				WithContext("column", r.access.isolation)
 		}
 		r.access.isolationField = field
-		if err := validateIsolationEntity[T, ID](r.access.isolation, r.isolationResolve != nil); err != nil {
-			return nil, err
+		if r.contract.Isolation != (entitymeta.Ref{}) {
+			configured, err := metadata.Resolve(r.contract.Isolation)
+			if err != nil || configured.Name != field.Name {
+				return nil, errors.NewCode(errors.InvalidInput, "conflicting isolation field binding")
+			}
 		}
+		r.contract.Isolation = entitymeta.ByField(field.Name)
+	}
+	if r.contract.Isolation != (entitymeta.Ref{}) && r.access.isolation == "" {
+		return nil, errors.NewCode(errors.InvalidInput, "isolation field requires an explicit isolation value resolver")
+	}
+	execution, err := app.BindContract(metadata, r.contract)
+	if err != nil {
+		return nil, err
+	}
+	r.execution = execution
+	for _, field := range metadata.Fields() {
+		if !execution.IsProtected(field) && field.Dimension == "" {
+			continue
+		}
+		if _, ok := resolver.columnOf(field.Name); !ok {
+			return nil, errors.NewCode(errors.InvalidInput, "contract field has no persisted column").WithContext("field", field.Name)
+		}
+	}
+	idField, _ := metadata.IDField()
+	if idField.Type != reflect.TypeOf((*ID)(nil)).Elem() {
+		return nil, errors.NewCode(errors.InvalidInput, "entity identity type does not match repository ID")
 	}
 	if naming.VersionColumn != "" {
 		if field, column, ok := resolver.resolveColumn(naming.VersionColumn); ok {
@@ -245,6 +245,10 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 	if !r.settableVersion && !r.versioningOff {
 		return nil, errors.NewCode(errors.InvalidInput,
 			"entity must implement domain.ISettableVersion or the repository must declare WithoutVersioning").
+			WithContext("resource_kind", r.resourceKind)
+	}
+	if len(r.contract.Transferable) > 0 && !r.versioned() {
+		return nil, errors.NewCode(errors.InvalidInput, "transfer contract requires optimistic versioning").
 			WithContext("resource_kind", r.resourceKind)
 	}
 
@@ -314,9 +318,6 @@ func (r *Repo[T, ID]) validateColumnIdentifiers() error {
 	}{
 		{r.idColumn, "primary_key"},
 		{r.access.isolation, "role.tenant/isolation"},
-		{r.access.tenant, "role.tenant"},
-		{r.access.scope, "role.scope"},
-		{r.access.owner, "role.owner"},
 		{r.access.version, "version"},
 		{r.softDeleteCols.DeletedAt, "soft_delete.deleted_at"},
 		{r.softDeleteCols.DeletedBy, "soft_delete.deleted_by"},

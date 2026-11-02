@@ -11,12 +11,13 @@ import (
 	"gochen/db"
 	"gochen/errors"
 	"gochen/testkit/require"
+
 	_ "modernc.org/sqlite"
 )
 
 // runnerItem 投影事务 runner 回归测试用的最小实体（可写版本字段）。
 type runnerItem struct {
-	ID      int64  `json:"id" role:"id"`
+	ID      int64  `json:"id" entity:"id"`
 	Version uint64 `json:"version"`
 	Name    string `json:"name"`
 }
