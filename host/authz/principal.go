@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"gochen-runtime/internal/normalize"
+	coreauth "gochen/auth"
 	"gochen/auth/action"
 	"gochen/contextx"
 	"gochen/errors"
@@ -21,6 +22,12 @@ type ExecutionMetadata struct {
 }
 
 type principalContextKey struct{}
+
+// principalDetails 将权限资料绑定到建立它们时的主体、租户与当前范围。
+type principalDetails struct {
+	bound     context.Context
+	principal Principal
+}
 
 // Principal 表达当前操作主体的最小授权语义；主体与租户使用不透明字符串标识。
 type Principal struct {
@@ -91,34 +98,56 @@ func (p Principal) AllowsPermission(permission string) bool {
 	return false
 }
 
-// WithPrincipal 将主体信息写入 context。
+// WithPrincipal 在可信入口建立根身份，并绑定 Runtime 权限资料。
+// 当前租户来自 contextx.TenantID；HomeTenantID 保留归属资料。
 func WithPrincipal(ctx context.Context, principal Principal) (context.Context, error) {
 	ctx, err := contextx.Ensure(ctx)
 	if err != nil {
 		return nil, err
 	}
 	principal = principal.Clone()
+	identity := coreauth.Principal{
+		SubjectID: principal.SubjectID,
+		TenantID:  contextx.TenantID(ctx),
+		ScopeID:   principal.ActiveScopeID,
+		System:    principal.IsSystem,
+	}
+	ctx, err = coreauth.WithPrincipal(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
 	ctx, err = contextx.WithUserID(ctx, principal.SubjectID)
 	if err != nil {
 		return nil, err
 	}
-	ctx = context.WithValue(ctx, principalContextKey{}, principal)
+	details := principalDetails{
+		bound:     ctx,
+		principal: principal,
+	}
+	// 身份由根 Principal 读取；附属资料只保留权限及归属事实。
+	details.principal.SubjectID = ""
+	details.principal.ActiveScopeID = 0
+	details.principal.IsSystem = false
+	ctx = context.WithValue(ctx, principalContextKey{}, details)
 	return ctx, nil
 }
 
-// PrincipalFromContext 从 context 中读取主体。
+// PrincipalFromContext 从根身份读取主体，并附加仍匹配该身份的权限资料。
+// 主体、租户或当前范围切换后，可信入口应重新建立权限资料。
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
-	if ctx == nil {
+	identity, ok := coreauth.PrincipalFromContext(ctx)
+	if !ok {
 		return Principal{}, false
 	}
-	if principal, ok := ctx.Value(principalContextKey{}).(Principal); ok {
-		return principal.Clone(), true
+	var principal Principal
+	if details, ok := ctx.Value(principalContextKey{}).(principalDetails); ok &&
+		coreauth.HasSamePrincipalBinding(ctx, details.bound) {
+		principal = details.principal.Clone()
 	}
-	principal := Principal{SubjectID: contextx.UserID(ctx)}
-	if principal.SubjectID == "" {
-		return Principal{}, false
-	}
-	return principal.Clone(), true
+	principal.SubjectID = identity.SubjectID
+	principal.ActiveScopeID = identity.ScopeID
+	principal.IsSystem = identity.System
+	return principal, true
 }
 
 // RequirePrincipal 从 context 中读取主体；缺失时返回 Unauthorized。
