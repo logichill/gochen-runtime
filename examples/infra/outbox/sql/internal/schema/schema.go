@@ -52,5 +52,22 @@ func EnsureEventAndOutboxTables(ctx context.Context, db db.IDatabase) error {
 	if _, err := db.Exec(ctx, outboxDDL); err != nil {
 		return fmt.Errorf("create event_outbox: %w", err)
 	}
+	// 监控采集器同时查询 DLQ，示例提供完整的采集表结构。
+	dlqDDL := `
+	CREATE TABLE IF NOT EXISTS event_outbox_dlq (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		original_entry_id INTEGER NOT NULL,
+		aggregate_id INTEGER NOT NULL,
+		aggregate_type TEXT NOT NULL,
+		event_id TEXT NOT NULL UNIQUE,
+		event_type TEXT NOT NULL,
+		event_data TEXT NOT NULL,
+		failure_reason TEXT NULL,
+		retry_count INTEGER NOT NULL,
+		moved_at DATETIME NOT NULL
+	);`
+	if _, err := db.Exec(ctx, dlqDDL); err != nil {
+		return fmt.Errorf("create event_outbox_dlq: %w", err)
+	}
 	return nil
 }

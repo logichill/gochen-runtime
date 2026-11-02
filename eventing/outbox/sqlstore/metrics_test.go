@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	stderrors "errors"
 	"fmt"
 	coredialect "gochen/db/dialect"
 	"strings"
@@ -95,6 +96,61 @@ func TestMetricsCollectorCollectsZeroCountsForEmptyTables(t *testing.T) {
 	require.Equal(t, int64(0), metrics.FailedCount)
 	require.Equal(t, int64(0), metrics.DeadLetteredCount)
 	require.Equal(t, int64(0), metrics.HighRetryCount)
+}
+
+func TestMetricsCollectorReportsMissingDLQTable(t *testing.T) {
+	collector := NewMetricsCollector(setupTestDB(t))
+	metrics, err := collector.Collect(context.Background())
+	require.Nil(t, metrics)
+	require.True(t, errors.Is(err, errors.Database))
+	require.Contains(t, err.Error(), "collect dlq count failed")
+	require.Contains(t, err.Error(), DefaultOutboxDLQTable)
+}
+
+type dlqQueryFailureDB struct {
+	db.IDatabase
+	cause error
+}
+
+func (d dlqQueryFailureDB) QueryRow(ctx context.Context, query string, args ...any) db.IRow {
+	if strings.Contains(query, `"event_outbox_dlq"`) {
+		return dlqQueryFailureRow{cause: d.cause}
+	}
+	return d.IDatabase.QueryRow(ctx, query, args...)
+}
+
+type dlqQueryFailureRow struct{ cause error }
+
+func (r dlqQueryFailureRow) Scan(...any) error { return r.cause }
+
+func (r dlqQueryFailureRow) Err() error { return r.cause }
+
+func TestMetricsCollectorPropagatesDLQFailures(t *testing.T) {
+	for _, failure := range []struct {
+		name  string
+		cause error
+	}{
+		{"permission", stderrors.New("permission denied")},
+		{"connection", stderrors.New("connection reset")},
+		{"cancellation", context.Canceled},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			database := setupTestDB(t)
+			setupDLQTable(t, database, DefaultOutboxDLQTable)
+			collector := NewMetricsCollector(dlqQueryFailureDB{IDatabase: database, cause: failure.cause})
+			ctx := context.Background()
+			metrics, err := collector.Collect(ctx)
+			require.Nil(t, metrics)
+			require.True(t, errors.Is(err, errors.Database))
+			require.True(t, stderrors.Is(err, failure.cause))
+			status, _, err := collector.HealthStatus(ctx)
+			require.Equal(t, outbox.HealthStatusUnhealthy, status)
+			require.True(t, stderrors.Is(err, failure.cause))
+			snapshot, err := collector.TakeSnapshot(ctx, nil)
+			require.Nil(t, snapshot)
+			require.True(t, stderrors.Is(err, failure.cause))
+		})
+	}
 }
 
 func TestMetricsCollectorWithTablesQuotesSchemaQualifiedNames(t *testing.T) {

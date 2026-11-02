@@ -186,6 +186,7 @@ func newMetricsCollector(db db.IDatabase, cfg MetricsCollectorConfig, validateTa
 }
 
 // Collect 汇总当前 Outbox 的状态计数、重试情况和时间维度指标。
+// 配置的 Outbox 与 DLQ 表必须可查询；任一采集失败返回错误。
 func (c *MetricsCollector) Collect(ctx context.Context) (*outbox.OutboxMetrics, error) {
 	if c == nil {
 		return nil, errors.NewCode(errors.InvalidInput, "metrics collector is nil")
@@ -204,8 +205,7 @@ func (c *MetricsCollector) Collect(ctx context.Context) (*outbox.OutboxMetrics, 
 
 	// 2. 采集 DLQ 记录数
 	if err := c.collectDLQCount(ctx, metrics); err != nil {
-		// DLQ 可能不存在，忽略错误
-		metrics.DLQCount = 0
+		return nil, errors.Wrap(err, errors.Database, "collect dlq count failed")
 	}
 
 	// 3. 采集重试统计
