@@ -34,29 +34,6 @@ func requestContext(c httpx.IContext, extract func(httpx.IContext) (string, bool
 	return derived, nil
 }
 
-// extractOperator 从请求中提取操作人。
-func (rb *RouteBuilder[T, ID]) extractOperator(c httpx.IContext) (string, bool) {
-	if rb.config == nil || rb.config.Audit.OperatorExtractor == nil {
-		return "", false
-	}
-	operator, ok := rb.config.Audit.OperatorExtractor(c)
-	operator = strings.TrimSpace(operator)
-	return operator, ok && operator != ""
-}
-
-// mustAuditedContext 构建审计上下文，operator 为必需。
-func (rb *RouteBuilder[T, ID]) mustAuditedContext(c httpx.IContext) (context.Context, string, error) {
-	operator, ok := rb.extractOperator(c)
-	if !ok || operator == "" {
-		return nil, "", errors.NewCode(errors.Validation, "missing operator")
-	}
-	ctx, err := contextx.WithOperator(c.RequestContext(), operator)
-	if err != nil {
-		return nil, "", err
-	}
-	return ctx, operator, nil
-}
-
 // parseID 从路径参数解析 ID。
 func (rb *RouteBuilder[T, ID]) parseID(c httpx.IContext) (ID, error) {
 	var zero ID

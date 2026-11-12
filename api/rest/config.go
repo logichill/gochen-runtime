@@ -90,7 +90,7 @@ type AuditOptions struct {
 	// OperatorExtractor 从请求中提取操作人。
 	//
 	// 提取到时 REST 会派生 ctx：`gochen/contextx.WithOperator(ctx, operator)`；
-	// audited 应用的写与生命周期入口要求必须能提取到 operator。
+	// 启用审计记录时由用例校验 operator；删除生命周期本身不要求操作者。
 	OperatorExtractor func(httpx.IContext) (operator string, ok bool)
 }
 

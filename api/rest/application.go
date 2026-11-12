@@ -2,8 +2,9 @@ package rest
 
 import (
 	"gochen/app"
-	appaudited "gochen/app/audited"
+	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
+	"gochen/app/deletion"
 	"gochen/domain"
 )
 
@@ -19,5 +20,17 @@ type ReadApplication[T domain.IEntity[ID], ID comparable] interface {
 // 标准路由挂载只要求 ReadApplication，并在装配期校验声明的可选能力。
 type Application[T domain.IEntity[ID], ID comparable] = appcrud.IApplication[T, ID]
 
-// LifecycleApplication 是 audited 应用的生命周期入口（app/audited.ILifecycleApplication）。
-type LifecycleApplication[T domain.IEntity[ID], ID comparable] = appaudited.ILifecycleApplication[T, ID]
+// DeletionApplication 是独立删除生命周期及其授权描述。
+type DeletionApplication[T domain.IEntity[ID], ID comparable] interface {
+	app.IDescriptorProvider
+	deletion.IDeletionApplication[T, ID]
+	MaxPageSize() int
+	MaxBulkSize() int
+}
+
+// AuditApplication 是独立审计历史及其授权描述，不要求实体读取能力。
+type AuditApplication[ID comparable] interface {
+	app.IDescriptorProvider
+	appaudit.IAuditReader[ID]
+	MaxPageSize() int
+}

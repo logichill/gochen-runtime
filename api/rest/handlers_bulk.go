@@ -70,8 +70,8 @@ func (rb *RouteBuilder[T, ID]) handleUpdateBulk(c httpx.IContext) error {
 	}
 	versions := make(map[ID]uint64, len(entities))
 	for i, entity := range entities {
-		if rb.isAudited() {
-			if err := rejectAuditedUpdateForbiddenFields(fields[i]); err != nil {
+		if hasManagedFields[T]() {
+			if err := rejectManagedUpdateFields(fields[i]); err != nil {
 				return err
 			}
 		}
@@ -135,7 +135,7 @@ func (rb *RouteBuilder[T, ID]) handleDeleteBulk(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.write.DeleteBulk(ctx, req.IDs); err != nil {
+	if err := rb.deleteBulk(ctx, req.IDs); err != nil {
 		return err
 	}
 	result := map[string]any{"count": len(req.IDs)}
@@ -261,9 +261,9 @@ func mergeWritableFields[T any](target T, incoming T, supplied map[string]json.R
 
 func isManagedField(field reflect.StructField) bool {
 	if field.Anonymous {
-		// 嵌入的基础实体（crud.Entity / audited.AuditedEntity）整体跳过。
+		// 嵌入的基础实体（crud.Entity / crud.TrackedEntity）整体跳过。
 		return strings.HasPrefix(field.Type.String(), "crud.Entity") ||
-			strings.HasPrefix(field.Type.String(), "audited.AuditedEntity")
+			strings.HasPrefix(field.Type.String(), "crud.TrackedEntity")
 	}
 	switch field.Tag.Get("role") {
 	case "id", "tenant", "scope", "owner":

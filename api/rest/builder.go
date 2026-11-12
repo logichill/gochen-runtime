@@ -8,6 +8,7 @@ import (
 
 	runtimehttp "gochen-runtime/http"
 	"gochen-runtime/http/middleware"
+	"gochen/app"
 	appcrud "gochen/app/crud"
 	"gochen/auth"
 
@@ -56,7 +57,12 @@ type RouteBuilder[T domain.IEntity[ID], ID comparable] struct {
 	service         ReadApplication[T, ID]
 	write           appcrud.IWriteApplication[T, ID]
 	execute         appcrud.IActionExecutor[T, ID]
-	audit           appcrud.IAuditReader[ID]
+	audit           AuditApplication[ID]
+	deletion        DeletionApplication[T, ID]
+	auditSet        bool
+	deletionSet     bool
+	configError     error
+	providers       map[string]app.IDescriptorProvider
 	maxBulkSize     int
 	middlewares     []httpx.Middleware
 	fastDenyEnabled bool
@@ -79,9 +85,11 @@ func NewRouteBuilder[T domain.IEntity[ID], ID comparable](
 	b.service = app
 	b.write, _ = app.(appcrud.IWriteApplication[T, ID])
 	b.execute, _ = app.(appcrud.IActionExecutor[T, ID])
-	b.audit, _ = app.(appcrud.IAuditReader[ID])
 	if limits, ok := app.(interface{ MaxBulkSize() int }); ok {
 		b.maxBulkSize = limits.MaxBulkSize()
+	}
+	if err := b.prepare(); err != nil {
+		return nil, err
 	}
 	return b, nil
 }
@@ -182,8 +190,8 @@ func (rb *RouteBuilder[T, ID]) prepare() error {
 	if rb.config.Routing.IDCodec == nil {
 		return errors.NewCode(errors.InvalidInput, "RouteConfig.Routing.IDCodec is required")
 	}
-	descriptor := rb.service.Descriptor()
-	if err := descriptor.Validate(); err != nil {
+	descriptor, err := rb.composeCapabilities()
+	if err != nil {
 		return err
 	}
 	if err := ensureQuerySchemaForType[T](rb.config); err != nil {
@@ -255,7 +263,7 @@ func (rb *RouteBuilder[T, ID]) mount(group httpx.IRouteGroup, route routeDef) er
 	}
 	handler := route.handler
 	if rb.entryRegistry != nil {
-		provider, ok := any(rb.service).(interface {
+		provider, ok := any(rb.providers[route.spec.Action]).(interface {
 			AuthorizationBinding(string) (auth.EntryBinding, error)
 		})
 		if !ok {
@@ -281,7 +289,7 @@ func (rb *RouteBuilder[T, ID]) mount(group httpx.IRouteGroup, route routeDef) er
 }
 
 func (rb *RouteBuilder[T, ID]) fastDeny(action string, next httpx.Handler) httpx.Handler {
-	provider, ok := any(rb.service).(interface{ AuthorizationPlan() (auth.Plan, bool) })
+	provider, ok := any(rb.providers[action]).(interface{ AuthorizationPlan() (auth.Plan, bool) })
 	if !ok {
 		return next
 	}
@@ -292,7 +300,7 @@ func (rb *RouteBuilder[T, ID]) fastDeny(action string, next httpx.Handler) httpx
 	if _, safe := plan.FastDenyPermissions[action]; !safe {
 		return next
 	}
-	executor, ok := any(rb.service).(interface {
+	executor, ok := any(rb.providers[action]).(interface {
 		FastDeny(context.Context, string) error
 	})
 	if !ok {
@@ -323,7 +331,7 @@ func (rb *RouteBuilder[T, ID]) validateCapabilities(descriptor auth.Descriptor) 
 		if _, declared := actions[name]; !declared {
 			continue
 		}
-		if isNilService(rb.write) {
+		if isNilService(rb.write) && (name != actionDelete || isNilService(rb.deletion)) {
 			return errors.NewCode(errors.InvalidInput, "descriptor declares writes but the application does not implement them").
 				WithContext("resource", descriptor.Resource).WithContext("action", name)
 		}
@@ -336,39 +344,19 @@ func (rb *RouteBuilder[T, ID]) validateCapabilities(descriptor auth.Descriptor) 
 		return errors.NewCode(errors.InvalidInput, "descriptor declares audit_read but the application does not implement IAuditReader").
 			WithContext("resource", descriptor.Resource)
 	}
-	needsLifecycle := false
 	for _, name := range []string{actionRestore, actionPurge, actionListDeleted} {
-		if _, ok := actions[name]; ok {
-			needsLifecycle = true
-		}
-	}
-	lifecycle, isLifecycle := any(rb.service).(LifecycleApplication[T, ID])
-	if needsLifecycle && (!isLifecycle || isNilService(lifecycle)) {
-		return errors.NewCode(errors.InvalidInput,
-			"descriptor declares lifecycle actions but the application does not implement them").
-			WithContext("resource", descriptor.Resource)
-	}
-	if isLifecycle && rb.config.Audit.OperatorExtractor == nil {
-		return errors.NewCode(errors.InvalidInput,
-			"audited routes require RouteConfig.Audit.OperatorExtractor").
-			WithContext("resource", descriptor.Resource)
-	}
-	for _, action := range descriptor.Actions {
-		if action.Kind == auth.KindCreate || action.Kind == auth.KindUpdate || action.Kind == auth.KindDelete {
-			if rb.config.Audit.OperatorExtractor == nil && isLifecycle {
-				return errors.NewCode(errors.InvalidInput, "audited writes require an operator extractor")
-			}
+		if _, declared := actions[name]; declared && isNilService(rb.deletion) {
+			return errors.NewCode(errors.InvalidInput, "lifecycle action requires an explicit deletion capability").WithContext("action", name)
 		}
 	}
 	return nil
 }
 
-func (rb *RouteBuilder[T, ID]) lifecycle() (LifecycleApplication[T, ID], error) {
-	lifecycle, ok := any(rb.service).(LifecycleApplication[T, ID])
-	if !ok || isNilService(lifecycle) {
-		return nil, errors.NewCode(errors.Unsupported, "lifecycle operations are not configured")
+func (rb *RouteBuilder[T, ID]) lifecycle() (DeletionApplication[T, ID], error) {
+	if isNilService(rb.deletion) {
+		return nil, errors.NewCode(errors.InvalidInput, "deletion capability is not configured")
 	}
-	return lifecycle, nil
+	return rb.deletion, nil
 }
 
 func descriptorActions(descriptor auth.Descriptor) map[string]auth.Action {
@@ -387,7 +375,12 @@ func (rb *RouteBuilder[T, ID]) registerStartup() error {
 	if rb.registry == nil {
 		return nil
 	}
-	return rb.registry.Register(rb.service)
+	for _, capability := range rb.applications() {
+		if err := rb.registry.Register(capability); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func isCORSPreflightRequest(ctx httpx.IContext) bool {

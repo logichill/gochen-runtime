@@ -132,24 +132,23 @@ func WithCrossIsolationReads[T domain.IEntity[ID], ID comparable](audit ICrossIs
 	}
 }
 
-// WithAudited 显式声明该仓储开启审计与软删除追踪。
-func WithAudited[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
+// WithSoftDelete 显式启用软删除过滤；不会启用操作人字段或审计记录。
+func WithSoftDelete[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
 	return func(r *Repo[T, ID]) {
 		if r == nil {
 			return
 		}
 		r.softDelete = true
-		r.auditFields = true
 	}
 }
 
 // WithoutVersioning 显式退出 Update 的乐观锁版本保护。
 //
-// 默认策略：实体只要具备可写版本字段（嵌入 crud.Entity / audited.AuditedEntity）
-// 或启用审计，Update 就以 WHERE id = ? AND version = ? 原子执行并推进版本。
+// 默认 Update 以 WHERE id = ? AND version = ? 原子执行并推进版本。
+// 修改归因字段、删除状态与操作审计是独立能力，不相互启用。
 // 本选项只服务于“表有版本列但业务明确不需要框架乐观锁”的场景。
 //
-// 构造期约束：启用审计的仓储不可退出（审计乐观锁依赖版本列），否则 NewRepo 报错。
+// 构造期约束：带 IChangeInfo 修改归因的实体不可退出版本保护，否则 NewRepo 报错。
 func WithoutVersioning[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
 	return func(r *Repo[T, ID]) {
 		if r == nil {

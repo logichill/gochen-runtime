@@ -29,16 +29,16 @@ func IsolatedRepo[T domain.IEntity[ID], ID comparable](
 	return repo.NewRepo[T, ID](ormEngine, table, allOpts...)
 }
 
-// AuditedRepo 显式指定审计轨迹与软删除仓储。
+// SoftDeleteRepo 显式指定软删除过滤的 ORM 仓储。
 //
-// 适用于实体未组合标准 domain/audited 类型，但数据表具有软删除列的定制场景。
-func AuditedRepo[T domain.IEntity[ID], ID comparable](
+// 只声明删除态过滤，不启用审计记录或修改人字段。
+func SoftDeleteRepo[T domain.IEntity[ID], ID comparable](
 	ormEngine orm.IOrm,
 	table string,
 	opts ...repo.Option[T, ID],
 ) (*repo.Repo[T, ID], error) {
 	allOpts := append([]repo.Option[T, ID]{
-		repo.WithAudited[T, ID](),
+		repo.WithSoftDelete[T, ID](),
 	}, opts...)
 	return repo.NewRepo[T, ID](ormEngine, table, allOpts...)
 }

@@ -7,14 +7,12 @@ import (
 
 	"gochen-runtime/host/internal/appregistry"
 	"gochen/app"
-	appaudited "gochen/app/audited"
 	appcrud "gochen/app/crud"
 	appes "gochen/app/eventsourced"
 	"gochen/app/eventsourced/eventstore"
 	"gochen/auth"
 
 	"gochen/contextx"
-	"gochen/domain/audited"
 	"gochen/domain/crud"
 	domaines "gochen/domain/eventsourced"
 	"gochen/domain/meta"
@@ -34,7 +32,7 @@ type governanceDocument struct {
 }
 
 type governanceAuditedDocument struct {
-	audited.AuditedEntity[int64]
+	crud.TrackedEntity[int64]
 	Name string `json:"name"`
 }
 
@@ -93,7 +91,7 @@ func newGovernanceApplicationFixture(t *testing.T, kind string, authorizer auth.
 	case "audited":
 		repo, err := testkit.NewAuditedMemoryRepository[*governanceAuditedDocument, int64](testkit.NewInt64Sequence(1))
 		require.NoError(t, err)
-		application, err := appaudited.NewApplication(repo, repo, appaudited.Options[*governanceAuditedDocument, int64]{Resource: "document", Authorizer: authorizer})
+		application, err := appcrud.NewApplication(repo, appcrud.Options[*governanceAuditedDocument, int64]{Resource: "document", Authorizer: authorizer, Audit: repo})
 		require.NoError(t, err)
 		return application, func(ctx context.Context) error {
 				return application.Create(ctx, &governanceAuditedDocument{Name: "allowed"})

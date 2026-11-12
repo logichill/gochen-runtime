@@ -17,7 +17,7 @@
 | `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error` |
 | `quick.RESTRegister(group, app, opts...)` | 直接向路由组挂载 REST |
 | `quick.App(repo, options)` | 创建 CRUD Application |
-| `quick.Repo` / `quick.IsolatedRepo` / `quick.AuditedRepo` | 创建默认、租户隔离、审计仓储 |
+| `quick.Repo` / `quick.IsolatedRepo` / `quick.SoftDeleteRepo` | 创建默认、租户隔离、软删除过滤仓储 |
 | `quick.EventSourced` / `quick.AtomicEventSourced` | 创建事件溯源仓储 |
 
 ## 2. 启动链路

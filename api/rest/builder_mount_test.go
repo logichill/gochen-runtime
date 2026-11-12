@@ -8,10 +8,10 @@ import (
 	"gochen/app"
 	appcrud "gochen/app/crud"
 	"gochen/app/query"
+	domainaudited "gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"
 	"gochen/domain"
-	domainaudited "gochen/domain/audited"
 	"gochen/errors"
 	"gochen/httpx"
 	"gochen/testkit"
@@ -180,29 +180,11 @@ func TestMountRejectsLifecycleActionsWithoutLifecycleApplication(t *testing.T) {
 
 func TestMountRegistersLifecycleRoutes(t *testing.T) {
 	router := testkit.NewRecordingRouter()
-	app := &stubLifecycleApplication{stubApplication: &stubApplication{descriptor: auth.Descriptor{
-		Resource: "user",
-		Actions: []auth.Action{
-			{Name: actionRead, Kind: auth.KindRead},
-			{Name: actionList, Kind: auth.KindList},
-			{Name: actionRestore, Kind: auth.KindUpdate},
-			{Name: actionPurge, Kind: auth.KindDelete},
-			{Name: actionListDeleted, Kind: auth.KindList},
-		},
-	}}}
-
-	err := Mount[*mountEntity, int64](router, app,
-		WithBasePath[*mountEntity, int64]("/users"),
-		WithOperatorExtractor[*mountEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }))
-	require.NoError(t, err)
-
-	requireRoutes(t, router.RecordedRoutes(),
-		"GET /users",
-		"GET /users/deleted",
-		"POST /users/:id/restore",
-		"DELETE /users/:id/purge",
-		"GET /users/:id",
-	)
+	application := &stubApplication{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: actionRead, Kind: auth.KindRead}, {Name: actionList, Kind: auth.KindList}}}}
+	lifecycle := &stubLifecycleApplication{stubApplication: &stubApplication{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: actionRestore, Kind: auth.KindUpdate}, {Name: actionPurge, Kind: auth.KindDelete}, {Name: actionListDeleted, Kind: auth.KindList}}}}}
+	// 删除生命周期并不意味着启用审计，也不要求 HTTP 操作者提取器。
+	require.NoError(t, Mount(router, application, WithBasePath[*mountEntity, int64]("/users"), WithDeletion[*mountEntity, int64](lifecycle)))
+	requireRoutes(t, router.RecordedRoutes(), "GET /users", "GET /users/deleted", "POST /users/:id/restore", "DELETE /users/:id/purge", "GET /users/:id")
 }
 
 func TestMountAllowsEmptyBasePath(t *testing.T) {
@@ -303,5 +285,5 @@ func TestWrapHandlerMapsAfterCommitErrorToDegraded(t *testing.T) {
 }
 
 var _ Application[*mountEntity, int64] = (*stubApplication)(nil)
-var _ LifecycleApplication[*mountEntity, int64] = (*stubLifecycleApplication)(nil)
+var _ DeletionApplication[*mountEntity, int64] = (*stubLifecycleApplication)(nil)
 var _ domain.IEntity[int64] = (*mountEntity)(nil)

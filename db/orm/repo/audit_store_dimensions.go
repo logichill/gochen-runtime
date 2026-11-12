@@ -11,10 +11,10 @@ import (
 	"gochen-runtime/db/dialect"
 	"gochen-runtime/db/sql/safesql"
 	"gochen/app"
+	"gochen/audit"
 	"gochen/contextx"
 	"gochen/db"
 	"gochen/db/orm"
-	"gochen/domain/audited"
 	"gochen/domain/crud"
 	"gochen/domain/meta"
 	"gochen/domain/spec"
@@ -70,9 +70,9 @@ type auditStoreRow struct {
 }
 
 var (
-	_ audited.IAuditStore      = (*AuditStore)(nil)
-	_ audited.IAuditQueryStore = (*AuditStore)(nil)
-	_ audited.IBulkAuditStore  = (*AuditStore)(nil)
+	_ audit.IAuditStore        = (*AuditStore)(nil)
+	_ audit.IAuditQueryStore   = (*AuditStore)(nil)
+	_ audit.IBulkAuditStore    = (*AuditStore)(nil)
 	_ crud.IDataSourceProvider = (*AuditStore)(nil)
 )
 
@@ -243,15 +243,15 @@ func (s *AuditStore) maxRowsPerInsert(binding *auditBinding) int {
 	return 1
 }
 
-func (s *AuditStore) buildAuditRow(ctx context.Context, record audited.AuditRecord) (*auditBinding, any, int64, error) {
+func (s *AuditStore) buildAuditRow(ctx context.Context, record audit.AuditRecord) (*auditBinding, any, int64, error) {
 	binding := s.resources[record.ResourceKind]
 	if binding == nil {
 		return nil, nil, 0, errors.NewCode(errors.InvalidInput, "audit resource is not configured")
 	}
-	if err := audited.ValidateRecord(record, binding.config.Execution.Metadata()); err != nil {
+	if err := audit.ValidateRecord(record, binding.config.Execution.Metadata()); err != nil {
 		return nil, nil, 0, err
 	}
-	snapshot, err := audited.NewDimensionSnapshot(binding.config.Execution.Metadata(), record.Dimensions.Values())
+	snapshot, err := audit.NewDimensionSnapshot(binding.config.Execution.Metadata(), record.Dimensions.Values())
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -328,7 +328,7 @@ func (b *auditBinding) isolation(ctx context.Context) (any, error) {
 	return value.Interface(), nil
 }
 
-func (s *AuditStore) SaveAuditRecord(ctx context.Context, record audited.AuditRecord) (int64, error) {
+func (s *AuditStore) SaveAuditRecord(ctx context.Context, record audit.AuditRecord) (int64, error) {
 	if ctx == nil {
 		return 0, errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
@@ -346,11 +346,11 @@ func (s *AuditStore) SaveAuditRecord(ctx context.Context, record audited.AuditRe
 	return id, nil
 }
 
-func (s *AuditStore) SaveAuditRecords(ctx context.Context, records []audited.AuditRecord) error {
+func (s *AuditStore) SaveAuditRecords(ctx context.Context, records []audit.AuditRecord) error {
 	if ctx == nil {
 		return errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
-	if err := audited.ValidateTransferPairs(records); err != nil {
+	if err := audit.ValidateTransferPairs(records); err != nil {
 		return err
 	}
 	type prepared struct {
@@ -398,11 +398,11 @@ func (s *AuditStore) SaveAuditRecords(ctx context.Context, records []audited.Aud
 	return nil
 }
 
-func (s *AuditStore) ListAuditRecords(ctx context.Context, entityID string, offset, limit int, condition spec.Spec) ([]audited.AuditRecord, error) {
+func (s *AuditStore) ListAuditRecords(ctx context.Context, entityID string, offset, limit int, condition spec.Spec) ([]audit.AuditRecord, error) {
 	if ctx == nil || strings.TrimSpace(entityID) == "" {
 		return nil, errors.NewCode(errors.InvalidInput, "audit context and entity id are required")
 	}
-	binding := s.resources[audited.AuditResourceKind(ctx)]
+	binding := s.resources[audit.AuditResourceKind(ctx)]
 	if binding == nil {
 		return nil, errors.NewCode(errors.InvalidInput, "audit resource is not configured")
 	}
@@ -439,7 +439,7 @@ func (s *AuditStore) ListAuditRecords(ctx context.Context, entityID string, offs
 	if err := model.Find(ctx, rows.Interface(), opts...); err != nil {
 		return nil, err
 	}
-	out := make([]audited.AuditRecord, 0, rows.Elem().Len())
+	out := make([]audit.AuditRecord, 0, rows.Elem().Len())
 	for i := 0; i < rows.Elem().Len(); i++ {
 		row := rows.Elem().Index(i)
 		var base auditStoreRow
@@ -447,11 +447,11 @@ func (s *AuditStore) ListAuditRecords(ctx context.Context, entityID string, offs
 		for j := 0; j < baseValue.NumField(); j++ {
 			baseValue.Field(j).Set(row.Field(j))
 		}
-		var snapshot audited.DimensionSnapshot
+		var snapshot audit.DimensionSnapshot
 		if err := json.Unmarshal([]byte(base.Dimensions), &snapshot); err != nil {
 			return nil, errors.Wrap(err, errors.Internal, "decode audit dimensions")
 		}
-		snapshot, err = audited.NewDimensionSnapshot(binding.config.Execution.Metadata(), snapshot.Values())
+		snapshot, err = audit.NewDimensionSnapshot(binding.config.Execution.Metadata(), snapshot.Values())
 		if err != nil {
 			return nil, errors.Wrap(err, errors.Internal, "incomplete audit dimensions")
 		}
@@ -481,7 +481,7 @@ func (s *AuditStore) ListAuditRecords(ctx context.Context, entityID string, offs
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, audited.AuditRecord{ID: base.ID, ResourceKind: base.ResourceKind, EntityID: base.EntityID,
+		out = append(out, audit.AuditRecord{ID: base.ID, ResourceKind: base.ResourceKind, EntityID: base.EntityID,
 			Action: base.Action, Operator: base.Operator, Initiator: base.Initiator, Reason: base.Reason,
 			CorrelationID: base.CorrelationID, OperationID: base.OperationID, Timestamp: base.Timestamp,
 			Changes: changes, Metadata: metadata, Dimensions: snapshot})

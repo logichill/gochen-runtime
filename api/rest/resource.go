@@ -2,7 +2,6 @@ package rest
 
 import (
 	"gochen-runtime/host/module"
-	"gochen/app"
 	"gochen/domain"
 	"gochen/errors"
 	"gochen/httpx"
@@ -24,10 +23,14 @@ func (r *ResourceBinding[T, ID]) ModuleBinding() (module.Binding, error) {
 	if r == nil || isNilService(r.application) {
 		return module.Binding{}, errors.NewCode(errors.InvalidInput, "resource binding requires an application")
 	}
-	if _, _, err := Describe(r.application, r.options...); err != nil {
+	builder, err := NewRouteBuilder(r.application, r.options...)
+	if err != nil {
 		return module.Binding{}, err
 	}
-	return module.Binding{Applications: []app.IDescriptorProvider{r.application}, RouteRegistrars: []module.IRouteRegistrar{r}}, nil
+	if _, _, err := builder.Describe(); err != nil {
+		return module.Binding{}, err
+	}
+	return module.Binding{Applications: builder.applications(), RouteRegistrars: []module.IRouteRegistrar{r}}, nil
 }
 
 // RegisterRoutes 复用标准 Mount 的能力校验、路由及入口登记。

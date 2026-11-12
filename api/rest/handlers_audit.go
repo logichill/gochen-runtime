@@ -55,7 +55,7 @@ func (rb *RouteBuilder[T, ID]) handleRestore(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	ctx, _, err := rb.mustAuditedContext(c)
+	ctx, err := rb.serviceContext(c)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func (rb *RouteBuilder[T, ID]) handlePurge(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	ctx, _, err := rb.mustAuditedContext(c)
+	ctx, err := rb.serviceContext(c)
 	if err != nil {
 		return err
 	}

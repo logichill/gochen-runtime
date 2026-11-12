@@ -13,7 +13,6 @@ import (
 	"gochen/contextx"
 	"gochen/db"
 	"gochen/db/orm"
-	"gochen/domain/audited"
 	"gochen/domain/crud"
 	"gochen/errors"
 
@@ -31,7 +30,7 @@ type specItem struct {
 }
 
 type auditedItem struct {
-	audited.AuditedEntity[int64]
+	crud.TrackedEntity[int64]
 	Name string `json:"name"`
 }
 
@@ -253,7 +252,7 @@ func TestSoftDeleteVisibilityAndRestore(t *testing.T) {
 	requireNoError(t, err, "NewRepo")
 	ctx := context.Background()
 
-	item := &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 1}}, Name: "first"}
+	item := &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 1}}, Name: "first"}
 	requireNoError(t, repository.Create(ctx, item, spec.All()), "create")
 
 	loaded, err := repository.Get(ctx, 1, spec.All())
@@ -287,25 +286,25 @@ func TestSoftDeleteVisibilityAndRestore(t *testing.T) {
 		t.Fatalf("after restore deleted=%v version=%d", back.IsDeleted(), back.Version)
 	}
 
-	requireCode(t, repository.Restore(ctx, &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 1, Version: 2}}}, spec.All()), errors.Conflict, "restore active row")
-	requireCode(t, repository.Restore(ctx, &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 99}}}, spec.All()), errors.NotFound, "restore missing row")
+	requireCode(t, repository.Restore(ctx, &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 1, Version: 2}}}, spec.All()), errors.Conflict, "restore active row")
+	requireCode(t, repository.Restore(ctx, &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 99}}}, spec.All()), errors.NotFound, "restore missing row")
 
-	second := &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 2}}, Name: "second"}
+	second := &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 2}}, Name: "second"}
 	requireNoError(t, repository.Create(ctx, second, spec.All()), "create second")
 	secondLoaded, err := repository.Get(ctx, 2, spec.All())
 	requireNoError(t, err, "Get second")
 	requireNoError(t, secondLoaded.SoftDeleteBy("alice", time.Now()), "SoftDeleteBy second")
 	requireNoError(t, repository.Update(ctx, secondLoaded, spec.All()), "soft delete second")
-	requireCode(t, repository.Restore(ctx, &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 2, Version: 0}}}, spec.All()), errors.Concurrency, "restore stale version")
+	requireCode(t, repository.Restore(ctx, &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 2, Version: 0}}}, spec.All()), errors.Concurrency, "restore stale version")
 
-	third := &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 3}}, Name: "third"}
+	third := &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 3}}, Name: "third"}
 	requireNoError(t, repository.Create(ctx, third, spec.All()), "create third")
 	requireNoError(t, repository.Delete(ctx, third, spec.All()), "physical delete")
 	if _, err := repository.GetWithDeleted(ctx, 3, spec.All()); !errors.Is(err, errors.NotFound) {
 		t.Fatalf("physical delete left row behind: %v", err)
 	}
 
-	fourth := &auditedItem{AuditedEntity: audited.AuditedEntity[int64]{Entity: crud.Entity[int64]{ID: 4}}, Name: "fourth"}
+	fourth := &auditedItem{TrackedEntity: crud.TrackedEntity[int64]{Entity: crud.Entity[int64]{ID: 4}}, Name: "fourth"}
 	requireNoError(t, repository.Create(ctx, fourth, spec.All()), "create fourth")
 	fourthLoaded, err := repository.Get(ctx, 4, spec.All())
 	requireNoError(t, err, "Get fourth")

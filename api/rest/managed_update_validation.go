@@ -7,8 +7,8 @@ import (
 	"gochen/errors"
 )
 
-// rejectAuditedUpdateForbiddenFields 拒绝更新审计相关字段。
-func rejectAuditedUpdateForbiddenFields(body map[string]json.RawMessage) error {
+// rejectManagedUpdateFields 拒绝更新托管时间、操作者和删除状态字段。
+func rejectManagedUpdateFields(body map[string]json.RawMessage) error {
 	if len(body) == 0 {
 		return nil
 	}

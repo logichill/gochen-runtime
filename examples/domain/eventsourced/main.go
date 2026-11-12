@@ -110,7 +110,7 @@ func main() {
 		log.Fatalf("create repository failed: %v", err)
 	}
 
-	// 2. 初始化事件溯源应用：授权、匹配、命令后校验与审计统一由 Application 编排
+	// 2. 初始化事件溯源应用：授权、匹配、命令后校验与事件元数据统一由 Application 编排
 	app, err := appes.NewApplication[*BankAccount, int64](repo, appes.Options[*BankAccount, int64]{
 		Resource:   "bank.account",
 		Authorizer: auth.Allow(),
@@ -163,12 +163,12 @@ func main() {
 	fmt.Printf("当前余额: %d (预期: 850)\n", acc.Balance)
 	fmt.Printf("当前版本: %d (预期: 3)\n", acc.GetVersion())
 
-	// 5. 审计轨迹：操作人、动作、原因与关联 ID 均来自事件元数据
-	entries, err := app.AuditTrail(ctx, accountID, 0, 100)
+	// 5. 事件历史：操作人、动作、原因与关联 ID 均来自事件元数据
+	entries, err := app.EventHistory(ctx, accountID, 0, 100)
 	if err != nil {
-		log.Fatalf("load audit trail failed: %v", err)
+		log.Fatalf("load event history failed: %v", err)
 	}
-	fmt.Printf("\n=== 审计轨迹 (%d 条事件) ===\n", len(entries))
+	fmt.Printf("\n=== 事件历史 (%d 条事件) ===\n", len(entries))
 	for _, entry := range entries {
 		fmt.Printf("  [%d] Type=%-15s Operator=%-9s Action=%-8s Reason=%s\n",
 			entry.Version, entry.EventType, entry.ActorID, entry.Action, entry.Reason)

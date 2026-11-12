@@ -11,13 +11,13 @@ import (
 
 	"gochen-runtime/http/nethttp"
 	coreapp "gochen/app"
-	appaudited "gochen/app/audited"
+	appaudit "gochen/app/audit"
 	"gochen/app/crud"
+	"gochen/app/deletion"
 	"gochen/auth"
 
 	"gochen/contextx"
 	"gochen/domain"
-	domaudited "gochen/domain/audited"
 	domcrud "gochen/domain/crud"
 	"gochen/domain/meta"
 	"gochen/errors"
@@ -27,7 +27,7 @@ import (
 )
 
 type handlerEntity struct {
-	domaudited.AuditedEntity[int64]
+	domcrud.TrackedEntity[int64]
 	Name string `json:"name"`
 }
 
@@ -100,34 +100,43 @@ func TestBulkUpdatePreservesEmbeddedManagedTimestamps(t *testing.T) {
 	require.Equal(t, createdAt, stored.UpdatedAt)
 }
 
-func auditedHandlerFixture(t *testing.T, checkers ...auth.IActionChecker) (context.Context, *appaudited.Application[*handlerEntity, int64], *testkit.RecordingRouter) {
+type auditedFixture struct {
+	*crud.Application[*handlerEntity, int64]
+	history  *appaudit.Reader[int64]
+	deletion *deletion.Application[*handlerEntity, int64]
+}
+
+func auditedHandlerFixture(t *testing.T, checkers ...auth.IActionChecker) (context.Context, *auditedFixture, *testkit.RecordingRouter) {
 	t.Helper()
 	ctx, err := contextx.WithOperator(context.Background(), "tester")
 	require.NoError(t, err)
-	repo, repositoryErr := testkit.NewAuditedMemoryRepository[*handlerEntity, int64](nil)
-	if repositoryErr != nil {
-		t.Fatal(repositoryErr)
-	}
-	app, err := appaudited.NewApplication(repo, repo, appaudited.Options[*handlerEntity, int64]{Options: crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()}})
+	repository, err := testkit.NewAuditedMemoryRepository[*handlerEntity, int64](nil)
+	require.NoError(t, err)
+	options := crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow(), Audit: repository}
+	application, err := crud.NewApplication(repository, options)
 	require.NoError(t, err)
 	for i, name := range []string{"A", "B"} {
 		e := &handlerEntity{Name: name}
 		e.ID = int64(i + 1)
-		require.NoError(t, app.Create(ctx, e))
+		require.NoError(t, application.Create(ctx, e))
 	}
 	if len(checkers) > 0 {
-		options := appaudited.Options[*handlerEntity, int64]{Options: crud.Options[*handlerEntity, int64]{Resource: "items"}}
-		descriptor, err := appaudited.Describe(options)
+		options.Authorizer = nil
+		descriptor, err := crud.Describe(options, true)
 		require.NoError(t, err)
-		authorizer, err := auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData}, auth.CompileOptions{Checker: checkers[0], Metadata: repo.ExecutionDescriptor().Metadata()})
+		options.Authorizer, err = auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData}, auth.CompileOptions{Checker: checkers[0], Metadata: repository.ExecutionDescriptor().Metadata()})
 		require.NoError(t, err)
-		options.Authorizer = authorizer
-		app, err = appaudited.NewApplication(repo, repo, options)
+		application, err = crud.NewApplication(repository, options)
 		require.NoError(t, err)
 	}
+	history, err := appaudit.NewReader[int64](repository, repository, appaudit.Options{Resource: "items", Authorizer: auth.Allow()})
+	require.NoError(t, err)
+	lifecycle, err := deletion.NewApplication(repository, deletion.Options[*handlerEntity, int64]{Options: crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow(), Audit: repository}})
+	require.NoError(t, err)
+	fixture := &auditedFixture{Application: application, history: history, deletion: lifecycle}
 	router := testkit.NewRecordingRouter()
-	require.NoError(t, Mount(router, app, WithBasePath[*handlerEntity, int64]("/items"), WithOperatorExtractor[*handlerEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true })))
-	return ctx, app, router
+	require.NoError(t, Mount(router, application, WithAudit[*handlerEntity, int64](history), WithDeletion[*handlerEntity, int64](lifecycle), WithBasePath[*handlerEntity, int64]("/items"), WithOperatorExtractor[*handlerEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true })))
+	return ctx, fixture, router
 }
 
 func callRecordedHandler(t *testing.T, router *testkit.RecordingRouter, ctx context.Context, method, path, url, body string) *httptest.ResponseRecorder {
@@ -185,7 +194,7 @@ func TestAuditedBulkUpdateRejectsStaleVersionAndRollsBack(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "newest", second.Name)
 	require.Equal(t, uint64(1), second.Version)
-	audits, err := app.AuditTrail(ctx, 1, 0, 100)
+	audits, err := app.history.AuditTrail(ctx, 1, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, audits, 1)
 }
@@ -239,7 +248,7 @@ func TestFastDenyRunsAfterAuthenticationAndUsesResponseMiddleware(t *testing.T) 
 			})
 			_, app, _ := auditedHandlerFixture(t, checker)
 			router := testkit.NewRecordingRouter()
-			require.NoError(t, Mount(router, app, WithBasePath[*handlerEntity, int64]("/items"), WithOperatorExtractor[*handlerEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }), WithAuth[*handlerEntity, int64](authn), WithFastDeny[*handlerEntity, int64](), WithCORS[*handlerEntity, int64]([]string{"https://example.com"})))
+			require.NoError(t, Mount(router, app.Application, WithBasePath[*handlerEntity, int64]("/items"), WithOperatorExtractor[*handlerEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }), WithAuth[*handlerEntity, int64](authn), WithFastDeny[*handlerEntity, int64](), WithCORS[*handlerEntity, int64]([]string{"https://example.com"})))
 			w := callRecordedHandler(t, router, context.Background(), http.MethodGet, "/items", "/items", "")
 			require.True(t, called)
 			require.Equal(t, "https://example.com", w.Header().Get("Access-Control-Allow-Origin"))

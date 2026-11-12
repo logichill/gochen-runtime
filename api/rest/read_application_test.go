@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"gochen-runtime/http/nethttp"
+	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
+	domaudited "gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"
-	domaudited "gochen/domain/audited"
 	"gochen/errors"
 	"gochen/testkit"
 	"gochen/testkit/require"
@@ -33,7 +34,7 @@ func TestMountAcceptsReadCapabilityWithoutAuditOrWrites(t *testing.T) {
 	router := testkit.NewRecordingRouter()
 	require.NoError(t, Mount(router, application, WithBasePath[*mountEntity, int64]("/users")))
 	requireRoutes(t, router.RecordedRoutes(), "GET /users", "GET /users/:id")
-	if _, ok := any(application).(appcrud.IAuditReader[int64]); ok {
+	if _, ok := any(application).(appaudit.IAuditReader[int64]); ok {
 		t.Fatal("read-only fixture unexpectedly implements audit")
 	}
 }
@@ -93,26 +94,31 @@ func TestReadApplicationAuditRoutePreservesDistinctAuthorization(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, writer.Create(ctx, &handlerEntity{Name: "recorded"}))
 
-	options := appcrud.Options[*handlerEntity, int64]{Resource: "items", Audit: repository}
+	options := appcrud.Options[*handlerEntity, int64]{Resource: "items"}
 	descriptor, err := appcrud.Describe(options, false)
+	require.NoError(t, err)
+	auditOptions := appaudit.Options{Resource: "items"}
+	auditDescriptor, err := appaudit.Describe(auditOptions)
 	require.NoError(t, err)
 	allowAudit := false
 	var permissions []string
-	options.Authorizer, err = auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData}, auth.CompileOptions{
-		Metadata: repository.ExecutionDescriptor().Metadata(),
-		Checker: auth.ActionCheckerFunc(func(_ context.Context, permission string) error {
-			permissions = append(permissions, permission)
-			if permission == "items:api:audit_read" && !allowAudit {
-				return errors.NewCode(errors.Forbidden, "audit access denied")
-			}
-			return nil
-		}),
-	})
+	dependencies := auth.CompileOptions{Metadata: repository.ExecutionDescriptor().Metadata(), Checker: auth.ActionCheckerFunc(func(_ context.Context, permission string) error {
+		permissions = append(permissions, permission)
+		if permission == "items:api:audit_read" && !allowAudit {
+			return errors.NewCode(errors.Forbidden, "audit access denied")
+		}
+		return nil
+	})}
+	options.Authorizer, err = auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData}, dependencies)
+	require.NoError(t, err)
+	auditOptions.Authorizer, err = auth.Compile(auth.Declaration{Descriptor: auditDescriptor, ResourceAccess: auth.ResourceAccessData}, dependencies)
 	require.NoError(t, err)
 	application, err := appcrud.NewReadApplication(repository, options)
 	require.NoError(t, err)
+	reader, err := appaudit.NewReader[int64](repository, repository, auditOptions)
+	require.NoError(t, err)
 	router := testkit.NewRecordingRouter()
-	require.NoError(t, Mount(router, application, WithBasePath[*handlerEntity, int64]("/items")))
+	require.NoError(t, Mount(router, application, WithBasePath[*handlerEntity, int64]("/items"), WithAudit[*handlerEntity, int64](reader)))
 	requireRoutes(t, router.RecordedRoutes(), "GET /items", "GET /items/:id", "GET /items/:id/audit")
 
 	invoke := func(path string) *httptest.ResponseRecorder {

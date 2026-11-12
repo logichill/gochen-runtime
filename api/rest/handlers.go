@@ -140,8 +140,8 @@ func (rb *RouteBuilder[T, ID]) handleUpdate(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if rb.isAudited() {
-		if err := rejectAuditedUpdateForbiddenFields(fields); err != nil {
+	if hasManagedFields[T]() {
+		if err := rejectManagedUpdateFields(fields); err != nil {
 			return err
 		}
 	}
@@ -186,7 +186,7 @@ func (rb *RouteBuilder[T, ID]) handleDelete(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.write.Delete(ctx, id); err != nil {
+	if err := rb.delete(ctx, id); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(nil)))
@@ -197,11 +197,6 @@ func (rb *RouteBuilder[T, ID]) validateBody(entity any) error {
 		return nil
 	}
 	return rb.config.Body.Validator(entity)
-}
-
-func (rb *RouteBuilder[T, ID]) isAudited() bool {
-	_, ok := any(rb.service).(LifecycleApplication[T, ID])
-	return ok
 }
 
 func decodeStrictInto[T any](c httpx.IContext, target *T) error {

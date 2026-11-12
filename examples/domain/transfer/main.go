@@ -20,13 +20,13 @@ import (
 	"gochen-runtime/db/sql/stdsql"
 
 	"gochen/app"
-	appaudited "gochen/app/audited"
 	appcrud "gochen/app/crud"
 	"gochen/app/operation"
+	"gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/domain/audited"
+	"gochen/domain/crud"
 	"gochen/domain/meta"
 	"gochen/domain/spec"
 	"gochen/errors"
@@ -39,7 +39,7 @@ import (
 //   - department 与 region 是可迁移的归属维度，region 为可空维度；
 //   - title 是普通业务字段，不参与授权。
 type Ticket struct {
-	audited.AuditedEntity[int64]
+	crud.TrackedEntity[int64]
 	Tenant     string  `json:"tenant" dim:"tenant"`
 	Department int64   `json:"department" dim:"department"`
 	Region     *string `json:"region" dim:"region"`
@@ -106,15 +106,12 @@ func (p *ticketPolicy) Authorize(ctx context.Context, request auth.Request) (aut
 }
 
 // newTicketApp 装配工单应用：迁移动作声明接收动作与可写维度。
-func newTicketApp(tickets *repopkg.Repo[*Ticket, int64], audits *repopkg.AuditStore, policy auth.IAuthorizer) *appaudited.Application[*Ticket, int64] {
-	application, err := appaudited.NewApplication[*Ticket, int64](tickets, audits, appaudited.Options[*Ticket, int64]{
-		Options: appcrud.Options[*Ticket, int64]{
-			Resource:   "ticket",
-			Authorizer: policy,
-			Actions: []auth.Action{
-				{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department", "region"}},
-				{Name: "receive", Kind: auth.KindTransfer},
-			},
+func newTicketApp(tickets *repopkg.Repo[*Ticket, int64], audits *repopkg.AuditStore, policy auth.IAuthorizer) *appcrud.Application[*Ticket, int64] {
+	application, err := appcrud.NewApplication[*Ticket, int64](tickets, appcrud.Options[*Ticket, int64]{
+		Resource: "ticket", Authorizer: policy, Audit: audits,
+		Actions: []auth.Action{
+			{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department", "region"}},
+			{Name: "receive", Kind: auth.KindTransfer},
 		},
 	})
 	must(err)
@@ -181,7 +178,7 @@ func main() {
 	log.Printf("[2] 判定轨迹 %v（两侧均在事务外完成判定）", policy.trace)
 
 	// ---------- 3. 双记录审计共享同一操作编号 ----------
-	readCtx := audited.WithAuditResourceKind(ctx, "ticket")
+	readCtx := audit.WithAuditResourceKind(ctx, "ticket")
 	entityID := fmt.Sprint(ticket.ID)
 	source, err := audits.ListAuditRecords(readCtx, entityID, 0, 10, spec.Eq(meta.ByDimension("department"), int64(1)))
 	must(err)
@@ -234,7 +231,7 @@ func withOperation(ctx context.Context, id string) context.Context {
 }
 
 // describe 摘要打印审计记录的动作、操作编号与写入时维度快照。
-func describe(records []audited.AuditRecord) []string {
+func describe(records []audit.AuditRecord) []string {
 	out := make([]string, 0, len(records))
 	for _, record := range records {
 		out = append(out, fmt.Sprintf("%s operation=%s dimensions=%v", record.Action, record.OperationID, record.Dimensions.Values()))
@@ -243,8 +240,8 @@ func describe(records []audited.AuditRecord) []string {
 }
 
 // sharedOperationID 从两侧记录中取出共享的操作编号，任一侧缺失即返回空串。
-func sharedOperationID(source, target []audited.AuditRecord) string {
-	pair := func(records []audited.AuditRecord, action string) string {
+func sharedOperationID(source, target []audit.AuditRecord) string {
+	pair := func(records []audit.AuditRecord, action string) string {
 		for _, record := range records {
 			if record.Action == action {
 				return record.OperationID

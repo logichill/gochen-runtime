@@ -8,9 +8,9 @@ import (
 
 	repopkg "gochen-runtime/db/orm/repo"
 	"gochen/app"
+	"gochen/audit"
 	"gochen/contextx"
 	"gochen/db/orm"
-	"gochen/domain/audited"
 	"gochen/domain/meta"
 	"gochen/domain/spec"
 	"gochen/errors"
@@ -45,10 +45,10 @@ func TestAuditStoreFieldNamesDoNotCollideWithBusinessBindings(t *testing.T) {
 			value := reflect.New(rowType)
 			value.Elem().FieldByName(identity).SetInt(42)
 			value.Elem().FieldByName(dimensionField).SetInt(7)
-			dimensions, err := audited.CaptureDimensions(metadata, value.Interface())
+			dimensions, err := audit.CaptureDimensions(metadata, value.Interface())
 			requireNoError(t, err, "dimensions")
-			ctx := audited.WithAuditResourceKind(context.Background(), "collision")
-			_, err = store.SaveAuditRecord(ctx, audited.AuditRecord{ResourceKind: "collision", EntityID: "42", Action: "update", Operator: "alice", OperationID: "op", Dimensions: dimensions})
+			ctx := audit.WithAuditResourceKind(context.Background(), "collision")
+			_, err = store.SaveAuditRecord(ctx, audit.AuditRecord{ResourceKind: "collision", EntityID: "42", Action: "update", Operator: "alice", OperationID: "op", Dimensions: dimensions})
 			requireNoError(t, err, "save")
 			for _, ref := range []meta.Ref{meta.ID(), meta.ByField(identity)} {
 				records, err := store.ListAuditRecords(ctx, "42", 0, 10, spec.And(spec.Eq(ref, 42), spec.Eq(meta.ByField(dimensionField), 7)))
@@ -70,13 +70,13 @@ func TestAuditIdentityConversionMatchesMemory(t *testing.T) {
 	requireNoError(t, err, "memory")
 	ctx, err := contextx.WithTenantID(context.Background(), "t1")
 	requireNoError(t, err, "tenant")
-	ctx = audited.WithAuditResourceKind(ctx, "document")
+	ctx = audit.WithAuditResourceKind(ctx, "document")
 	metadata, err := meta.Describe[*contracttest.Document]()
 	requireNoError(t, err, "metadata")
-	snapshot, err := audited.CaptureDimensions(metadata, &contracttest.Document{Tenant: "t1", Department: 7})
+	snapshot, err := audit.CaptureDimensions(metadata, &contracttest.Document{Tenant: "t1", Department: 7})
 	requireNoError(t, err, "snapshot")
-	record := audited.AuditRecord{ResourceKind: "document", EntityID: "42", Action: "update", Operator: "alice", OperationID: "op", Dimensions: snapshot}
-	for _, store := range []audited.IAuditStore{sqlStore, memory} {
+	record := audit.AuditRecord{ResourceKind: "document", EntityID: "42", Action: "update", Operator: "alice", OperationID: "op", Dimensions: snapshot}
+	for _, store := range []audit.IAuditStore{sqlStore, memory} {
 		_, err := store.SaveAuditRecord(ctx, record)
 		requireNoError(t, err, "save")
 	}
@@ -111,14 +111,14 @@ func TestAuditStoreD11FieldsAndSpecRestriction(t *testing.T) {
 	store := newDimensionAudit(t, r, engine)
 	ctx, err := contextx.WithTenantID(context.Background(), "t1")
 	requireNoError(t, err, "tenant")
-	ctx = audited.WithAuditResourceKind(ctx, "document")
+	ctx = audit.WithAuditResourceKind(ctx, "document")
 	metadata, err := meta.Describe[*contracttest.Document]()
 	requireNoError(t, err, "metadata")
 	region := "north"
-	dimensions, err := audited.CaptureDimensions(metadata, &contracttest.Document{Tenant: "t1", Department: 7, Region: &region, Classified: true})
+	dimensions, err := audit.CaptureDimensions(metadata, &contracttest.Document{Tenant: "t1", Department: 7, Region: &region, Classified: true})
 	requireNoError(t, err, "dimensions")
 	timestamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	record := audited.AuditRecord{ResourceKind: "document", EntityID: "42", Action: "submit", Operator: "alice", Initiator: "bob",
+	record := audit.AuditRecord{ResourceKind: "document", EntityID: "42", Action: "submit", Operator: "alice", Initiator: "bob",
 		Reason: "month-end close", CorrelationID: "corr-1", OperationID: "op-1", Timestamp: timestamp, Dimensions: dimensions,
 		Changes: []byte(`[{"field":"name","old":"a","new":"b"}]`), Metadata: []byte(`{"source":"test"}`)}
 	id, err := store.SaveAuditRecord(ctx, record)
@@ -157,12 +157,12 @@ func TestAuditStoreD11FieldsAndSpecRestriction(t *testing.T) {
 	_, err = store.SaveAuditRecord(ctx, bad)
 	requireCode(t, err, errors.InvalidInput, "operation required")
 	bad = record
-	bad.Dimensions = audited.DimensionSnapshot{}
+	bad.Dimensions = audit.DimensionSnapshot{}
 	_, err = store.SaveAuditRecord(ctx, bad)
 	requireCode(t, err, errors.InvalidInput, "complete snapshot required")
 	bad = record
 	bad.Operator = ""
-	err = store.SaveAuditRecords(ctx, []audited.AuditRecord{record, bad})
+	err = store.SaveAuditRecords(ctx, []audit.AuditRecord{record, bad})
 	requireCode(t, err, errors.InvalidInput, "bulk prevalidation")
 	_, err = engine.Database().Exec(ctx, `UPDATE audit_records SET dimensions = '{}' WHERE id = ?`, id)
 	requireNoError(t, err, "simulate old incomplete snapshot")
@@ -184,19 +184,19 @@ func TestAuditBatchMultipleInsertsRequiresTransactionAndRollsBack(t *testing.T) 
 	requireNoError(t, err, "tenant")
 	metadata, err := meta.Describe[*contracttest.Document]()
 	requireNoError(t, err, "metadata")
-	snapshot, err := audited.CaptureDimensions(metadata, &contracttest.Document{Tenant: "t1", Department: 7})
+	snapshot, err := audit.CaptureDimensions(metadata, &contracttest.Document{Tenant: "t1", Department: 7})
 	requireNoError(t, err, "snapshot")
-	record := audited.AuditRecord{ResourceKind: "document", EntityID: "42", Action: "update", Operator: "alice", OperationID: "op", Dimensions: snapshot}
+	record := audit.AuditRecord{ResourceKind: "document", EntityID: "42", Action: "update", Operator: "alice", OperationID: "op", Dimensions: snapshot}
 	other := record
 	other.ResourceKind = second.Resource
-	records := []audited.AuditRecord{record, other}
+	records := []audit.AuditRecord{record, other}
 	requireCode(t, store.SaveAuditRecords(ctx, records), errors.FailedPrecondition, "multi-insert transaction required")
 	execSQL(t, engine, `CREATE TRIGGER reject_second_audit BEFORE INSERT ON audit_records WHEN NEW.resource_kind = 'another_document' BEGIN SELECT RAISE(ABORT, 'second audit failed'); END`)
 	err = r.WithinTx(ctx, func(txCtx context.Context) error { return store.SaveAuditRecords(txCtx, records) })
 	if err == nil {
 		t.Fatal("expected second insert failure")
 	}
-	readCtx := audited.WithAuditResourceKind(ctx, "document")
+	readCtx := audit.WithAuditResourceKind(ctx, "document")
 	stored, err := store.ListAuditRecords(readCtx, "42", 0, 10, spec.All())
 	requireNoError(t, err, "read rollback")
 	if len(stored) != 0 {

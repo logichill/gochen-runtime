@@ -10,7 +10,6 @@ import (
 	"gochen/db"
 	"gochen/db/orm"
 	"gochen/domain"
-	"gochen/domain/audited"
 	entitymeta "gochen/domain/meta"
 	"gochen/errors"
 	"gochen/gen"
@@ -50,7 +49,7 @@ type Repo[T domain.IEntity[ID], ID comparable] struct {
 
 	softDelete      bool
 	softDeleteCols  softDeleteColumns
-	auditFields     bool
+	changeInfo      bool
 	settableVersion bool
 	versioningOff   bool
 	defaultActor    string
@@ -104,8 +103,8 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 	if _, ok := any(zero).(domain.ISoftDeletable); ok {
 		r.softDelete = true
 	}
-	if _, ok := any(zero).(audited.IAuditable); ok {
-		r.auditFields = true
+	if _, ok := any(zero).(domain.IChangeInfo); ok {
+		r.changeInfo = true
 	}
 	if _, ok := any(zero).(domain.ISettableVersion); ok {
 		r.settableVersion = true
@@ -237,9 +236,9 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 			WithContext("resource_kind", r.resourceKind).
 			WithContext("column", naming.VersionColumn)
 	}
-	if r.auditFields && r.versioningOff {
+	if r.changeInfo && r.versioningOff {
 		return nil, errors.NewCode(errors.InvalidInput,
-			"audited repository cannot disable version protection (WithoutVersioning)").
+			"change-info repository cannot disable version protection (WithoutVersioning)").
 			WithContext("resource_kind", r.resourceKind)
 	}
 	if !r.settableVersion && !r.versioningOff {
@@ -269,7 +268,7 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 				WithContext("resource_kind", r.resourceKind).
 				WithContext("column", r.softDeleteCols.DeletedAt)
 		}
-		if r.auditFields && r.softDeleteCols.DeletedBy == "" {
+		if _, recordsActor := any(zero).(interface{ GetDeletedBy() *string }); recordsActor && r.softDeleteCols.DeletedBy == "" {
 			r.softDeleteCols.DeletedBy = naming.DeletedByColumn
 		}
 		if r.softDeleteCols.DeletedBy != "" {
@@ -277,7 +276,7 @@ func NewRepo[T domain.IEntity[ID], ID comparable](ormEngine orm.IOrm, tableName 
 				r.softDeleteCols.DeletedBy = column
 			} else {
 				return nil, errors.NewCode(errors.InvalidInput,
-					"repository declares an audited deleted_by column that does not map to any entity field").
+					"repository declares a deletion actor column that does not map to any entity field").
 					WithContext("resource_kind", r.resourceKind).
 					WithContext("column", r.softDeleteCols.DeletedBy)
 			}

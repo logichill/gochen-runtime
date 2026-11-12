@@ -23,13 +23,14 @@ import (
 	"gochen-runtime/host/authz"
 
 	"gochen/app"
-	appaudited "gochen/app/audited"
+	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
 	"gochen/app/operation"
+	"gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"
 	"gochen/db"
-	"gochen/domain/audited"
+	"gochen/domain/crud"
 	"gochen/domain/meta"
 	"gochen/domain/spec"
 	"gochen/errors"
@@ -38,7 +39,7 @@ import (
 
 // Contract 是带归属维度的合同：tenant 为隔离空间，department 为授权维度。
 type Contract struct {
-	audited.AuditedEntity[int64]
+	crud.TrackedEntity[int64]
 	Tenant     string `json:"tenant" dim:"tenant"`
 	Department int64  `json:"department" dim:"department"`
 	Title      string `json:"title"`
@@ -121,23 +122,32 @@ func main() {
 	audits, err := repopkg.NewAuditStore(engine, "audit_records", auditIDs, auditConfig)
 	must(err)
 
-	options := appaudited.Options[*Contract, int64]{
-		Options: appcrud.Options[*Contract, int64]{
-			Resource: "contract",
-			Actions: []auth.Action{
-				{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department"}},
-				{Name: "receive", Kind: auth.KindTransfer},
-			},
+	options := appcrud.Options[*Contract, int64]{
+		Resource: "contract", Audit: audits,
+		Actions: []auth.Action{
+			{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department"}},
+			{Name: "receive", Kind: auth.KindTransfer},
 		},
 	}
-	descriptor, err := appaudited.Describe(options)
+	descriptor, err := appcrud.Describe(options, true)
 	must(err)
 	options.Authorizer, err = auth.Compile(auth.Declaration{
 		Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData,
 		Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: departmentScope{}}}},
 	}, auth.CompileOptions{Checker: authz.NewActionChecker(), Metadata: contracts.ExecutionDescriptor().Metadata()})
 	must(err)
-	contractApp, err := appaudited.NewApplication[*Contract, int64](contracts, audits, options)
+	contractApp, err := appcrud.NewApplication[*Contract, int64](contracts, options)
+	must(err)
+
+	historyOptions := appaudit.Options{Resource: "contract"}
+	historyDescriptor, err := appaudit.Describe(historyOptions)
+	must(err)
+	historyOptions.Authorizer, err = auth.Compile(auth.Declaration{
+		Descriptor: historyDescriptor, ResourceAccess: auth.ResourceAccessData,
+		Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: departmentScope{}}}},
+	}, auth.CompileOptions{Checker: authz.NewActionChecker(), Metadata: contracts.ExecutionDescriptor().Metadata()})
+	must(err)
+	historyReader, err := appaudit.NewReader[int64](audits, contracts, historyOptions)
 	must(err)
 
 	// 部门 1 的操作员。
@@ -168,7 +178,7 @@ func main() {
 	log.Printf("[2] 借普通更新改写归属 -> forbidden=%v (%v)", errors.Is(err, errors.Forbidden), err)
 
 	// ---------- 3. 审计读取：按写入时维度与隔离空间过滤 ----------
-	readCtx := audited.WithAuditResourceKind(dept1, "contract")
+	readCtx := audit.WithAuditResourceKind(dept1, "contract")
 	entityID := fmt.Sprint(contract.ID)
 	snapshot, err := audits.ListAuditRecords(readCtx, entityID, 0, 10, spec.All())
 	must(err)
@@ -188,18 +198,18 @@ func main() {
 	log.Printf("[4] 迁移到部门 2 version=%d", moved.Version)
 
 	dept2 := mustIdentity("tenant-a", "carol", 2)
-	before, err := contractApp.AuditTrail(dept2, contract.ID, 0, 10)
+	before, err := historyReader.AuditTrail(dept2, contract.ID, 0, 10)
 	must(err)
 	log.Printf("[4] 部门 2 的调用方看到的轨迹: %s", actions(before))
 
-	history, err := contractApp.AuditTrail(dept1, contract.ID, 0, 10)
+	history, err := historyReader.AuditTrail(dept1, contract.ID, 0, 10)
 	must(err)
 	log.Printf("[4] 部门 1 的调用方看到的轨迹: %s", actions(history))
 	log.Printf("[4] 两侧合计 %d 条，动作序列彼此互补：历史按写入时维度保留", len(before)+len(history))
 }
 
 // describe 摘要打印每条审计记录的写入时维度快照。
-func describe(records []audited.AuditRecord) []string {
+func describe(records []audit.AuditRecord) []string {
 	out := make([]string, 0, len(records))
 	for _, record := range records {
 		out = append(out, fmt.Sprintf("%s@%v", record.Action, record.Dimensions.Values()))
@@ -208,7 +218,7 @@ func describe(records []audited.AuditRecord) []string {
 }
 
 // actions 只列出轨迹中的动作名。
-func actions(records []audited.AuditRecord) []string {
+func actions(records []audit.AuditRecord) []string {
 	out := make([]string, 0, len(records))
 	for _, record := range records {
 		out = append(out, record.Action)

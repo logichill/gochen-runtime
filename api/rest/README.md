@@ -16,6 +16,14 @@
 | `rest.Describe(app, opts...)` | 只推导 Descriptor 与路由表，不注册任何路由 |
 | `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error`，供显式 `module.RouteRegistrarFunc` 使用 |
 
+审计和删除通过 `WithAudit(history)` / `WithDeletion(trash)` 显式选择，不从资源对象的附加方法推断。三个对象分别提供自身的授权描述；`Resource` 将它们一起交给 Module。例子：
+
+```go
+host.Module("notes").Binding(rest.Resource(resources,
+    rest.WithAudit[*Note, int64](history),
+    rest.WithDeletion[*Note, int64](trash))).Build()
+```
+
 `Mount` 只做这几件事：校验 Descriptor、推导路由、包装中间件与错误映射、可选地登记启动清单。handler 本身只解码请求并调用 Application。
 
 ```go
@@ -45,16 +53,16 @@ Descriptor 中声明了对应动作时才注册：
 | 动作 | 方法 | 路径 | 说明 |
 | --- | --- | --- | --- |
 | `list` | GET | `{BasePath}` | 分页/过滤/排序/字段选择 |
-| `list_deleted` | GET | `{BasePath}/deleted` | 需要 `LifecycleApplication` |
+| `list_deleted` | GET | `{BasePath}/deleted` | 显式 WithDeletion 的独立 DeletionApplication |
 | `create` | POST | `{BasePath}` | 创建单个实体 |
 | `create` | POST | `{BasePath}/bulk` | 批量创建（`ExecuteNewBulk`） |
 | `update` | PUT | `{BasePath}/:id` | 更新单个实体 |
 | `update` | PUT | `{BasePath}/bulk` | 批量更新（`ExecuteBulk`） |
 | `delete` | DELETE | `{BasePath}/:id` | 删除单个实体 |
 | `delete` | DELETE | `{BasePath}/bulk` | 批量删除（`DeleteBulk`） |
-| `audit_read` | GET | `{BasePath}/:id/audit` | 需要 `crud.IAuditReader` |
-| `restore` | POST | `{BasePath}/:id/restore` | 需要 `LifecycleApplication` |
-| `purge` | DELETE | `{BasePath}/:id/purge` | 需要 `LifecycleApplication` |
+| `audit_read` | GET | `{BasePath}/:id/audit` | 显式 WithAudit 的独立 app/audit.Reader |
+| `restore` | POST | `{BasePath}/:id/restore` | 显式 WithDeletion 的独立 DeletionApplication |
+| `purge` | DELETE | `{BasePath}/:id/purge` | 显式 WithDeletion 的独立 DeletionApplication |
 | `read` | GET | `{BasePath}/:id` | 读取单个实体 |
 
 `BasePath` 为空时直接注册到路由组根路径。批量路由共用单个动作的权限码；一批请求只做一次授权、一个事务，提交前任一元素失败整批回滚。
@@ -71,7 +79,7 @@ Descriptor 中声明了对应动作时才注册：
 
 批量更新保留未提交的 `dim` 字段。显式提交的维度由 Core 有效资源契约判定，允许可修改维度；受保护维度变化使整批回滚。
 
-audited 应用的写入口要求能提取 operator；`Mount` 在装配期检查 `WithOperatorExtractor`，运行期缺少 operator 的请求会被拒绝。审计/软删字段由框架管理。过滤分页通过 `QueryCount` 使用相同条件统计总数。
+审计写入要求可信 operator，由应用在运行期校验；它可来自认证上下文或 WithOperatorExtractor。独立修改归因字段沿用仓储的上下文 / DefaultActor 填充规则，不等同于用户认证。纯删除状态不要求 operator 或 extractor。审计/软删字段由框架管理。过滤分页通过 `QueryCount` 使用相同条件统计总数。
 
 ### 2.1 路由表自省
 
@@ -171,8 +179,8 @@ REST 与命令入口共用 `operation.Runner.ExecuteTransfer` 的身份绑定和
 - Application 与路由组非 nil；
 - Descriptor 合法（资源名非空、动作名非空且不重复）；
 - `:id` 路由有可用的 ID codec；
-- Descriptor 声明了 `restore/purge/list_deleted` 时，Application 实现 `LifecycleApplication`；
-- audited 应用配置了 `OperatorExtractor`；
+- 删除生命周期通过 WithDeletion 显式提供，不能依靠最大应用接口推断；
+- WithAudit / WithDeletion 的资源一致、动作不重复且能力不为空；
 - CORS 配置合法。
 
 ## 9. 示例
@@ -199,7 +207,7 @@ Host 启动 → 模块路由注册 → rest.Mount → 校验并挂载路由
 | 方向 | 依赖 |
 | --- | --- |
 | 上游调用方 | `host.Module(...).RouteRegistrar(...)`、`quick.RESTRegistrar(...)` |
-| Core 契约 | `app/crud`、`app/audited`、`auth`、`app/query`、`codec/idcodec`、`contextx`、`httpx` |
+| Core 契约 | `app/crud`、`app/audit`、`app/deletion`、`auth`、`app/query`、`codec/idcodec`、`contextx`、`httpx` |
 | Runtime 物理层 | `gochen-runtime/http`（`RegisterRoute` 与路由方法分派）、`http/middleware`、`http/request` |
 | 内部工具 | `gochen-runtime/internal/httpheader` |
 

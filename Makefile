@@ -48,6 +48,7 @@ examples-smoke:
 		./examples/domain/audited_dimensions \
 		./examples/domain/crud \
 		./examples/domain/eventsourced \
+		./examples/domain/explicit-eventsourced \
 		./examples/domain/transfer \
 		./examples/domain/query/inferred \
 		./examples/domain/query/filter \

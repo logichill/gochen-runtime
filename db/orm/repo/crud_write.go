@@ -13,7 +13,6 @@ import (
 	"gochen/db/dialect"
 	"gochen/db/orm"
 	"gochen/domain"
-	"gochen/domain/audited"
 	"gochen/errors"
 )
 
@@ -54,7 +53,14 @@ func (r *Repo[T, ID]) prepareCreate(ctx context.Context, entity T) error {
 		return err
 	}
 
-	if aud, ok := any(entity).(audited.IAuditable); ok {
+	// 删除状态不依赖修改归因；普通创建不能预置回收站状态。
+	if deleter, ok := any(entity).(interface {
+		SetDeletedInfo(at *time.Time, by *string)
+	}); ok {
+		deleter.SetDeletedInfo(nil, nil)
+	}
+
+	if aud, ok := any(entity).(domain.IChangeInfo); ok {
 		by := r.actorFromContext(ctx)
 		now := time.Now()
 		aud.SetCreatedInfo(by, now)
@@ -62,11 +68,6 @@ func (r *Repo[T, ID]) prepareCreate(ctx context.Context, entity T) error {
 		// 审计实体创建态统一归零，与内存实现保持一致。
 		if setter, ok := any(entity).(domain.ISettableVersion); ok {
 			setter.SetVersion(0)
-		}
-		if deleter, ok := any(entity).(interface {
-			SetDeletedInfo(at *time.Time, by *string)
-		}); ok {
-			deleter.SetDeletedInfo(nil, nil)
 		}
 		return nil
 	}
@@ -87,7 +88,7 @@ func (r *Repo[T, ID]) prepareUpdate(ctx context.Context, entity T) error {
 	if err := r.stampIsolation(ctx, entity); err != nil {
 		return err
 	}
-	if aud, ok := any(entity).(audited.IAuditable); ok {
+	if aud, ok := any(entity).(domain.IChangeInfo); ok {
 		aud.SetUpdatedInfo(r.actorFromContext(ctx), time.Now())
 		return nil
 	}
