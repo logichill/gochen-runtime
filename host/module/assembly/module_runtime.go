@@ -3,9 +3,11 @@ package assembly
 import (
 	"context"
 
+	"gochen-runtime/host/capability"
 	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
 	"gochen-runtime/host/module/runtimecap"
+	runtimehttp "gochen-runtime/http"
 	"gochen/errors"
 )
 
@@ -23,6 +25,16 @@ func (m *explicitModule) RegisterRoutes(ctx context.Context) error {
 	if group == nil {
 		// HTTP 未启用，跳过路由注册
 		return nil
+	}
+	registry, _, err := runtimehttp.EntryRegistryFrom(group)
+	if err != nil {
+		return err
+	}
+	if registry != nil {
+		group, err = runtimehttp.WithEntryRegistry(group, registry, m.desc.ID)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 1. 应用模块级中间件。
@@ -65,6 +77,28 @@ func (m *explicitModule) resolveFromReg(reg Registration) (interface{}, error) {
 	}
 	return m.container.Resolve(serviceType)
 }
+
+// RuntimeComponents 返回启动前解析并固定的真实组件实例。
+func (m *explicitModule) RuntimeComponents() ([]capability.IRuntimeComponent, error) {
+	if m.runtime == nil {
+		return nil, errors.NewCode(errors.FailedPrecondition, "module runtime requires initialization")
+	}
+	return m.runtime.RuntimeComponents()
+}
+
+// RuntimeEventHandlers 取得与实际订阅相同的处理器实例及冻结消息类型。
+func (m *explicitModule) RuntimeEventHandlers() ([]capability.EventHandlerRegistration, error) {
+	if m.runtime == nil {
+		return nil, errors.NewCode(errors.FailedPrecondition, "module runtime requires initialization")
+	}
+	return m.runtime.RuntimeEventHandlers()
+}
+
+// SealEventHandlers 封存实际订阅集合。
+func (m *explicitModule) SealEventHandlers() error { return m.runtime.SealEventHandlers() }
+
+// ActivateEventHandlers 在启动门禁通过后启用实际订阅集合。
+func (m *explicitModule) ActivateEventHandlers() error { return m.runtime.ActivateEventHandlers() }
 
 // Start 启动模块，订阅事件处理器并启动投影。
 func (m *explicitModule) Start(ctx context.Context) (module.ModuleStopFunc, error) {

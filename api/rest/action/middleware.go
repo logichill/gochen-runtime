@@ -12,6 +12,8 @@
 // 这也是取代原 gochen/auth/http 的原因：后者曾是唯一授权点。
 package action
 
+import auth "gochen/auth"
+
 import (
 	authaction "gochen/auth/action"
 
@@ -22,7 +24,7 @@ import (
 // FastDeny 构造路由级 Action 快速拦截中间件。
 //
 // checker 为 nil 或 action 非法时立即返回构造错误，避免把配置问题推迟到首个请求。
-func FastDeny(checker authaction.IActionChecker, action string) (httpx.Middleware, error) {
+func FastDeny(checker auth.IActionChecker, action string) (httpx.Middleware, error) {
 	if checker == nil {
 		return nil, errors.NewCode(errors.InvalidInput, "action checker is nil")
 	}

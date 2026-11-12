@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"gochen/db/orm"
+	"gochen/domain/spec"
 	"gochen/errors"
 )
 
@@ -161,6 +162,25 @@ func (r *Repo[T, ID]) ScopedQuery(ctx context.Context) (*ScopedQuery, error) {
 		query.Where(r.softDeleteCols.DeletedAt + " IS NULL")
 	}
 	return query, nil
+}
+
+// ScopedQueryWithSpec 保留仓储隔离和软删条件，并在 JOIN、预加载、分页和统计前落实授权条件。
+// 框架生成的列引用限定为本仓储主表，支持关联表具有相同列名的查询。
+func (r *Repo[T, ID]) ScopedQueryWithSpec(ctx context.Context, condition spec.Spec) (*ScopedQuery, error) {
+	qualified := *r
+	resolver := *r.resolver
+	resolver.qualifier = r.table
+	qualified.resolver = &resolver
+	builder, err := qualified.readQuery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	builder = qualified.withActive(builder)
+	builder, err = qualified.withReadSpec(builder, condition)
+	if err != nil {
+		return nil, err
+	}
+	return newScopedQuery(builder), nil
 }
 
 // GetWith 在统一 DataScope/soft-delete 边界上追加额外的查询形状后按主键读取。

@@ -3,7 +3,9 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"reflect"
 
+	"gochen/contextx"
 	"gochen/db/orm"
 	"gochen/db/tx"
 	"gochen/errors"
@@ -38,9 +40,43 @@ func (r *SQLCheckpointTxRunner) WithinTx(ctx context.Context, fn func(txCtx cont
 		return errors.NewCode(errors.InvalidInput, "fn is nil")
 	}
 
-	session, err := r.ormEngine.BeginTx(ctx, (*sql.TxOptions)(nil))
-	if err != nil {
-		return errors.Wrap(err, errors.Database, "begin projection transaction failed")
+	session, _, joined := orm.TxSessionFromContext(ctx)
+	if !joined {
+		session, joined = r.ormEngine.(orm.IOrmSession)
 	}
-	return tx.RunTxLifecycle(ctx, tx.SessionRunner{Session: session}, fn)
+	if joined {
+		sessionID, sessionOK := orm.DatasourceIDOf(session)
+		engineID, engineOK := orm.DatasourceIDOf(r.ormEngine)
+		sessionValue, engineValue := reflect.ValueOf(session), reflect.ValueOf(r.ormEngine)
+		same := sessionValue.Type() == engineValue.Type() && sessionValue.Kind() == reflect.Pointer &&
+			sessionValue.Pointer() == engineValue.Pointer()
+		if !same && (!sessionOK || !engineOK || sessionID != engineID) {
+			return errors.NewCode(errors.FailedPrecondition, "projection transaction session datasource does not match the orm engine")
+		}
+		if _, ok := contextx.TxLifecycleFromContext(ctx); !ok {
+			if _, ok := orm.AfterCommitDispatcherFromSession(session); !ok {
+				return errors.NewCode(errors.Unsupported, "projection transaction session cannot propagate post-commit callbacks")
+			}
+		}
+	} else {
+		var err error
+		session, err = r.ormEngine.BeginTx(ctx, (*sql.TxOptions)(nil))
+		if err != nil {
+			return errors.Wrap(err, errors.Database, "begin projection transaction failed")
+		}
+	}
+	return tx.RunTxLifecycle(ctx, checkpointSessionRunner{SessionRunner: tx.SessionRunner{Session: session}, owned: !joined}, fn)
+}
+
+type checkpointSessionRunner struct {
+	tx.SessionRunner
+	owned bool
+}
+
+func (r checkpointSessionRunner) BeginTx(ctx context.Context) (tx.TxScope, error) {
+	txCtx, err := orm.WithTxSession(ctx, r.Session, r.owned)
+	if err != nil {
+		return tx.TxScope{}, err
+	}
+	return tx.NewTxScope(txCtx, r.owned)
 }

@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"gochen-runtime/examples/e2e/order_fulfillment/internal/access"
 	"gochen-runtime/examples/e2e/order_fulfillment/internal/domain"
 	"gochen-runtime/examples/e2e/order_fulfillment/internal/saga"
 )
 
 func TestE2EOrderFulfillment_HappyPath(t *testing.T) {
-	ctx := context.Background()
+	ctx := operatorContext(t)
 	sys, err := BootstrapSystem(ctx)
 	if err != nil {
 		t.Fatalf("BootstrapSystem failed: %v", err)
@@ -91,7 +92,7 @@ func TestE2EOrderFulfillment_HappyPath(t *testing.T) {
 }
 
 func TestE2EOrderFulfillment_CompensationOnPaymentFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := operatorContext(t)
 	sys, err := BootstrapSystem(ctx)
 	if err != nil {
 		t.Fatalf("BootstrapSystem failed: %v", err)
@@ -161,4 +162,15 @@ func TestE2EOrderFulfillment_CompensationOnPaymentFailure(t *testing.T) {
 	if !foundCancelled {
 		t.Fatalf("expected OrderCancelled event in EventBus, got %v", events)
 	}
+}
+
+// operatorContext 建立与 HTTP 入口一致的身份上下文：租户、主体、当前范围与权限。
+func operatorContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, err := access.WithIdentity(context.Background(), "tenant-apple", "alice", "1001",
+		"order:api:create,order:api:read,order:api:list,order:api:update")
+	if err != nil {
+		t.Fatalf("build operator context: %v", err)
+	}
+	return ctx
 }

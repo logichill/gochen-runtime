@@ -14,7 +14,7 @@ import (
 
 	"gochen-runtime/auth/sqlstore"
 	"gochen-runtime/db/sql/stdsql"
-	"gochen/auth/governance"
+	auth "gochen/auth"
 	"gochen/db"
 	"gochen/errors"
 )
@@ -24,13 +24,13 @@ func TestPolicySnapshotStore_SaveLoadListCleanup(t *testing.T) {
 	store, err := sqlstore.NewPolicySnapshotStore(database, "authz_policy_snapshots")
 	require.NoError(t, err)
 
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v1",
 		Timestamp: time.Now().Add(-2 * time.Hour),
 		Metadata:  map[string]any{"source": "seed"},
 	}))
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "tenant:1",
 		Version:   "v2",
 		Timestamp: time.Now(),
@@ -91,7 +91,7 @@ func TestPolicySnapshotStore_SavePolicySnapshot_DoesNotRequireRowsAffected(t *te
 	store, err := sqlstore.NewPolicySnapshotStore(rowsAffectedErrPolicyDB{IDatabase: database}, "authz_policy_snapshots")
 	require.NoError(t, err)
 
-	err = store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	err = store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v1",
 		Timestamp: time.Now(),
@@ -105,12 +105,12 @@ func TestPolicySnapshotStore_SavePolicySnapshot_RowsAffectedUnavailableUpdatesEx
 	require.NoError(t, err)
 
 	now := time.Now()
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v1",
 		Timestamp: now,
 	}))
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v2",
 		Timestamp: now.Add(time.Minute),
@@ -153,12 +153,12 @@ func TestPolicySnapshotStore_SavePolicySnapshot_UnknownDialectUsesCompatUpsert(t
 	require.NoError(t, err)
 
 	now := time.Now()
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v1",
 		Timestamp: now,
 	}))
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v2",
 		Timestamp: now.Add(time.Minute),
@@ -179,7 +179,7 @@ func TestPolicySnapshotStore_SavePolicySnapshot_CompatUniqueViolationRetriesUpda
 	require.NoError(t, err)
 
 	now := time.Now()
-	require.NoError(t, store.SavePolicySnapshot(context.Background(), governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(context.Background(), auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "v2",
 		Timestamp: now,
@@ -246,17 +246,17 @@ func TestPolicySnapshotStore_ListPolicySnapshots_WildcardEscaping(t *testing.T) 
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	require.NoError(t, store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(ctx, auth.PolicySnapshot{
 		Key:       "tenant_1:main",
 		Version:   "v1",
 		Timestamp: time.Now(),
 	}))
-	require.NoError(t, store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(ctx, auth.PolicySnapshot{
 		Key:       "tenantA1:main",
 		Version:   "v1",
 		Timestamp: time.Now(),
 	}))
-	require.NoError(t, store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+	require.NoError(t, store.SavePolicySnapshot(ctx, auth.PolicySnapshot{
 		Key:       "tenant%2:main",
 		Version:   "v1",
 		Timestamp: time.Now(),

@@ -10,7 +10,7 @@ import (
 
 	"gochen-runtime/auth/sqlstore"
 	"gochen-runtime/db/sql/stdsql"
-	"gochen/auth/governance"
+	auth "gochen/auth"
 	"gochen/db"
 	"gochen/errors"
 	"gochen/gen"
@@ -29,31 +29,31 @@ func TestAuthzLogStore_SaveAndList(t *testing.T) {
 	store, err := sqlstore.NewAuthzLogStore(database, "authz_logs", gen.NewUUIDGenerator())
 	require.NoError(t, err)
 
-	entry := governance.AuthzLogEntry{
+	entry := auth.AuthzLogEntry{
 		ID:              "log-1",
-		Type:            governance.AuthzLogEntryTypeDecision,
+		Type:            auth.AuthzLogEntryTypeDecision,
 		DecisionID:      "decision-1",
 		PrincipalID:     "7",
 		Action:          "doc:read",
 		Effect:          "allow",
 		SnapshotVersion: "snap-v1",
 		SnapshotKey:     "default",
-		Consistency:     governance.ConsistencyModeStrong,
+		Consistency:     auth.ConsistencyModeStrong,
 		LatencyMs:       12,
-		Resources: []governance.AuthzLoggedResource{{
+		Resources: []auth.AuthzLoggedResource{{
 			Kind:     " doc ",
 			ID:       " doc-1 ",
 			TenantID: " tenant-a ",
 			OwnerID:  " owner-a ",
 		}},
 		MatchedRules: []string{"rule-1"},
-		Execution:    governance.ExecutionMetadata{RequestID: "req-1"},
+		Execution:    auth.ExecutionMetadata{RequestID: "req-1"},
 		Metadata:     map[string]any{"cache_hit_reason": "fresh"},
 		Timestamp:    time.Now(),
 	}
 	require.NoError(t, store.SaveAuthzLogEntry(context.Background(), entry))
 
-	entries, err := store.ListAuthzLogEntries(context.Background(), governance.AuthzLogEntryTypeDecision, 10)
+	entries, err := store.ListAuthzLogEntries(context.Background(), auth.AuthzLogEntryTypeDecision, 10)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.Equal(t, "decision-1", entries[0].DecisionID)
@@ -71,17 +71,17 @@ func TestAuthzLogStore_CustomSanitizerCanKeepTenantAndOwnerID(t *testing.T) {
 	database := setupAuthzLogSQLDB(t)
 	store, err := sqlstore.NewAuthzLogStore(database, "authz_logs", gen.NewUUIDGenerator())
 	require.NoError(t, err)
-	ctx, err := governance.WithResourceLogSanitizer(context.Background(), governance.ResourceLogSanitizerFunc(func(ctx context.Context, resource governance.AuthzLoggedResource) governance.AuthzLoggedResource {
+	ctx, err := auth.WithResourceLogSanitizer(context.Background(), auth.ResourceLogSanitizerFunc(func(ctx context.Context, resource auth.AuthzLoggedResource) auth.AuthzLoggedResource {
 		resource.TenantID = "tenant-a"
 		resource.OwnerID = "owner-a"
 		return resource
 	}))
 	require.NoError(t, err)
 
-	require.NoError(t, store.SaveAuthzLogEntry(ctx, governance.AuthzLogEntry{
+	require.NoError(t, store.SaveAuthzLogEntry(ctx, auth.AuthzLogEntry{
 		ID:   "log-sanitized",
-		Type: governance.AuthzLogEntryTypeDecision,
-		Resources: []governance.AuthzLoggedResource{{
+		Type: auth.AuthzLogEntryTypeDecision,
+		Resources: []auth.AuthzLoggedResource{{
 			Kind:     "doc",
 			ID:       "doc-1",
 			TenantID: "raw-tenant",
@@ -90,7 +90,7 @@ func TestAuthzLogStore_CustomSanitizerCanKeepTenantAndOwnerID(t *testing.T) {
 		Timestamp: time.Now(),
 	}))
 
-	entries, err := store.ListAuthzLogEntries(context.Background(), governance.AuthzLogEntryTypeDecision, 10)
+	entries, err := store.ListAuthzLogEntries(context.Background(), auth.AuthzLogEntryTypeDecision, 10)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.Equal(t, "tenant-a", entries[0].Resources[0].TenantID)
@@ -110,18 +110,18 @@ func TestAuthzLogStore_SaveGeneratesIDForEmptyID(t *testing.T) {
 	store, err := sqlstore.NewAuthzLogStore(database, "authz_logs", gen.NewUUIDGenerator())
 	require.NoError(t, err)
 
-	require.NoError(t, store.SaveAuthzLogEntry(context.Background(), governance.AuthzLogEntry{
-		Type:       governance.AuthzLogEntryTypeDecision,
+	require.NoError(t, store.SaveAuthzLogEntry(context.Background(), auth.AuthzLogEntry{
+		Type:       auth.AuthzLogEntryTypeDecision,
 		DecisionID: "decision-1",
 		Timestamp:  time.Now(),
 	}))
-	require.NoError(t, store.SaveAuthzLogEntry(context.Background(), governance.AuthzLogEntry{
-		Type:       governance.AuthzLogEntryTypeDecision,
+	require.NoError(t, store.SaveAuthzLogEntry(context.Background(), auth.AuthzLogEntry{
+		Type:       auth.AuthzLogEntryTypeDecision,
 		DecisionID: "decision-2",
 		Timestamp:  time.Now(),
 	}))
 
-	entries, err := store.ListAuthzLogEntries(context.Background(), governance.AuthzLogEntryTypeDecision, 10)
+	entries, err := store.ListAuthzLogEntries(context.Background(), auth.AuthzLogEntryTypeDecision, 10)
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
 	require.NotEmpty(t, entries[0].ID)
@@ -150,7 +150,7 @@ func TestAuthzLogStore_IDGeneratorBoundaries(t *testing.T) {
 			return "", errors.NewCode(errors.Database, "id backend unavailable")
 		}})
 		require.NoError(t, err)
-		err = store.SaveAuthzLogEntry(context.Background(), governance.AuthzLogEntry{})
+		err = store.SaveAuthzLogEntry(context.Background(), auth.AuthzLogEntry{})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, errors.Dependency))
 	})
@@ -160,7 +160,7 @@ func TestAuthzLogStore_IDGeneratorBoundaries(t *testing.T) {
 			return "   ", nil
 		}})
 		require.NoError(t, err)
-		err = store.SaveAuthzLogEntry(context.Background(), governance.AuthzLogEntry{})
+		err = store.SaveAuthzLogEntry(context.Background(), auth.AuthzLogEntry{})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, errors.Internal))
 	})
@@ -171,9 +171,9 @@ func TestAuthzLogStore_SaveReturnsMarshalError(t *testing.T) {
 	store, err := sqlstore.NewAuthzLogStore(database, "authz_logs", gen.NewUUIDGenerator())
 	require.NoError(t, err)
 
-	err = store.SaveAuthzLogEntry(context.Background(), governance.AuthzLogEntry{
+	err = store.SaveAuthzLogEntry(context.Background(), auth.AuthzLogEntry{
 		ID:       "bad-json",
-		Type:     governance.AuthzLogEntryTypeDecision,
+		Type:     auth.AuthzLogEntryTypeDecision,
 		Metadata: map[string]any{"bad": func() {}},
 	})
 	require.Error(t, err)

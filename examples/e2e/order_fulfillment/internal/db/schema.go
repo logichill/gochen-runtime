@@ -12,6 +12,8 @@ func EnsureSchema(ctx context.Context, database db.IDatabase) error {
 	-- 1. 订单主表
 	CREATE TABLE IF NOT EXISTS orders (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		tenant_id TEXT NOT NULL,
+		department_id INTEGER NOT NULL,
 		customer_id INTEGER NOT NULL,
 		item_id TEXT NOT NULL,
 		quantity INTEGER NOT NULL,

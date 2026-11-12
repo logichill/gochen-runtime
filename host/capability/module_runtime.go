@@ -13,8 +13,11 @@ import (
 type ResolveFunc func() (any, error)
 
 type binding struct {
-	index   int
-	resolve ResolveFunc
+	index     int
+	resolve   ResolveFunc
+	component IRuntimeComponent
+	handler   messaging.IMessageHandler
+	types     []string
 }
 
 type projectionRegistration struct {
@@ -34,6 +37,10 @@ type ModuleRuntime struct {
 	unsubscribes      []messaging.UnsubscribeFunc
 	projectionRecords []projectionRegistration
 	runtimeStops      []IRuntimeStopper
+	eventsManaged     bool
+	eventsSealed      bool
+	eventsActivated   bool
+	eventsCount       int
 }
 
 // NewModuleRuntime 创建模块运行期生命周期对象。
@@ -68,6 +75,36 @@ func (m *ModuleRuntime) AddRuntimeComponent(index int, resolve ResolveFunc) {
 	m.runtimeComponents = append(m.runtimeComponents, binding{index: index, resolve: resolve})
 }
 
+func (m *ModuleRuntime) runtimeComponent(index int) (IRuntimeComponent, error) {
+	item := &m.runtimeComponents[index]
+	if item.component != nil {
+		return item.component, nil
+	}
+	inst, err := item.resolve()
+	if err != nil {
+		return nil, runtimeutil.WrapModuleErr(m.moduleID, err, "resolve runtime component", errors.Internal).WithContext("index", item.index)
+	}
+	component, ok := inst.(IRuntimeComponent)
+	if !ok || runtimeutil.IsTypedNil(component) {
+		return nil, errors.NewCode(errors.Internal, "runtime component does not implement IRuntimeComponent").WithContext("module", m.moduleID).WithContext("index", item.index)
+	}
+	item.component = component
+	return component, nil
+}
+
+// RuntimeComponents 在启动前解析真实组件，并固定后续 Start 使用的实例。
+func (m *ModuleRuntime) RuntimeComponents() ([]IRuntimeComponent, error) {
+	var components []IRuntimeComponent
+	for i := range m.runtimeComponents {
+		component, err := m.runtimeComponent(i)
+		if err != nil {
+			return nil, err
+		}
+		components = append(components, component)
+	}
+	return components, nil
+}
+
 // Start 启动模块的事件/投影/runtime component 生命周期。
 // 启动失败时保留已取得的资源并直接返回；调用方必须随后调用 Stop 完成回滚。
 func (m *ModuleRuntime) Start(ctx context.Context, onStart func(context.Context) error) error {
@@ -76,6 +113,9 @@ func (m *ModuleRuntime) Start(ctx context.Context, onStart func(context.Context)
 	}
 	if len(m.unsubscribes) > 0 || len(m.projectionRecords) > 0 || len(m.runtimeStops) > 0 {
 		return errors.NewCode(errors.Conflict, "module has resources pending cleanup").WithContext("module", m.moduleID)
+	}
+	if m.eventsManaged && (!m.eventsActivated || len(m.eventHandlers) != m.eventsCount) {
+		return errors.NewCode(errors.FailedPrecondition, "event subscriptions require validated and activated entries").WithContext("module", m.moduleID)
 	}
 
 	var subscriber IEventSubscriber
@@ -155,24 +195,11 @@ func joinModuleStopErrors(moduleID string, errs []error) error {
 }
 
 func (m *ModuleRuntime) startEventHandlers(ctx context.Context, subscriber IEventSubscriber, subscriberSource SubscriberSource) error {
-	for _, item := range m.eventHandlers {
-		inst, err := item.resolve()
+	for i := range m.eventHandlers {
+		item := &m.eventHandlers[i]
+		handler, messageTypes, err := m.eventHandler(i)
 		if err != nil {
-			return runtimeutil.WrapModuleErr(m.moduleID, err, "resolve event handler", errors.Internal).WithContext("index", item.index)
-		}
-
-		handler, ok := inst.(messaging.IMessageHandler)
-		if !ok {
-			return errors.NewCode(errors.Internal, "event handler does not implement IMessageHandler").
-				WithContext("module", m.moduleID).
-				WithContext("index", item.index)
-		}
-
-		messageTypes := getHandlerMessageTypes(handler)
-		if len(messageTypes) == 0 {
-			return errors.NewCode(errors.InvalidInput, "event handler resolved no valid message types").
-				WithContext("module", m.moduleID).
-				WithContext("index", item.index)
+			return err
 		}
 
 		for _, messageType := range messageTypes {
@@ -298,22 +325,14 @@ func (m *ModuleRuntime) startRuntimeComponents(ctx context.Context) error {
 
 	m.runtimeStops = nil
 	started := make([]IRuntimeStopper, 0, len(m.runtimeComponents))
-	for _, item := range m.runtimeComponents {
-		inst, err := item.resolve()
+	for i, item := range m.runtimeComponents {
+		component, err := m.runtimeComponent(i)
 		if err != nil {
 			m.runtimeStops = append([]IRuntimeStopper(nil), started...)
-			return runtimeutil.WrapModuleErr(m.moduleID, err, "resolve runtime component", errors.Internal).WithContext("index", item.index)
+			return err
 		}
 
-		component, ok := inst.(IRuntimeComponent)
-		if !ok || runtimeutil.IsTypedNil(component) {
-			m.runtimeStops = append([]IRuntimeStopper(nil), started...)
-			return errors.NewCode(errors.Internal, "runtime component does not implement IRuntimeComponent").
-				WithContext("module", m.moduleID).
-				WithContext("index", item.index)
-		}
-
-		stopper, hasStopper := inst.(IRuntimeStopper)
+		stopper, hasStopper := component.(IRuntimeStopper)
 		if !hasStopper || runtimeutil.IsTypedNil(stopper) {
 			stopper = nil
 		}

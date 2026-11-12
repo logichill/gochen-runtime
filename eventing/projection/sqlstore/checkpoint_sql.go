@@ -46,7 +46,11 @@ func (s *SQLCheckpointStore) Load(ctx context.Context, projectionName string) (*
 		return nil, err
 	}
 
-	sq, err := sqlbuilder.New(s.db)
+	database, err := s.contextDatabase(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sq, err := sqlbuilder.New(database)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.Internal, "failed to create sql builder")
 	}
@@ -231,7 +235,11 @@ func (s *SQLCheckpointStore) Delete(ctx context.Context, projectionName string) 
 		return err
 	}
 
-	sq, err := sqlbuilder.New(s.db)
+	database, err := s.contextDatabase(ctx)
+	if err != nil {
+		return err
+	}
+	sq, err := sqlbuilder.New(database)
 	if err != nil {
 		return errors.Wrap(err, errors.Internal, "failed to create sql builder")
 	}
@@ -345,6 +353,16 @@ func (s *SQLCheckpointStore) databaseFor(ctx context.Context) db.IDatabase {
 	return s.db
 }
 
+// contextDatabase 在活动事务中使用经过同源校验的会话，其余调用使用根句柄。
+func (s *SQLCheckpointStore) contextDatabase(ctx context.Context) (db.IDatabase, error) {
+	if _, ok := orm.SessionFromContext(ctx); ok {
+		if err := s.validateORMTxSession(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return s.databaseFor(ctx), nil
+}
+
 func (s *SQLCheckpointStore) validateORMTxSession(ctx context.Context) error {
 	session, ok := orm.SessionFromContext(ctx)
 	if !ok || session == nil {
@@ -391,7 +409,11 @@ func (s *SQLCheckpointStore) List(ctx context.Context) ([]*projection.Checkpoint
 		return nil, err
 	}
 
-	sq, err := sqlbuilder.New(s.db)
+	database, err := s.contextDatabase(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sq, err := sqlbuilder.New(database)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.Internal, "failed to create sql builder")
 	}

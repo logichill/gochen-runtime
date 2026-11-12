@@ -8,8 +8,7 @@ import (
 	"gochen/testkit/require"
 
 	rtdialect "gochen-runtime/db/dialect"
-
-	"gochen/auth/governance"
+	auth "gochen/auth"
 )
 
 // —— P2-083 补充：方言分支 SQL 生成语法校验（无需真实 MySQL/Postgres 实例）——
@@ -24,7 +23,7 @@ func TestBuildUpsertQuery_MySQLSyntax(t *testing.T) {
 		tableName: "`authz_policy_snapshots`",
 		dialect:   rtdialect.New("mysql"),
 	}
-	query, args := s.buildUpsertQuery(governance.PolicySnapshot{
+	query, args := s.buildUpsertQuery(auth.PolicySnapshot{
 		Key:       "k",
 		Version:   "v",
 		Timestamp: time.Unix(1700000000, 0),
@@ -44,7 +43,7 @@ func TestBuildUpsertQuery_PostgresSyntax(t *testing.T) {
 		tableName: `"authz_policy_snapshots"`,
 		dialect:   rtdialect.New("postgres"),
 	}
-	query, args := s.buildUpsertQuery(governance.PolicySnapshot{
+	query, args := s.buildUpsertQuery(auth.PolicySnapshot{
 		Key:       "k",
 		Version:   "v",
 		Timestamp: time.Unix(1700000000, 0),
@@ -61,7 +60,7 @@ func TestBuildUpsertQuery_UnknownDialectReturnsEmpty(t *testing.T) {
 		tableName: "authz_policy_snapshots",
 		dialect:   rtdialect.New("unknown"),
 	}
-	query, args := s.buildUpsertQuery(governance.PolicySnapshot{}, "{}")
+	query, args := s.buildUpsertQuery(auth.PolicySnapshot{}, "{}")
 	require.Equal(t, "", query)
 	require.Nil(t, args)
 }

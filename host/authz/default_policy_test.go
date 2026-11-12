@@ -54,7 +54,9 @@ func TestActionChecker_ErrorContract(t *testing.T) {
 }
 
 func TestScopeResolverUsesProjectDimension(t *testing.T) {
-	a, err := scoped.New(NewActionChecker(), NewScopeResolver("department", nil))
+	policy, err := coreauth.NewPermissionPolicy(NewActionChecker(), coreauth.WithScope(NewScopeResolver("department", nil)))
+	require.NoError(t, err)
+	a, err := coreauth.New(coreauth.Options{Policy: policy})
 	require.NoError(t, err)
 	ctx := principalCtx(t, Principal{SubjectID: "7", ActiveScopeID: 101, Permissions: []string{"order:api:update"}})
 	d, err := a.Authorize(ctx, coreauth.Request{Resource: "order", Action: "update", Permission: "order:api:update", IDs: []string{"1"}})

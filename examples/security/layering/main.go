@@ -1,10 +1,10 @@
 // 演示安全能力在 v5.1 契约下的分层装配。
 //
-//	L0 Plain    —— auth.Allow()，完全放行；
-//	L1 Action   —— auth/action.RBAC(checker)，只校验动作码；
+//	L0 Plain    —— auth.AllowPolicy()，完全放行；
+//	L1 Action   —— auth.NewPermissionPolicy(checker)，校验动作码；
 //	L2 Isolated —— 隔离在 Repo 构造期显式声明，Application 层零感知；
-//	L3 Scoped   —— auth/scoped.New(checker, resolver)，动作 + 行级规约与赋值；
-//	L4 Governed —— governance.Wrap 装饰 PDP，留痕、快照与指标。
+//	L3 Scoped   —— auth.WithScope(resolver)，动作与行级规约、赋值；
+//	L4 Governed —— auth.New 的 GovernanceOptions，留痕、快照与指标。
 //
 // 与旧版的关键差异：授权不再是包裹 Application 的装饰器，而是构造
 // Application 时显式传入的 auth.IAuthorizer。装配点只有一个，能力边界
@@ -23,9 +23,7 @@ import (
 	"time"
 
 	authaction "gochen/auth/action"
-	"gochen/auth/governance"
 
-	authscoped "gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/domain"
 
@@ -67,9 +65,13 @@ func (c *operatorChecker) RequireAction(ctx context.Context, code string) error 
 
 func newApp[T domain.IEntity[ID], ID comparable](
 	repo crud.Repository[T, ID],
-	authorizer auth.IAuthorizer,
+	policy auth.IPolicy,
 	resource string,
 ) *crud.Application[T, ID] {
+	authorizer, err := auth.New(auth.Options{Policy: policy})
+	if err != nil {
+		log.Fatal(err)
+	}
 	app, err := crud.NewApplication[T, ID](repo, crud.Options[T, ID]{
 		Resource:   resource,
 		Authorizer: authorizer,
@@ -91,12 +93,12 @@ func mustContext(operator string) context.Context {
 func main() {
 	log.SetFlags(0)
 
-	// ---------- L0 Plain：auth.Allow()，不校验任何动作 ----------
+	// ---------- L0 Plain：auth.AllowPolicy()，不校验任何动作 ----------
 	plainRepo, repositoryErr := testkit.NewMemoryRepository[*Order, int64](testkit.NewInt64Sequence(1))
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	plain := newApp[*Order, int64](plainRepo, auth.Allow(), "order")
+	plain := newApp[*Order, int64](plainRepo, auth.AllowPolicy(), "order")
 	ctx := context.Background()
 	if err := plain.Create(ctx, &Order{Customer: "alice", Amount: 100}); err != nil {
 		log.Fatal(err)
@@ -112,7 +114,7 @@ func main() {
 		"alice": {"order:api:*"},    // alice 可以做 order 的一切
 		"bob":   {"order:api:read"}, // bob 只能读
 	}}
-	rbac, err := authaction.RBAC(checker)
+	rbac, err := auth.NewPermissionPolicy(checker)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -167,7 +169,7 @@ func demoIsolation() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	app := newApp[*TenantOrder, int64](repo, auth.Allow(), "tenant_order")
+	app := newApp[*TenantOrder, int64](repo, auth.AllowPolicy(), "tenant_order")
 
 	ctxA, ctxB := mustTenantContext("tenant-a"), mustTenantContext("tenant-b")
 
@@ -228,7 +230,7 @@ func demoCrossIsolation() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	app := newApp[*TenantOrder, int64](repo, auth.Allow(), "tenant_order")
+	app := newApp[*TenantOrder, int64](repo, auth.AllowPolicy(), "tenant_order")
 
 	if err := app.Create(mustTenantContext("tenant-a"), &TenantOrder{Customer: "alice"}); err != nil {
 		log.Fatal(err)
@@ -267,7 +269,7 @@ func demoCrossIsolation() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	strict := newApp[*TenantOrder, int64](strictRepo, auth.Allow(), "tenant_order")
+	strict := newApp[*TenantOrder, int64](strictRepo, auth.AllowPolicy(), "tenant_order")
 	_, err = strict.Count(reconCtx)
 	log.Printf("L2 valve: credential alone is inert -> forbidden=%v", errors.Is(err, errors.Forbidden))
 }
@@ -332,7 +334,7 @@ func demoScoped() {
 		panic(repositoryErr)
 	}
 
-	authorizer, err := authscoped.New(authz.NewActionChecker(), scopedResolver{})
+	authorizer, err := auth.NewPermissionPolicy(authz.NewActionChecker(), auth.WithScope(scopedResolver{}))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -370,22 +372,18 @@ func demoScoped() {
 
 // demoGovernance 演示 L4：治理包装统一的 auth.IAuthorizer。
 func demoGovernance() {
-	pdp, err := authscoped.New(authz.NewActionChecker(), scopedResolver{})
+	pdp, err := auth.NewPermissionPolicy(authz.NewActionChecker(), auth.WithScope(scopedResolver{}))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	audit := &memoryAuthzAudit{}
 	var recordedLatencies int
-	governed, err := governance.Wrap(pdp,
-		governance.WithSnapshot(governance.PolicySnapshotFunc(
-			func(context.Context) (governance.PolicySnapshot, error) {
-				return governance.PolicySnapshot{Key: "scope-policy", Version: "v42"}, nil
-			})),
-		governance.WithAudit(audit),
-		governance.WithMetrics(governance.AuthzMetricsFunc(
-			func(context.Context, string, string, time.Duration) { recordedLatencies++ })),
-	)
+	governed, err := auth.New(auth.Options{Policy: pdp, Governance: auth.GovernanceOptions{Snapshot: auth.PolicySnapshotFunc(
+		func(context.Context) (auth.PolicySnapshot, error) {
+			return auth.PolicySnapshot{Key: "scope-policy", Version: "v42"}, nil
+		}), Audit: audit, Metrics: auth.AuthzMetricsFunc(
+		func(context.Context, string, string, time.Duration) { recordedLatencies++ })}})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -394,7 +392,7 @@ func demoGovernance() {
 		log.Fatalf("L4 governed: require failed: %v", err)
 	}
 
-	entries, err := audit.ListAuthzLogEntries(context.Background(), governance.AuthzLogEntryTypeDecision, 10)
+	entries, err := audit.ListAuthzLogEntries(context.Background(), auth.AuthzLogEntryTypeDecision, 10)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -403,7 +401,7 @@ func demoGovernance() {
 }
 
 // snapshotVersionOf 取首条决策留痕上的策略快照版本。
-func snapshotVersionOf(entries []governance.AuthzLogEntry) string {
+func snapshotVersionOf(entries []auth.AuthzLogEntry) string {
 	if len(entries) == 0 {
 		return ""
 	}
@@ -412,20 +410,20 @@ func snapshotVersionOf(entries []governance.AuthzLogEntry) string {
 
 // memoryAuthzAudit 是一个最小 IAuthzAuditStore：真实系统会落库。
 type memoryAuthzAudit struct {
-	entries []governance.AuthzLogEntry
+	entries []auth.AuthzLogEntry
 }
 
-func (s *memoryAuthzAudit) SaveAuthzLogEntry(_ context.Context, entry governance.AuthzLogEntry) error {
+func (s *memoryAuthzAudit) SaveAuthzLogEntry(_ context.Context, entry auth.AuthzLogEntry) error {
 	s.entries = append(s.entries, entry)
 	return nil
 }
 
 func (s *memoryAuthzAudit) ListAuthzLogEntries(
 	_ context.Context,
-	entryType governance.AuthzLogEntryType,
+	entryType auth.AuthzLogEntryType,
 	limit int,
-) ([]governance.AuthzLogEntry, error) {
-	out := make([]governance.AuthzLogEntry, 0, len(s.entries))
+) ([]auth.AuthzLogEntry, error) {
+	out := make([]auth.AuthzLogEntry, 0, len(s.entries))
 	for _, entry := range s.entries {
 		if entry.Type == entryType {
 			out = append(out, entry)

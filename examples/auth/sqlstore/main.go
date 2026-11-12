@@ -17,7 +17,7 @@ import (
 	"gochen-runtime/db/sql/stdsql"
 
 	"gochen/auth"
-	"gochen/auth/governance"
+
 	"gochen/db"
 	"gochen/errors"
 )
@@ -44,32 +44,28 @@ func main() {
 
 	store, err := sqlstore.NewPolicySnapshotStore(database, "authz_policy_snapshots")
 	must(err)
-	must(store.SavePolicySnapshot(ctx, governance.PolicySnapshot{
+	must(store.SavePolicySnapshot(ctx, auth.PolicySnapshot{
 		Key:       "default",
 		Version:   "policy-v7",
 		Timestamp: time.Now(),
 		Metadata:  map[string]any{"source": "sql"},
 	}))
 
-	snapshot, err := governance.NewStoreBackedSnapshot(store, "default", time.Minute)
+	snapshot, err := auth.NewStoreBackedSnapshot(store, "default", time.Minute)
 	must(err)
 
 	// 基础 PDP：本示例一律放行，便于突出治理层的行为。
 	base := mustAuthorizer()
 
 	// L4 装配：Metrics(Log(Snapshot(base)))，顺序由 governance.Wrap 固化。
-	var recorded []governance.AuthzLogEntry
-	governed, err := governance.Wrap(base,
-		governance.WithSnapshot(snapshot),
-		governance.WithAudit(auditFunc(func(entry governance.AuthzLogEntry) error {
-			recorded = append(recorded, entry)
-			return nil
-		})),
-		governance.WithMetrics(governance.AuthzMetricsFunc(
-			func(_ context.Context, action, effect string, latency time.Duration) {
-				log.Printf("metric: action=%s effect=%s latency<=%s", action, effect, latency.Round(time.Millisecond))
-			})),
-	)
+	var recorded []auth.AuthzLogEntry
+	governed, err := auth.New(auth.Options{Policy: base, Governance: auth.GovernanceOptions{Snapshot: snapshot, Audit: auditFunc(func(entry auth.AuthzLogEntry) error {
+		recorded = append(recorded, entry)
+		return nil
+	}), Metrics: auth.AuthzMetricsFunc(
+		func(_ context.Context, action, effect string, latency time.Duration) {
+			log.Printf("metric: action=%s effect=%s latency<=%s", action, effect, latency.Round(time.Millisecond))
+		})}})
 	must(err)
 
 	decision, err := governed.Authorize(ctx, auth.Request{Resource: "report", Action: "read", Permission: "report:api:read", IDs: []string{"r-1"}})
@@ -91,25 +87,24 @@ func main() {
 	log.Printf("second decision reuses snapshot=%v", second.SnapshotVersion == decision.SnapshotVersion)
 
 	// 快照不可用时默认 fail-closed。
-	broken, err := governance.Wrap(base, governance.WithSnapshot(
-		governance.PolicySnapshotFunc(func(context.Context) (governance.PolicySnapshot, error) {
-			return governance.PolicySnapshot{}, errors.NewCode(errors.ServiceUnavailable, "snapshot store down")
-		})))
+	broken, err := auth.New(auth.Options{Policy: base, Governance: auth.GovernanceOptions{Snapshot: auth.PolicySnapshotFunc(func(context.Context) (auth.PolicySnapshot, error) {
+		return auth.PolicySnapshot{}, errors.NewCode(errors.ServiceUnavailable, "snapshot store down")
+	})}})
 	must(err)
 	_, err = broken.Authorize(ctx, auth.Request{Resource: "report", Action: "read", Permission: "report:api:read"})
 	log.Printf("snapshot unavailable -> forbidden=%v", errors.Is(err, errors.Forbidden))
 }
 
-func mustAuthorizer() auth.IAuthorizer { return auth.Allow() }
+func mustAuthorizer() auth.IPolicy { return auth.AllowPolicy() }
 
 // auditFunc 把函数适配成 IAuthzAuditStore。
-type auditFunc func(entry governance.AuthzLogEntry) error
+type auditFunc func(entry auth.AuthzLogEntry) error
 
-func (f auditFunc) SaveAuthzLogEntry(_ context.Context, entry governance.AuthzLogEntry) error {
+func (f auditFunc) SaveAuthzLogEntry(_ context.Context, entry auth.AuthzLogEntry) error {
 	return f(entry)
 }
 
-func (f auditFunc) ListAuthzLogEntries(context.Context, governance.AuthzLogEntryType, int) ([]governance.AuthzLogEntry, error) {
+func (f auditFunc) ListAuthzLogEntries(context.Context, auth.AuthzLogEntryType, int) ([]auth.AuthzLogEntry, error) {
 	return nil, nil
 }
 

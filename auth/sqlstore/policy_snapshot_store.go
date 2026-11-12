@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"gochen-runtime/db/dialect"
-	"gochen/auth/governance"
+	auth "gochen/auth"
 	"gochen/db"
 	"gochen/errors"
 )
@@ -41,7 +41,7 @@ func NewPolicySnapshotStore(database db.IDatabase, tableName string) (*PolicySna
 }
 
 // SavePolicySnapshot 保存策略快照。
-func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot governance.PolicySnapshot) error {
+func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot auth.PolicySnapshot) error {
 	snapshot, err := normalizePolicySnapshot(snapshot)
 	if err != nil {
 		return err
@@ -66,7 +66,7 @@ func (s *PolicySnapshotStore) SavePolicySnapshot(ctx context.Context, snapshot g
 	return nil
 }
 
-func (s *PolicySnapshotStore) buildUpsertQuery(snapshot governance.PolicySnapshot, metadataJSON string) (string, []any) {
+func (s *PolicySnapshotStore) buildUpsertQuery(snapshot auth.PolicySnapshot, metadataJSON string) (string, []any) {
 	args := []any{snapshot.Key, snapshot.Version, snapshot.Timestamp, metadataJSON}
 	switch s.dialect.Name() {
 	case coredialect.NameSQLite, coredialect.NamePostgres:
@@ -88,7 +88,7 @@ func (s *PolicySnapshotStore) buildUpsertQuery(snapshot governance.PolicySnapsho
 	}
 }
 
-func (s *PolicySnapshotStore) savePolicySnapshotCompat(ctx context.Context, snapshot governance.PolicySnapshot, metadataJSON string) error {
+func (s *PolicySnapshotStore) savePolicySnapshotCompat(ctx context.Context, snapshot auth.PolicySnapshot, metadataJSON string) error {
 	updateSQL := fmt.Sprintf(`UPDATE %s
 		SET version = ?, timestamp = ?, metadata = ?
 		WHERE snapshot_key = ?`, s.tableName)
@@ -135,7 +135,7 @@ func (s *PolicySnapshotStore) policySnapshotExists(ctx context.Context, key stri
 	return true, nil
 }
 
-func (s *PolicySnapshotStore) updatePolicySnapshotCompat(ctx context.Context, updateSQL string, snapshot governance.PolicySnapshot, metadataJSON string) error {
+func (s *PolicySnapshotStore) updatePolicySnapshotCompat(ctx context.Context, updateSQL string, snapshot auth.PolicySnapshot, metadataJSON string) error {
 	result, err := s.db.Exec(ctx, updateSQL, snapshot.Version, snapshot.Timestamp, metadataJSON, snapshot.Key)
 	if err != nil {
 		return errors.Wrap(err, errors.Database, "retry update policy snapshot failed").WithContext("snapshot_key", snapshot.Key)
@@ -155,7 +155,7 @@ func (s *PolicySnapshotStore) updatePolicySnapshotCompat(ctx context.Context, up
 }
 
 // LoadPolicySnapshot 加载策略快照。
-func (s *PolicySnapshotStore) LoadPolicySnapshot(ctx context.Context, key string) (*governance.PolicySnapshot, error) {
+func (s *PolicySnapshotStore) LoadPolicySnapshot(ctx context.Context, key string) (*auth.PolicySnapshot, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil, errors.NewCode(errors.InvalidInput, "policy snapshot key is required")
@@ -164,7 +164,7 @@ func (s *PolicySnapshotStore) LoadPolicySnapshot(ctx context.Context, key string
 	row := s.db.QueryRow(ctx, query, key)
 
 	var (
-		snapshot governance.PolicySnapshot
+		snapshot auth.PolicySnapshot
 		metaRaw  sql.NullString
 	)
 	if err := row.Scan(&snapshot.Key, &snapshot.Version, &snapshot.Timestamp, &metaRaw); err != nil {
@@ -199,7 +199,7 @@ func (s *PolicySnapshotStore) DeletePolicySnapshot(ctx context.Context, key stri
 }
 
 // ListPolicySnapshots 列出策略快照。
-func (s *PolicySnapshotStore) ListPolicySnapshots(ctx context.Context, prefix string, limit int) ([]governance.PolicySnapshot, error) {
+func (s *PolicySnapshotStore) ListPolicySnapshots(ctx context.Context, prefix string, limit int) ([]auth.PolicySnapshot, error) {
 	query := fmt.Sprintf(`SELECT snapshot_key, version, timestamp, metadata FROM %s`, s.tableName)
 	args := make([]any, 0, 2)
 	if prefix = strings.TrimSpace(prefix); prefix != "" {
@@ -219,10 +219,10 @@ func (s *PolicySnapshotStore) ListPolicySnapshots(ctx context.Context, prefix st
 	}
 	defer rows.Close()
 
-	result := make([]governance.PolicySnapshot, 0)
+	result := make([]auth.PolicySnapshot, 0)
 	for rows.Next() {
 		var (
-			snapshot governance.PolicySnapshot
+			snapshot auth.PolicySnapshot
 			metaRaw  sql.NullString
 		)
 		if err := rows.Scan(&snapshot.Key, &snapshot.Version, &snapshot.Timestamp, &metaRaw); err != nil {
@@ -258,14 +258,14 @@ func (s *PolicySnapshotStore) CleanupPolicySnapshots(ctx context.Context, retent
 	return nil
 }
 
-func normalizePolicySnapshot(snapshot governance.PolicySnapshot) (governance.PolicySnapshot, error) {
+func normalizePolicySnapshot(snapshot auth.PolicySnapshot) (auth.PolicySnapshot, error) {
 	snapshot.Key = strings.TrimSpace(snapshot.Key)
 	snapshot.Version = strings.TrimSpace(snapshot.Version)
 	if snapshot.Key == "" {
-		return governance.PolicySnapshot{}, errors.NewCode(errors.InvalidInput, "policy snapshot key is required")
+		return auth.PolicySnapshot{}, errors.NewCode(errors.InvalidInput, "policy snapshot key is required")
 	}
 	if snapshot.Version == "" {
-		return governance.PolicySnapshot{}, errors.NewCode(errors.InvalidInput, "policy snapshot version is required")
+		return auth.PolicySnapshot{}, errors.NewCode(errors.InvalidInput, "policy snapshot version is required")
 	}
 	if snapshot.Timestamp.IsZero() {
 		snapshot.Timestamp = time.Now()

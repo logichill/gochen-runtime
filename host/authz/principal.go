@@ -159,25 +159,22 @@ func RequirePrincipal(ctx context.Context) (Principal, error) {
 	return principal, nil
 }
 
-type activeScopeContextKey string
+type activeScopeContextKey struct{}
 
-const (
-	contextKeyActiveScopeID   activeScopeContextKey = "auth_active_scope_id"
-	contextKeyActiveScopeKind activeScopeContextKey = "auth_active_scope_kind"
-)
+type activeScopeBinding struct {
+	bound context.Context
+	id    int64
+	kind  string
+}
 
 // BindActiveScopeContext 将 active scope 元数据写入通用 context，便于 service/runtime 读取。
 func BindActiveScopeContext(ctx context.Context, scopeID int64, scopeKind string) context.Context {
 	if ctx == nil {
 		return nil
 	}
-	if scopeID > 0 {
-		ctx = context.WithValue(ctx, contextKeyActiveScopeID, scopeID)
-	}
-	if scopeKind = strings.TrimSpace(scopeKind); scopeKind != "" {
-		ctx = context.WithValue(ctx, contextKeyActiveScopeKind, scopeKind)
-	}
-	return ctx
+	return context.WithValue(ctx, activeScopeContextKey{}, activeScopeBinding{
+		bound: ctx, id: normalize.PositiveID(scopeID), kind: strings.TrimSpace(scopeKind),
+	})
 }
 
 // ClearActiveScopeContext 清空通用 context 上的 active scope 元数据。
@@ -185,35 +182,34 @@ func ClearActiveScopeContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		return nil
 	}
-	ctx = context.WithValue(ctx, contextKeyActiveScopeID, int64(0))
-	ctx = context.WithValue(ctx, contextKeyActiveScopeKind, "")
-	return ctx
+	return BindActiveScopeContext(ctx, 0, "")
 }
 
 // ActiveScopeIDFromContext 从通用 context 读取当前生效的 active scope ID。
 func ActiveScopeIDFromContext(ctx context.Context) int64 {
-	if ctx == nil {
-		return 0
-	}
-	if val := ctx.Value(contextKeyActiveScopeID); val != nil {
-		if scopeID, ok := val.(int64); ok {
-			return scopeID
-		}
-	}
-	return 0
+	return activeScopeFromContext(ctx).id
 }
 
 // ActiveScopeKindFromContext 从通用 context 读取当前生效的 active scope 类型。
 func ActiveScopeKindFromContext(ctx context.Context) string {
+	return activeScopeFromContext(ctx).kind
+}
+
+func activeScopeFromContext(ctx context.Context) activeScopeBinding {
 	if ctx == nil {
-		return ""
+		return activeScopeBinding{}
 	}
-	if val := ctx.Value(contextKeyActiveScopeKind); val != nil {
-		if scopeKind, ok := val.(string); ok {
-			return strings.TrimSpace(scopeKind)
-		}
+	binding, ok := ctx.Value(activeScopeContextKey{}).(activeScopeBinding)
+	current, currentOK := coreauth.PrincipalFromContext(ctx)
+	bound, boundOK := coreauth.PrincipalFromContext(binding.bound)
+	if !ok || currentOK != boundOK || !contextx.HasSameTenantBinding(ctx, binding.bound) {
+		return activeScopeBinding{}
 	}
-	return ""
+	if currentOK && (!coreauth.HasSamePrincipalBinding(ctx, binding.bound) || current.System != bound.System ||
+		(binding.id > 0 && binding.id != current.ScopeID)) {
+		return activeScopeBinding{}
+	}
+	return binding
 }
 
 type executionMetadataContextKey struct{}

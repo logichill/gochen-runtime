@@ -85,6 +85,8 @@ Host.Shutdown   → server.Stop(ctx)
 
 `http/nethttp` 提供 `httpx.IServer` 与 `httpx.IRouteGroup` 的标准库实现；`http` 提供配置、静态处理与路由方法分派等共享实现。Host 只依赖 `httpx` 契约，HTTP 适配器可替换。
 
+`WithEntryRegistry` 将入口登记能力与模块来源传递到嵌套路由组；标准 `rest.Mount` 自动继承。手写路由通过 `RegisterDeclaredRoute` 连接实际执行器和具体动作。Host 注入 `config.WithEntryValidator` 后，在路由完成、后台组件启动之前核对驱动的独立注册清单。接入细节见 Core 仓库 `docs/guides/declarative-authorization.md`。
+
 ## 4. 依赖关系
 
 - 下游实现：`http/nethttp` 实现 `gochen/httpx` 的 Server、Context、RouteGroup。

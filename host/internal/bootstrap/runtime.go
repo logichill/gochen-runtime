@@ -12,6 +12,7 @@ import (
 	"gochen-runtime/http"
 	"gochen-runtime/http/middleware"
 	"gochen-runtime/http/nethttp"
+	"gochen/auth"
 	"gochen/errors"
 	"gochen/eventing/bus"
 	"gochen/eventing/monitoring"
@@ -39,6 +40,7 @@ type Config struct {
 	EventBus          capability.IEventSubscriber
 	Transport         capability.ITransport
 	ProjectionRuntime capability.IProjectionRuntime
+	EntryRegistry     http.IEntryRegistry
 }
 
 // Runtime 表示 Host 已就绪的外围运行时能力。
@@ -189,24 +191,52 @@ func prepareBaseGroup(httpServer httpx.IServer, cfg Config) (httpx.IRouteGroup, 
 	}
 	group.Use(baseMws...)
 
-	registerMonitoringRoutes(group, monitoringhttp.HostRouteSet(!cfg.DisableHealthRoute, cfg.EnableMonitoringRoutes))
+	if cfg.EntryRegistry != nil {
+		var err error
+		group, err = http.WithEntryRegistry(group, cfg.EntryRegistry, "host")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := registerMonitoringRoutes(group, monitoringhttp.HostRouteSet(!cfg.DisableHealthRoute, cfg.EnableMonitoringRoutes)); err != nil {
+		return nil, err
+	}
 
 	return group, nil
 }
 
-func registerMonitoringRoutes(group httpx.IRouteGroup, set monitoringhttp.RouteSet) {
+func registerMonitoringRoutes(group httpx.IRouteGroup, set monitoringhttp.RouteSet) error {
 	if group == nil {
-		return
+		return nil
 	}
 
 	reg := monitoring.DefaultRegistry()
 	for _, route := range monitoringhttp.Routes(set) {
 		route := route
-		group.GET(route.Path, func(ctx httpx.IContext) error {
+		registry, _, err := http.EntryRegistryFrom(group)
+		if err != nil {
+			return err
+		}
+		if registry != nil {
+			// These are infrastructure diagnostics. Custom health checks and
+			// statistics providers must preserve this boundary rather than expose
+			// business records through the framework monitoring endpoints.
+			if err := http.BindEntry(group, route.Method, route.Path, auth.EntryBinding{
+				ResourceAccess: auth.ResourceAccessNone,
+				Source:         "Host monitoring -> infrastructure health checks and operational statistics: " + string(route.Name),
+				AllowReason:    "explicitly enabled infrastructure diagnostics; providers must not expose business resource data",
+			}); err != nil {
+				return err
+			}
+		}
+		if err := http.RegisterRoute(group, route.Method, route.Path, func(ctx httpx.IContext) error {
 			code, body := monitoringhttp.HandleRoute(ctx.RequestContext(), reg, route)
 			return ctx.JSON(code, httpx.JSONValue(body))
-		})
+		}); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func normalizeBasePath(basePath string) string {

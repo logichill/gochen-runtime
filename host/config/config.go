@@ -56,6 +56,7 @@ type Config struct {
 	// CatalogRegistrars 是可选的模块目录登记器（如 host/authz 的权限目录）。
 	// 为空时 Host 不做任何目录登记，也不会把相关扩展包编译进依赖图。
 	CatalogRegistrars []capability.IModuleCatalogRegistrar
+	EntryValidators   []capability.IEntryValidator
 
 	RouteMiddlewares         []httpx.Middleware
 	ModuleCapabilities       []initcap.Setter
@@ -80,6 +81,11 @@ type Config struct {
 
 // Option 修改共享 Host 配置。
 type Option func(*Config)
+
+// WithEntryValidator 注入独立入口与声明交叉检查，检查通过后才启动业务执行。
+func WithEntryValidator(validator capability.IEntryValidator) Option {
+	return func(cfg *Config) { cfg.EntryValidators = append(cfg.EntryValidators, validator) }
+}
 
 // Default 返回共享 Host 配置默认值。
 func Default() *Config {

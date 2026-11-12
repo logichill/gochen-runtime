@@ -92,7 +92,7 @@ type IsolationCols struct {
 //   - Column 必须能映射到实体字段，否则隔离条件会静默失效；
 //   - 配置了 Resolve 却留空 Column → 报错；此时不能回落到 tenant_id 默认值，
 //     否则分片键会被悄悄写进租户列；
-//   - 未提供 Resolve（即隔离键就是租户）时，实体必须实现 domain/crud.ITenantEntity。
+//   - 隔离列绑定可转换隔离键的实体字段；未提供 Resolve 时取当前租户。
 func WithIsolation[T domain.IEntity[ID], ID comparable](cols IsolationCols) Option[T, ID] {
 	return func(r *Repo[T, ID]) {
 		if r == nil {

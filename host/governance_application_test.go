@@ -11,9 +11,7 @@ import (
 	appes "gochen/app/eventsourced"
 	"gochen/app/eventsourced/eventstore"
 	"gochen/auth"
-	"gochen/auth/action"
-	"gochen/auth/governance"
-	"gochen/auth/scoped"
+
 	"gochen/contextx"
 	"gochen/domain/audited"
 	"gochen/domain/crud"
@@ -51,7 +49,7 @@ func (a *governanceAggregate) ApplyGovernanceCreated(e *governanceCreated) { a.N
 
 type governanceAuditStore struct {
 	err     error
-	entries []governance.AuthzLogEntry
+	entries []auth.AuthzLogEntry
 }
 
 type governanceSpecResolver struct{ err error }
@@ -67,12 +65,12 @@ func (governanceSpecResolver) Vocabulary() auth.Vocabulary {
 	return auth.Vocabulary{Refs: []meta.Ref{meta.ByField("Name")}}
 }
 
-func (s *governanceAuditStore) SaveAuthzLogEntry(_ context.Context, e governance.AuthzLogEntry) error {
+func (s *governanceAuditStore) SaveAuthzLogEntry(_ context.Context, e auth.AuthzLogEntry) error {
 	s.entries = append(s.entries, e)
 	return s.err
 }
 
-func (s *governanceAuditStore) ListAuthzLogEntries(context.Context, governance.AuthzLogEntryType, int) ([]governance.AuthzLogEntry, error) {
+func (s *governanceAuditStore) ListAuthzLogEntries(context.Context, auth.AuthzLogEntryType, int) ([]auth.AuthzLogEntry, error) {
 	return s.entries, nil
 }
 
@@ -156,49 +154,49 @@ func TestGovernanceApplicationCombinations(t *testing.T) {
 				}
 				t.Run(kind+"/"+mode+"/"+scenario, func(t *testing.T) {
 					failure := errors.New("injected governance failure")
-					checker := action.ActionCheckerFunc(func(context.Context, string) error {
+					checker := auth.ActionCheckerFunc(func(context.Context, string) error {
 						if scenario == "denied" {
 							return errors.NewCode(errors.Forbidden, "denied")
 						}
 						return nil
 					})
-					var base auth.IAuthorizer
+					var base auth.IPolicy
 					var err error
 					switch mode {
 					case "allow":
-						base = auth.Allow()
+						base = auth.AllowPolicy()
 					case "rbac":
-						base, err = action.RBAC(checker)
+						base, err = auth.NewPermissionPolicy(checker)
 					case "scoped":
 						resolver := governanceSpecResolver{}
 						if scenario == "resolver failure" {
 							resolver.err = failure
 						}
-						base, err = scoped.New(checker, resolver)
+						base, err = auth.NewPermissionPolicy(checker, auth.WithScope(resolver))
 					}
 					require.NoError(t, err)
 					auditStore := &governanceAuditStore{}
 					if scenario == "strict audit failure" || scenario == "lenient audit failure" {
 						auditStore.err = failure
 					}
-					options := []governance.Option{
-						governance.WithSnapshot(governance.PolicySnapshotFunc(func(context.Context) (governance.PolicySnapshot, error) {
+					options := auth.GovernanceOptions{
+						Snapshot: auth.PolicySnapshotFunc(func(context.Context) (auth.PolicySnapshot, error) {
 							if scenario == "snapshot failure" {
-								return governance.PolicySnapshot{}, failure
+								return auth.PolicySnapshot{}, failure
 							}
-							return governance.PolicySnapshot{Key: "policy", Version: "v1"}, nil
-						})),
-						governance.WithAudit(auditStore),
-						governance.WithMetrics(governance.AuthzMetricsFunc(func(context.Context, string, string, time.Duration) {
+							return auth.PolicySnapshot{Key: "policy", Version: "v1"}, nil
+						}),
+						Audit: auditStore,
+						Metrics: auth.AuthzMetricsFunc(func(context.Context, string, string, time.Duration) {
 							if scenario == "metrics panic" {
 								panic("injected metrics panic")
 							}
-						})),
+						}),
 					}
 					if scenario == "strict audit failure" {
-						options = append(options, governance.WithStrictAudit())
+						options.StrictAudit = true
 					}
-					governed, err := governance.Wrap(base, options...)
+					governed, err := auth.New(auth.Options{Policy: base, Governance: options})
 					require.NoError(t, err)
 					application, write, count := newGovernanceApplicationFixture(t, kind, governed)
 					startup := host.NewRegistry()

@@ -75,19 +75,11 @@ func (rb *RouteBuilder[T, ID]) handleUpdateBulk(c httpx.IContext) error {
 				return err
 			}
 		}
-		hasVersion := rb.isAudited()
-		for key := range fields[i] {
-			if strings.EqualFold(key, "version") {
-				hasVersion = true
-			}
+		version, err := requireUint64JSONField(fields[i], "version")
+		if err != nil {
+			return err
 		}
-		if hasVersion {
-			version, err := requireUint64JSONField(fields[i], "version")
-			if err != nil {
-				return err
-			}
-			versions[entity.GetID()] = version
-		}
+		versions[entity.GetID()] = version
 	}
 	if err := rb.validateBulkEntities(entities); err != nil {
 		return err
@@ -97,13 +89,15 @@ func (rb *RouteBuilder[T, ID]) handleUpdateBulk(c httpx.IContext) error {
 		return err
 	}
 	incoming := make(map[ID]T, len(entities))
+	incomingFields := make(map[ID]map[string]json.RawMessage, len(entities))
 	ids := make([]ID, 0, len(entities))
-	for _, entity := range entities {
+	for i, entity := range entities {
 		id := entity.GetID()
 		if _, exists := incoming[id]; exists {
 			return errors.NewCode(errors.InvalidInput, "duplicate id in bulk").WithContext("id", id)
 		}
 		incoming[id] = entity
+		incomingFields[id] = fields[i]
 		ids = append(ids, id)
 	}
 	updated, err := rb.service.ExecuteBulk(ctx, crud.ActionUpdate, ids, func(_ context.Context, entity T) error {
@@ -111,10 +105,10 @@ func (rb *RouteBuilder[T, ID]) handleUpdateBulk(c httpx.IContext) error {
 		if !ok {
 			return errors.NewCode(errors.Internal, "bulk update lost its target")
 		}
-		if version, supplied := versions[entity.GetID()]; supplied && version != entity.GetVersion() {
+		if version := versions[entity.GetID()]; version != entity.GetVersion() {
 			return errors.NewCode(errors.Concurrency, "entity version mismatch").WithContext("id", entity.GetID()).WithContext("expected_version", version).WithContext("actual_version", entity.GetVersion())
 		}
-		mergeWritableFields(entity, source)
+		mergeWritableFields(entity, source, incomingFields[entity.GetID()])
 		return nil
 	})
 	if err != nil {
@@ -190,7 +184,7 @@ func rejectNilEntities[T any](entities []T) error {
 //
 // 主键、版本、访问控制角色与框架托管字段由 Application / 仓储控制，
 // 传输层不能通过批量更新覆写它们。
-func mergeWritableFields[T any](target T, incoming T) {
+func mergeWritableFields[T any](target T, incoming T, supplied map[string]json.RawMessage) {
 	dst := reflect.ValueOf(target)
 	src := reflect.ValueOf(incoming)
 	for dst.Kind() == reflect.Ptr {
@@ -211,13 +205,50 @@ func mergeWritableFields[T any](target T, incoming T) {
 		if isManagedField(field) {
 			continue
 		}
+		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonName == "-" {
+			continue
+		}
+		// Omitted dimensions keep their current values. Explicit dimensions
+		// reach Core's effective contract, which also supports mutable dimensions.
+		if field.Tag.Get("dim") != "" {
+			name := jsonName
+			if name == "" {
+				name = field.Name
+			}
+			present := false
+			for key := range supplied {
+				if strings.EqualFold(key, name) {
+					present = true
+					break
+				}
+			}
+			if !present {
+				continue
+			}
+		}
 		fieldType := field.Type
 		if fieldType.Kind() == reflect.Ptr {
 			fieldType = fieldType.Elem()
 		}
 		if field.Anonymous && fieldType.Kind() == reflect.Struct {
+			fields := supplied
+			if jsonName != "" {
+				// A named embedded object has its own JSON field namespace.
+				fields = make(map[string]json.RawMessage)
+				for key, raw := range supplied {
+					if strings.EqualFold(key, jsonName) {
+						// The full entity was already decoded and type checked.
+						var nested map[string]json.RawMessage
+						_ = json.Unmarshal(raw, &nested)
+						for name, value := range nested {
+							fields[name] = value
+						}
+					}
+				}
+			}
 			// 按叶子字段处理嵌入结构，保留其托管字段。
-			mergeWritableFields(dst.Field(i).Addr().Interface(), src.Field(i).Addr().Interface())
+			mergeWritableFields(dst.Field(i).Addr().Interface(), src.Field(i).Addr().Interface(), fields)
 			continue
 		}
 		value := src.Field(i)

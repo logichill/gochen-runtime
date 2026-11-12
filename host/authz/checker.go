@@ -1,5 +1,7 @@
 package authz
 
+import auth "gochen/auth"
+
 import (
 	"context"
 
@@ -23,13 +25,13 @@ import (
 //
 // 需要更复杂的动作策略（按时间、按来源 IP、外接策略引擎）时换掉整个
 // IActionChecker 实现即可，本实现不提供扩展点——那些规则没有共性可沉淀。
-func NewActionChecker() action.IActionChecker {
+func NewActionChecker() auth.IActionChecker {
 	return principalActionChecker{}
 }
 
 type principalActionChecker struct{}
 
-var _ action.IActionChecker = principalActionChecker{}
+var _ auth.IActionChecker = principalActionChecker{}
 
 // RequireAction 校验当前主体是否具备指定动作权限。
 func (principalActionChecker) RequireAction(ctx context.Context, code string) error {

@@ -1,10 +1,11 @@
 package action
 
+import auth "gochen/auth"
+
 import (
 	"context"
 	"testing"
 
-	authaction "gochen/auth/action"
 	"gochen/errors"
 	"gochen/testkit/require"
 )
@@ -13,7 +14,7 @@ type allowChecker struct{}
 
 func (allowChecker) RequireAction(context.Context, string) error { return nil }
 
-var _ authaction.IActionChecker = allowChecker{}
+var _ auth.IActionChecker = allowChecker{}
 
 func TestFastDenyRejectsInvalidConfigurationAtConstruction(t *testing.T) {
 	_, err := FastDeny(nil, "report:api:read")

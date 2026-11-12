@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	coreauth "gochen/auth"
-	"gochen/auth/action"
-	"gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/contextx/field"
 	"gochen/errors"
@@ -47,9 +45,13 @@ func TestCoreSystemIdentityIsSharedByRuntimeChecks(t *testing.T) {
 	require.Equal(t, int64(101), principal.ActiveScopeID)
 	checker := NewActionChecker()
 	require.NoError(t, checker.RequireAction(systemCtx, "order:api:update"))
-	rbac, err := action.RBAC(checker)
+	rbacPolicy, err := coreauth.NewPermissionPolicy(checker)
 	require.NoError(t, err)
-	full, err := scoped.New(checker, NewScopeResolver("department", nil))
+	rbac, err := coreauth.New(coreauth.Options{Policy: rbacPolicy})
+	require.NoError(t, err)
+	fullPolicy, err := coreauth.NewPermissionPolicy(checker, coreauth.WithScope(NewScopeResolver("department", nil)))
+	require.NoError(t, err)
+	full, err := coreauth.New(coreauth.Options{Policy: fullPolicy})
 	require.NoError(t, err)
 	for _, authorizer := range []coreauth.IAuthorizer{rbac, full} {
 		decision, err := authorizer.Authorize(systemCtx, coreauth.Request{Permission: "order:api:update"})

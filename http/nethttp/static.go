@@ -17,6 +17,9 @@ func (s *Server) Static(prefix, root string) httpx.IServer {
 func (s *Server) static(prefix, root string) httpx.IServer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRoutesMutableLocked(); err != nil {
+		return s
+	}
 
 	s.recordStaticRouteLocked(prefix)
 	s.staticRoutes = append(s.staticRoutes, staticRoute{prefix: prefix, root: root})
@@ -47,6 +50,9 @@ func (s *Server) registerStaticRoute(mux *http.ServeMux, prefix, root string) {
 func (s *Server) ServeStatic(path, root string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRoutesMutableLocked(); err != nil {
+		return
+	}
 
 	s.recordMuxRouteLocked(http.MethodGet, path)
 	s.recordMuxRouteLocked(http.MethodHead, path)

@@ -3,7 +3,7 @@ package rest
 import (
 	"gochen-runtime/http/middleware"
 	"gochen/app/query"
-	"gochen/auth/action"
+
 	"gochen/domain"
 	"gochen/httpx"
 )
@@ -129,11 +129,9 @@ func WithHTTP201ForCreate[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
 	return func(b *RouteBuilder[T, ID]) { b.config.Response.UseHTTP201ForCreate = true }
 }
 
-// WithPermissionChecker 启用基于 Descriptor 权限码的 HTTP 快速拒绝。
-//
-// 该中间件只是性能优化；真正的授权仍在 Application 层，删掉它不改变安全语义。
-func WithPermissionChecker[T domain.IEntity[ID], ID comparable](checker action.IActionChecker) Option[T, ID] {
-	return func(b *RouteBuilder[T, ID]) { b.permissions = checker }
+// WithFastDeny 启用编译计划提供的安全提前拒绝，检查器与正式授权共用。
+func WithFastDeny[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
+	return func(b *RouteBuilder[T, ID]) { b.fastDenyEnabled = true }
 }
 
 // WithStartupRegistry 让 Mount 同时把应用登记进 Host 启动清单（D17）。

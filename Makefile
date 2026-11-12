@@ -42,9 +42,13 @@ examples-smoke:
 		./examples/auth/authorization \
 		./examples/auth/http \
 		./examples/auth/sqlstore \
+		./examples/security/layering \
 		./examples/di/basic \
 		./examples/domain/audited \
+		./examples/domain/audited_dimensions \
 		./examples/domain/crud \
+		./examples/domain/eventsourced \
+		./examples/domain/transfer \
 		./examples/domain/query/inferred \
 		./examples/domain/query/filter \
 		./examples/host/module_boot \

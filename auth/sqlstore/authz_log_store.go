@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"gochen-runtime/internal/normalize"
-	"gochen/auth/governance"
+	auth "gochen/auth"
 	"gochen/db"
 	"gochen/errors"
 	"gochen/gen"
@@ -42,9 +42,9 @@ func NewAuthzLogStore(database db.IDatabase, tableName string, idGenerator gen.I
 }
 
 // SaveAuthzLogEntry 保存 authz 日志。
-func (s *AuthzLogStore) SaveAuthzLogEntry(ctx context.Context, entry governance.AuthzLogEntry) error {
-	entry = governance.SanitizeAuthzLogEntry(entry)
-	entry.Resources = governance.SanitizeLoggedResources(ctx, entry.Resources)
+func (s *AuthzLogStore) SaveAuthzLogEntry(ctx context.Context, entry auth.AuthzLogEntry) error {
+	entry = auth.SanitizeAuthzLogEntry(entry)
+	entry.Resources = auth.SanitizeLoggedResources(ctx, entry.Resources)
 	entry, err := normalizeAuthzLogEntry(entry, s.idGenerator)
 	if err != nil {
 		return err
@@ -92,7 +92,7 @@ func (s *AuthzLogStore) SaveAuthzLogEntry(ctx context.Context, entry governance.
 }
 
 // ListAuthzLogEntries 列出 authz 日志。
-func (s *AuthzLogStore) ListAuthzLogEntries(ctx context.Context, entryType governance.AuthzLogEntryType, limit int) ([]governance.AuthzLogEntry, error) {
+func (s *AuthzLogStore) ListAuthzLogEntries(ctx context.Context, entryType auth.AuthzLogEntryType, limit int) ([]auth.AuthzLogEntry, error) {
 	query := fmt.Sprintf(`SELECT id, entry_type, decision_id, principal_id, permission, operation, effect, reason_code, snapshot_version, snapshot_key, consistency, latency_ms, cache_hit, resources_json, execution_json, metadata_json, created_at FROM %s`, s.tableName)
 	args := make([]any, 0, 2)
 	if entryType = normalizeAuthzLogEntryType(entryType); entryType != "" {
@@ -110,10 +110,10 @@ func (s *AuthzLogStore) ListAuthzLogEntries(ctx context.Context, entryType gover
 	}
 	defer rows.Close()
 
-	result := make([]governance.AuthzLogEntry, 0)
+	result := make([]auth.AuthzLogEntry, 0)
 	for rows.Next() {
 		var (
-			entry         governance.AuthzLogEntry
+			entry         auth.AuthzLogEntry
 			entryTypeRaw  string
 			consistency   string
 			resourcesJSON string
@@ -142,8 +142,8 @@ func (s *AuthzLogStore) ListAuthzLogEntries(ctx context.Context, entryType gover
 		); err != nil {
 			return nil, errors.Wrap(err, errors.Database, "scan authz log entry failed")
 		}
-		entry.Type = normalizeAuthzLogEntryType(governance.AuthzLogEntryType(entryTypeRaw))
-		entry.Consistency = normalizeConsistencyMode(governance.ConsistencyMode(consistency))
+		entry.Type = normalizeAuthzLogEntryType(auth.AuthzLogEntryType(entryTypeRaw))
+		entry.Consistency = normalizeConsistencyMode(auth.ConsistencyMode(consistency))
 		entry.CacheHit = cacheHit
 		if strings.TrimSpace(resourcesJSON) != "" && resourcesJSON != "[]" {
 			if err := json.Unmarshal([]byte(resourcesJSON), &entry.Resources); err != nil {
@@ -169,9 +169,9 @@ func (s *AuthzLogStore) ListAuthzLogEntries(ctx context.Context, entryType gover
 				}
 				delete(meta, "matched_rules")
 			}
-			if derived, ok := meta[governance.SnapshotVersionDerivedMetadataKey].(bool); ok {
+			if derived, ok := meta[auth.SnapshotVersionDerivedMetadataKey].(bool); ok {
 				entry.SnapshotVersionDerived = derived
-				delete(meta, governance.SnapshotVersionDerivedMetadataKey)
+				delete(meta, auth.SnapshotVersionDerivedMetadataKey)
 			}
 			if len(meta) > 0 {
 				entry.Metadata = meta
@@ -199,11 +199,11 @@ func (s *AuthzLogStore) DeleteAuthzLogEntriesBefore(ctx context.Context, cutoff 
 	return nil
 }
 
-func normalizeAuthzLogEntry(entry governance.AuthzLogEntry, idGenerator gen.IGenerator[string]) (governance.AuthzLogEntry, error) {
+func normalizeAuthzLogEntry(entry auth.AuthzLogEntry, idGenerator gen.IGenerator[string]) (auth.AuthzLogEntry, error) {
 	entry.ID = strings.TrimSpace(entry.ID)
 	entry.Type = normalizeAuthzLogEntryType(entry.Type)
 	if entry.Type == "" {
-		entry.Type = governance.AuthzLogEntryTypeDecision
+		entry.Type = auth.AuthzLogEntryTypeDecision
 	}
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
@@ -227,7 +227,7 @@ func normalizeAuthzLogEntry(entry governance.AuthzLogEntry, idGenerator gen.IGen
 	entry.MatchedRules = normalize.Strings(entry.MatchedRules)
 	entry.Execution = normalizeExecutionMetadata(entry.Execution)
 	if len(entry.Resources) > 0 {
-		resources := make([]governance.AuthzLoggedResource, 0, len(entry.Resources))
+		resources := make([]auth.AuthzLoggedResource, 0, len(entry.Resources))
 		for _, resource := range entry.Resources {
 			resources = append(resources, normalizeLoggedResource(resource))
 		}
@@ -270,7 +270,7 @@ func isNilStringGenerator(generator gen.IGenerator[string]) bool {
 	}
 }
 
-func normalizeLoggedResource(resource governance.AuthzLoggedResource) governance.AuthzLoggedResource {
+func normalizeLoggedResource(resource auth.AuthzLoggedResource) auth.AuthzLoggedResource {
 	resource.Kind = strings.TrimSpace(resource.Kind)
 	resource.ID = strings.TrimSpace(resource.ID)
 	resource.ManagedScopeID = normalize.PositiveID(resource.ManagedScopeID)
@@ -280,27 +280,27 @@ func normalizeLoggedResource(resource governance.AuthzLoggedResource) governance
 	return resource
 }
 
-func normalizeAuthzLogEntryType(entryType governance.AuthzLogEntryType) governance.AuthzLogEntryType {
-	switch governance.AuthzLogEntryType(strings.TrimSpace(string(entryType))) {
-	case governance.AuthzLogEntryTypeDecision:
-		return governance.AuthzLogEntryTypeDecision
+func normalizeAuthzLogEntryType(entryType auth.AuthzLogEntryType) auth.AuthzLogEntryType {
+	switch auth.AuthzLogEntryType(strings.TrimSpace(string(entryType))) {
+	case auth.AuthzLogEntryTypeDecision:
+		return auth.AuthzLogEntryTypeDecision
 	default:
 		return ""
 	}
 }
 
-func normalizeConsistencyMode(mode governance.ConsistencyMode) governance.ConsistencyMode {
-	switch governance.ConsistencyMode(strings.TrimSpace(string(mode))) {
-	case governance.ConsistencyModeStrong:
-		return governance.ConsistencyModeStrong
-	case governance.ConsistencyModeBoundedStaleness:
-		return governance.ConsistencyModeBoundedStaleness
+func normalizeConsistencyMode(mode auth.ConsistencyMode) auth.ConsistencyMode {
+	switch auth.ConsistencyMode(strings.TrimSpace(string(mode))) {
+	case auth.ConsistencyModeStrong:
+		return auth.ConsistencyModeStrong
+	case auth.ConsistencyModeBoundedStaleness:
+		return auth.ConsistencyModeBoundedStaleness
 	default:
-		return governance.ConsistencyModeUnspecified
+		return auth.ConsistencyModeUnspecified
 	}
 }
 
-func normalizeExecutionMetadata(metadata governance.ExecutionMetadata) governance.ExecutionMetadata {
+func normalizeExecutionMetadata(metadata auth.ExecutionMetadata) auth.ExecutionMetadata {
 	metadata.InitiatorID = strings.TrimSpace(metadata.InitiatorID)
 	metadata.ActorID = strings.TrimSpace(metadata.ActorID)
 	metadata.RequestID = strings.TrimSpace(metadata.RequestID)
@@ -310,7 +310,7 @@ func normalizeExecutionMetadata(metadata governance.ExecutionMetadata) governanc
 	return metadata
 }
 
-func authzLogEntryResourcesJSON(entry governance.AuthzLogEntry) (string, error) {
+func authzLogEntryResourcesJSON(entry auth.AuthzLogEntry) (string, error) {
 	if len(entry.Resources) == 0 {
 		return "[]", nil
 	}
@@ -322,7 +322,7 @@ func authzLogEntryResourcesJSON(entry governance.AuthzLogEntry) (string, error) 
 	return string(b), nil
 }
 
-func authzLogEntryExecutionJSON(entry governance.AuthzLogEntry) (string, error) {
+func authzLogEntryExecutionJSON(entry auth.AuthzLogEntry) (string, error) {
 	b, err := json.Marshal(entry.Execution)
 	if err != nil {
 		return "", errors.Wrap(err, errors.InvalidInput, "marshal authz log execution failed").
@@ -331,7 +331,7 @@ func authzLogEntryExecutionJSON(entry governance.AuthzLogEntry) (string, error) 
 	return string(b), nil
 }
 
-func authzLogEntryMetadataJSON(entry governance.AuthzLogEntry) (string, error) {
+func authzLogEntryMetadataJSON(entry auth.AuthzLogEntry) (string, error) {
 	if len(entry.Metadata) == 0 && len(entry.MatchedRules) == 0 && !entry.SnapshotVersionDerived {
 		return "{}", nil
 	}
@@ -343,7 +343,7 @@ func authzLogEntryMetadataJSON(entry governance.AuthzLogEntry) (string, error) {
 		payload["matched_rules"] = append([]string(nil), entry.MatchedRules...)
 	}
 	if entry.SnapshotVersionDerived {
-		payload[governance.SnapshotVersionDerivedMetadataKey] = true
+		payload[auth.SnapshotVersionDerivedMetadataKey] = true
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

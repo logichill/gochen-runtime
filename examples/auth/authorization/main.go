@@ -6,6 +6,7 @@ import (
 	"gochen-runtime/host/authz"
 	"gochen/auth"
 	"gochen/auth/scoped"
+	"gochen/domain/meta"
 	"gochen/domain/spec"
 	"log"
 )
@@ -17,7 +18,15 @@ type document struct {
 
 func main() {
 	log.SetFlags(0)
-	authorizer, err := scoped.New(authz.NewActionChecker(), authz.NewScopeResolver("department", nil))
+	metadata, err := meta.Describe[*document]()
+	must(err)
+	authorizer, err := auth.Compile(auth.Declaration{
+		Descriptor: auth.Descriptor{Resource: "document", Actions: []auth.Action{
+			{Name: "read", Kind: auth.KindRead, Permission: "document:api:read"},
+			{Name: "update", Kind: auth.KindUpdate, Permission: "document:api:write"},
+		}}, ResourceAccess: auth.ResourceAccessData,
+		Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: authz.NewScopeResolver("department", nil)}}},
+	}, auth.CompileOptions{Checker: authz.NewActionChecker(), Metadata: metadata})
 	must(err)
 	ctx, err := authz.WithPrincipal(context.Background(), authz.Principal{SubjectID: "alice", ActiveScopeID: 1001, Permissions: []string{"document:api:read"}})
 	must(err)

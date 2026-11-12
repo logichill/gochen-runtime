@@ -61,6 +61,11 @@ func (g *RouteGroup) Group(prefix string) httpx.IRouteGroup {
 
 // Use 追加中间件，仅作用于此后在本 group 上注册的路由（已注册路由保留其注册时的快照）。
 func (g *RouteGroup) Use(mw ...httpx.Middleware) httpx.IRouteGroup {
+	g.server.mu.Lock()
+	defer g.server.mu.Unlock()
+	if err := g.server.requireRoutesMutableLocked(); err != nil {
+		return g
+	}
 	g.middlewares = append(g.middlewares, mw...)
 	return g
 }
@@ -77,7 +82,9 @@ func (g *RouteGroup) add(method, path string, h httpx.Handler) httpx.IRouteGroup
 	snapshot := append([]httpx.Middleware{}, g.middlewares...)
 	g.server.mu.Lock()
 	defer g.server.mu.Unlock()
-	g.server.recordRouteLocked(method, full)
+	if !g.server.recordRouteLocked(method, full) {
+		return g
+	}
 	g.server.routes[method+" "+full] = &route{method: method, pattern: full, handler: h, middlewares: snapshot}
 	g.server.markMuxDirtyLocked()
 	return g

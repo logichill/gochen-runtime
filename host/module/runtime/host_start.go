@@ -40,6 +40,39 @@ func (s *Host) StartBackground(ctx context.Context) error {
 	if err := s.registerModuleRoutes(ctx); err != nil {
 		return err
 	}
+	if s.config != nil {
+		entries := make([]capability.ModuleCatalogEntry, 0, len(s.modules))
+		for _, m := range s.modules {
+			if m != nil {
+				entries = append(entries, capability.ModuleCatalogEntry{ID: s.moduleIDOf(m), Module: m})
+			}
+		}
+		for _, validator := range s.config.EntryValidators {
+			if collector, ok := validator.(capability.IModuleEntryCollector); ok && !runtimeutil.IsTypedNil(collector) {
+				if err := collector.PrepareModuleEntries(ctx, entries); err != nil {
+					return err
+				}
+			}
+		}
+		for _, validator := range s.config.EntryValidators {
+			if runtimeutil.IsTypedNil(validator) {
+				return errors.NewCode(errors.InvalidInput, "entry validator cannot be nil")
+			}
+			if s.runtime == nil {
+				return errors.NewCode(errors.FailedPrecondition, "entry validation requires a prepared runtime")
+			}
+			if err := validator.ValidateEntries(ctx, s.runtime.HTTPServer); err != nil {
+				return err
+			}
+		}
+		for _, validator := range s.config.EntryValidators {
+			if activator, ok := validator.(capability.IEntryActivator); ok {
+				if err := activator.ActivateEntries(); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
 	if len(s.modules) > 0 {
 		stops := make([]module.ModuleStopFunc, 0, len(s.modules))

@@ -1,8 +1,8 @@
 # gochen-runtime/api/rest：按 Descriptor 挂载 REST 路由
 
-`api/rest` 把 `Application.Descriptor()` 声明的动作映射为 HTTP 路由。路由集合由 Descriptor 决定，不再提供 `Enable*` 开关，也不通过 `WithXxx` 注入服务能力：应用没有声明的动作不会被注册，声明了生命周期动作却没有实现 `LifecycleApplication` 会在装配期直接报错。
+`api/rest` 把 `Application.Descriptor()` 声明的动作映射为 HTTP 路由。调用方提供完整应用，注册器根据动作生成路由，并在装配期校验生命周期等所需能力。
 
-设计背景见工作区根 `core-design.md`（D14/D17），正式接入契约见 gochen 仓库 `docs/architecture/layered-authz.md`。
+授权概念见 `gochen` 仓库 `docs/architecture/layered-authz.md`，字段保护与归属迁移见该仓库 `docs/architecture/resource-contracts.md`。
 
 ## 1. 入口
 
@@ -18,24 +18,24 @@
 `Mount` 只做这几件事：校验 Descriptor、推导路由、包装中间件与错误映射、可选地登记启动清单。handler 本身只解码请求并调用 Application。
 
 ```go
-authorizer, err := authscoped.New(checker, resolver)
-if err != nil {
-	return err
-}
-app, err := crud.NewApplication[*User, int64](repo, crud.Options[*User, int64]{
-	Resource:   "user",
-	Authorizer: authorizer,
-})
+app, err := quick.DeclaredApp[*User, int64](repo,
+	crud.Options[*User, int64]{Resource: "user"},
+	[]auth.Rule{{Scope: &auth.ScopeRule{Resolver: resolver}}},
+	auth.CompileOptions{Checker: checker},
+)
 if err != nil {
 	return err
 }
 
 if err := rest.Mount[*User, int64](router, app,
 	rest.WithBasePath[*User, int64]("/users"),
+	rest.WithEntryRegistry[*User, int64](entries, "users"),
 ); err != nil {
 	return err
 }
 ```
+
+`entries` 由 `host/authz.NewEntryRegistry()` 创建，并通过 `config.WithEntryValidator(entries)` 接入 Host。注册器登记 Application 的实际动作执行计划；Host 从 HTTP 驱动独立枚举路由，补齐隐式 HEAD 和协议 OPTIONS，缺失或无效绑定会阻断业务模块和传输启动。其他手写路由同样需要登记资源执行绑定或明确的公共放行理由。
 
 ## 2. 标准路由
 
@@ -56,9 +56,21 @@ Descriptor 中声明了对应动作时才注册：
 | `purge` | DELETE | `{BasePath}/:id/purge` | 需要 `LifecycleApplication` |
 | `read` | GET | `{BasePath}/:id` | 读取单个实体 |
 
-`BasePath` 为空时直接注册到路由组根路径。批量路由共用单个动作的权限码；一批请求只做一次授权、一个事务，任一元素失败整批回滚。
+`BasePath` 为空时直接注册到路由组根路径。批量路由共用单个动作的权限码；一批请求只做一次授权、一个事务，提交前任一元素失败整批回滚。
 
-audited 应用的写入口要求能提取 operator；`Mount` 在装配期检查 `WithOperatorExtractor`，运行期缺少 operator 的请求会被拒绝。audited 单条和批量更新必须携带并匹配当前 `version`，审计/软删字段由框架管理；批量冲突整批回滚。过滤分页通过 `QueryCount` 使用相同条件统计总数。
+单条和批量 PUT 必须携带调用方读取时的 `version`，版本 0 合法。缺失、null、负数或溢出返回 HTTP 400（InvalidInput），过期版本返回 HTTP 409（Concurrency）；批量任一冲突整批回滚。仓储显式关闭版本控制时，标准 HTTP 入口仍要求该字段。
+
+单条更新请求示例：
+
+```json
+{"name":"新名称","version":0}
+```
+
+批量更新中每项同时提供 `id`、业务字段和 `version`。
+
+批量更新保留未提交的 `dim` 字段。显式提交的维度由 Core 有效资源契约判定，允许可修改维度；受保护维度变化使整批回滚。
+
+audited 应用的写入口要求能提取 operator；`Mount` 在装配期检查 `WithOperatorExtractor`，运行期缺少 operator 的请求会被拒绝。审计/软删字段由框架管理。过滤分页通过 `QueryCount` 使用相同条件统计总数。
 
 ### 2.1 路由表自省
 
@@ -71,15 +83,9 @@ desc, specs, err := rest.Describe[*User, int64](app,
 specs = rest.Specs(desc, "/users") // 纯投影，等价于上面的 specs
 ```
 
-`RouteSpec` 不含 handler、不含泛型，字段是 `Op / Method / Path / Action / Permission`：可直接用于
-OpenAPI、跨应用路由冲突检测与路由清单。`Mount` 内部的 `standardRoutes()` 从同一份 `Specs`
-派生 op 再映射到 handler，`Action` 走同一条 `mount` 路径，因此「路由表」与「实际注册」不会漂移
-（`TestSpecsMatchRegisteredRoutes` 守住这一点）。`Describe` 复用 `Mount` 的装配期校验，
-所以校验不会被自省入口绕过。
+`RouteSpec` 包含 `Op / Method / Path / Action / Permission`，可用于 OpenAPI、冲突检测和路由清单。`Describe` 复用注册校验，`Mount` 根据同一份 `Specs` 挂载实际路由。
 
-注册流程固定为：校验（`prepare`）→ 推导路由表 → 逐条 `mount` → CORS 预检 → 启动清单登记。
-method 分派集中在 `gochen-runtime/http.RegisterRoute`：非标准方法（如 `TRACE`）返回
-`InvalidInput`，不会再被静默注册成 `OPTIONS`。
+注册顺序为：校验应用与配置 → 推导路由 → 挂载中间件与 handler → CORS 预检 → 可选启动清单登记。HTTP 方法由 `http.RegisterRoute` 统一分派，非标准方法返回 `InvalidInput`。
 
 ## 3. 业务动作
 
@@ -108,17 +114,15 @@ if err := rest.Action[*Article, int64](router, app,
 
 直接注册到 `IRouteGroup` 的路由不经过 Descriptor 声明检查。
 
-## 4. 配置项
-
-### 迁移入口
+## 4. 归属迁移
 
 `rest.Transfer` 要求应用声明 KindTransfer、ReceiveAction 和 Dimensions，并实现 ITransferApplication。Runner 使用 tracked 模式，存储支持幂等结果和并发预占。目标存在性及接收权限由应用授权器判定。
 
 POST 请求提供 `Idempotency-Key`，body 形如 `{"expected_version":0,"targets":[{"dimension":"department","value":7}]}`。版本 0 合法，缺失或 null 返回 InvalidInput。幂等键绑定主体、租户、资源、动作和实体；相同有效键返回首次 Result.Operation.ID 与结果。过期键产生新操作，继续验证原调用方版本。提交后失败和已存储 degraded 结果均返回 HTTP 200，设置 `X-Execution-Status: degraded`。
 
-REST 将原始幂等键与资源身份交给 `operation.Runner.ExecuteTransfer`，与命令入口共用主体、租户和资源的作用域绑定及输入校验。直接 Application.Transfer 在事务前生成 OperationID；仓储在两阶段授权前检查上下文事务与自身绑定的 ORM 会话，已活动事务中的调用返回 FailedPrecondition。
+REST 与命令入口共用 `operation.Runner.ExecuteTransfer` 的身份绑定和输入校验。Transfer 从事务外开始，已有活动事务中的调用返回 `FailedPrecondition`。完整执行顺序见 `gochen` 仓库 `docs/architecture/resource-contracts.md`。
 
-### 普通路由配置
+## 5. 配置项
 
 `RouteConfig` 按关注点分组，常用 Option：
 
@@ -141,22 +145,22 @@ REST 将原始幂等键与资源身份交给 `operation.Runner.ExecuteTransfer`�
 
 `WithPermissionChecker` 只是性能优化：真正的授权始终在 Application 层，删除它不改变安全语义。
 
-## 5. 列表查询协议
+## 6. 列表查询协议
 
 - `page` / `size`（`page_size` 作为 `size` 的别名）：分页参数；非法值返回 400。
 - `filter=<field>:<op>:<value>`：可重复，支持 `eq/ne/like/gt/gte/lt/lte/in/not_in/is_null/not_null`。
 - `sorts=field[:asc|desc],...`：字段去重，方向非法返回 400。
 - `fields=f1,f2,...`：字段投影，去重保序。
 
-多个 `filter` 由仓储组合为 AND。配置了 `AllowedFilterFields/AllowedSortFields/AllowedFields` 时，越界字段返回 400 而不是静默忽略。
+多个 `filter` 由仓储组合为 AND。过滤、排序和投影遵循 QuerySchema 及字段白名单；越界字段返回 HTTP 400。
 
-## 6. 响应与错误
+## 7. 响应与错误
 
 - 成功响应默认包装为 `httpx.NewSuccessMessage(data)`；可用 `WithResponseWrapper` 覆盖。
 - handler 返回错误时交给 `RouteConfig.Response.ErrorHandler`（默认 `DefaultErrorHandler`）。
 - 返回 `contextx.WrapAfterCommitError(err)` 表示“主操作已提交、后续步骤失败”：HTTP 返回 200，响应头 `X-Execution-Status: degraded`。
 
-## 7. 装配期 fail-fast
+## 8. 装配期校验
 
 `Mount`/`Register` 在注册任何路由前会检查：
 
@@ -167,38 +171,26 @@ REST 将原始幂等键与资源身份交给 `operation.Runner.ExecuteTransfer`�
 - audited 应用配置了 `OperatorExtractor`；
 - CORS 配置合法。
 
-## 8. 示例
+## 9. 示例
 
 - 普通 CRUD：`examples/domain/crud/main.go`
 - audited CRUD：`examples/domain/audited/main.go`
 - 分层授权：`examples/security/layering/main.go`
 - quick 装配与真实 HTTP 往返：`quick/quick_test.go`
 
-## 9. 启动链路
+## 10. 启动与请求链路
 
 `api/rest` 位于 Host 的路由挂载阶段：
 
 ```text
-Host.StartBackground
-  └─ Host.registerModuleRoutes
-       └─ explicitModule.RegisterRoutes
-            ├─ runtimecap.HTTPFrom(opts).MountGroup()
-            ├─ 应用模块中间件
-            └─ 逐个 RouteRegistrar.RegisterRoutes(group)
-                 └─ rest.Mount(group, app, opts...)
-                      ├─ NewRouteBuilder
-                      ├─ prepare：校验 Descriptor、能力、CORS、查询 schema
-                      ├─ standardRoutes：Specs 生成路由表并绑定 handler
-                      ├─ mount：中间件 → 错误映射 → http.RegisterRoute
-                      ├─ OPTIONS 预检路由
-                      └─ 可选 IStartupRegistry 登记
+Host 启动 → 模块路由注册 → rest.Mount → 校验并挂载路由
+请求进入 → 路由中间件 → handler → Application → Repository
+请求结束 → 响应包装或错误处理
 ```
 
-请求进入后的链路为：`http/nethttp` 路由 → 路由中间件 → `wrapHandler` → 标准 handler 或 `rest.Action` handler → `Application` → 响应包装/错误处理。
+`rest.Action` 与标准路由共用挂载流程，中间件、权限快速拒绝和错误映射保持一致。
 
-`rest.Action` 与标准路由共用 `mount`，因此中间件、授权快速拒绝和错误映射保持一致。
-
-## 10. 依赖关系
+## 11. 依赖关系
 
 | 方向 | 依赖 |
 | --- | --- |

@@ -21,7 +21,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	authscoped "gochen/auth/scoped"
 	"gochen/contextx"
 	"gochen/db"
 	"gochen/domain/spec"
@@ -106,15 +105,8 @@ func main() {
 		log.Fatalf("failed to create isolated repo: %v", err)
 	}
 
-	authorizer, err := authscoped.New(authz.NewActionChecker(), scopeResolver{})
-	if err != nil {
-		log.Fatalf("failed to build authorizer: %v", err)
-	}
-
-	orderApp, err := quick.App[*Order, int64](orderRepo, crud.Options[*Order, int64]{
-		Resource:   "order",
-		Authorizer: authorizer,
-	})
+	orderApp, err := quick.DeclaredApp[*Order, int64](orderRepo, crud.Options[*Order, int64]{Resource: "order"},
+		[]auth.Rule{{Scope: &auth.ScopeRule{Resolver: scopeResolver{}}}}, auth.CompileOptions{Checker: authz.NewActionChecker()})
 	if err != nil {
 		log.Fatal(err)
 	}

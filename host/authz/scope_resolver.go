@@ -11,7 +11,7 @@ import (
 
 // NewScopeResolver 将主体的数据范围投影为项目指定维度上的条件。
 // resolver 为 nil 时使用已绑定范围或主体的 ActiveScopeID；缺少范围返回 None。
-func NewScopeResolver(dimension meta.Dimension, resolver scoped.IDataScopeResolver) scoped.ISpecResolver {
+func NewScopeResolver(dimension meta.Dimension, resolver scoped.IDataScopeResolver) auth.ISpecResolver {
 	return scopeResolver{dimension: dimension, resolver: resolver}
 }
 

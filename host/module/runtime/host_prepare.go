@@ -6,6 +6,7 @@ import (
 
 	"gochen-runtime/host/internal/bootstrap"
 	"gochen-runtime/host/module"
+	runtimehttp "gochen-runtime/http"
 	"gochen/errors"
 )
 
@@ -21,6 +22,15 @@ func (s *Host) Prepare(ctx context.Context) error {
 
 	if err := s.ensureFrameworkRegistries(); err != nil {
 		return errors.Wrap(err, errors.Dependency, "failed to initialize framework registries")
+	}
+	var registry runtimehttp.IEntryRegistry
+	for _, validator := range s.config.EntryValidators {
+		if candidate, ok := validator.(runtimehttp.IEntryRegistry); ok {
+			if registry != nil {
+				return errors.NewCode(errors.InvalidInput, "host requires one HTTP authorization entry registry")
+			}
+			registry = candidate
+		}
 	}
 
 	runtime, err := bootstrap.Prepare(bootstrap.Config{
@@ -38,6 +48,7 @@ func (s *Host) Prepare(ctx context.Context) error {
 		EventBus:                 s.config.EventBus,
 		Transport:                s.config.Transport,
 		ProjectionRuntime:        s.config.ProjectionRuntime,
+		EntryRegistry:            registry,
 	})
 	if err != nil {
 		return errors.Wrap(err, errors.Dependency, "failed to prepare host runtime")

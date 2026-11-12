@@ -60,4 +60,6 @@ if err := app.Run(context.Background()); err != nil {
 - `quick/`：极简快速装配门面（Quick Host / Rest / Repo）
 - `examples/`：端到端与驱动层可运行示例
 
-资源仓储通过 `db/orm/repo.WithResourceContract` 配置维度能力，默认保护全部维度；普通更新落实版本、保护值与授权条件。Transfer 在同源事务中执行条件更新和实际后像回读。`AuditResource` 将资源契约绑定到完整 JSON 快照、类型化维度列和隔离列，AuditStore 构造校验真实表列。外部迁移使用 `api/rest.Transfer`，要求幂等键及调用方版本，见 [REST 接入](api/rest/README.md)。
+Repo 在构造期配置租户隔离和资源字段保护；Application 执行授权和业务用例，REST 负责请求解码与路由。分层概念及归属迁移见 `gochen` 仓库 `docs/architecture/layered-authz.md`、`docs/architecture/resource-contracts.md`；HTTP 参数和版本要求见 [REST 接入](api/rest/README.md)。
+
+使用 `host/config.WithEntryValidator(host/authz.NewEntryRegistry())` 时，Host 在路由注册后、后台和 Transport 启动前核对 HTTP、组件及普通事件订阅。事件处理器提供 `AuthorizationBinding(messageType string) (auth.EntryBinding, error)`，返回该消息类型实际执行的资源命令绑定或明确无资源访问的放行依据。运行时固定实际处理器及订阅类型，缺声明进入无效分类并阻止订阅；全部门禁通过后启用同一集合。

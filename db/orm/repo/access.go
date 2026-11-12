@@ -29,10 +29,11 @@ type resolvedField struct {
 // 列名解析顺序：模型元数据（适配器已解析）→ 结构体标签（gorm column、db、json）
 // → snake_case。字段名与列名都能用于查询过滤与排序，避免下游同时记两套命名。
 type columnResolver struct {
-	metadata *entitymeta.Metadata
-	dialect  coredialect.IDialect
-	fields   []resolvedField
-	byName   map[string]int
+	metadata  *entitymeta.Metadata
+	qualifier string
+	dialect   coredialect.IDialect
+	fields    []resolvedField
+	byName    map[string]int
 	// identityType 保留审计文本列对应的业务标识转换类型。
 	identityType reflect.Type
 }
@@ -154,6 +155,9 @@ func (r *columnResolver) lookup(name string) (int, bool) {
 }
 
 func (r *columnResolver) quote(column string) string {
+	if r.qualifier != "" {
+		return r.dialect.QuoteIdentifier(r.qualifier) + "." + r.dialect.QuoteIdentifier(column)
+	}
 	return r.dialect.QuoteIdentifier(column)
 }
 

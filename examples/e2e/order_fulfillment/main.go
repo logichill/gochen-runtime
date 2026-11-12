@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,14 +19,18 @@ import (
 	"gochen-runtime/db/sql/stdsql"
 	outboxsql "gochen-runtime/eventing/outbox/sqlstore"
 	storesql "gochen-runtime/eventing/store/sqlstore"
+	"gochen-runtime/examples/e2e/order_fulfillment/internal/access"
 	e2edb "gochen-runtime/examples/e2e/order_fulfillment/internal/db"
 	"gochen-runtime/examples/e2e/order_fulfillment/internal/domain"
 	e2esaga "gochen-runtime/examples/e2e/order_fulfillment/internal/saga"
 	"gochen-runtime/examples/e2e/order_fulfillment/internal/services"
+	"gochen-runtime/host/authz"
 	"gochen-runtime/http/nethttp"
+	"gochen/app"
 	"gochen/app/crud"
 	"gochen/auth"
 	"gochen/db"
+	"gochen/domain/meta"
 	"gochen/errors"
 	"gochen/eventing"
 	"gochen/eventing/bus"
@@ -108,14 +113,31 @@ func BootstrapSystem(ctx context.Context) (*AppSystem, error) {
 		ormEngine,
 		"orders",
 		repo.WithIDGenerator[*domain.Order, int64](idGen),
+		// 隔离键与维度能力在仓储构造期声明，用例层只消费既定契约。
+		repo.WithIsolation[*domain.Order, int64](repo.IsolationCols{Column: "tenant_id"}),
+		repo.WithResourceContract[*domain.Order, int64](app.ResourceContract{
+			Isolation:  meta.ByDimension("tenant"),
+			Assignable: []meta.Dimension{"department"},
+		}),
+		repo.WithResourceKind[*domain.Order, int64](access.Resource),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create order repo: %w", err)
 	}
-	orderApp, err := crud.NewApplication[*domain.Order, int64](orderRepo, crud.Options[*domain.Order, int64]{
-		Resource:   "order",
-		Authorizer: auth.Allow(),
-	})
+	options := crud.Options[*domain.Order, int64]{Resource: access.Resource}
+	descriptor, err := crud.Describe(options, true)
+	if err != nil {
+		return nil, fmt.Errorf("describe order application: %w", err)
+	}
+	// 动作权限、范围条件与创建赋值编译到同一份入口计划。
+	options.Authorizer, err = auth.Compile(auth.Declaration{
+		Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData,
+		Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: access.DepartmentScope{}}}},
+	}, auth.CompileOptions{Checker: authz.NewActionChecker(), Metadata: orderRepo.ExecutionDescriptor().Metadata()})
+	if err != nil {
+		return nil, fmt.Errorf("create order authorizer: %w", err)
+	}
+	orderApp, err := crud.NewApplication[*domain.Order, int64](orderRepo, options)
 	if err != nil {
 		return nil, fmt.Errorf("create order app: %w", err)
 	}
@@ -158,6 +180,16 @@ func BootstrapSystem(ctx context.Context) (*AppSystem, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create outbox publisher: %w", err)
+	}
+	// 独立示例显式开放私有演示账本，发布器仍执行固定注册函数的启用契约。
+	if err := outboxPublisher.SetTaskExecutor(func(ctx context.Context, _ string, handler func(context.Context) error) error { return handler(ctx) }); err != nil {
+		return nil, err
+	}
+	if err := outboxPublisher.TaskRegistry().SealHandlers(); err != nil {
+		return nil, err
+	}
+	if err := outboxPublisher.TaskRegistry().ActivateHandlers(); err != nil {
+		return nil, err
 	}
 
 	// 7. 命令执行器与 Saga 编排器
@@ -332,6 +364,10 @@ func registerCommandHandlers(sys *AppSystem) {
 
 // 注册 HTTP API 路由
 func registerAPIRoutes(server httpx.IServer, sys *AppSystem) {
+	// 认证入口：把租户、主体、当前范围与权限写入请求上下文，
+	// 用例层据此判定动作与范围，仓储据此执行隔离。
+	server.Use(access.BindIdentity())
+
 	// 创建订单并触发 Saga 履约
 	server.POST("/api/v1/orders", func(c httpx.IContext) error {
 		var req struct {
@@ -353,7 +389,8 @@ func registerAPIRoutes(server httpx.IServer, sys *AppSystem) {
 			Status:      domain.OrderStatusCreated,
 		}
 		if err := sys.OrderApp.Create(c.RequestContext(), order); err != nil {
-			return c.JSON(500, httpx.JSONValue(map[string]string{"error": err.Error()}))
+			// 用例保留授权器的错误码，HTTP 层据此映射状态码（未认证 / 无权限 / 校验失败）。
+			return err
 		}
 
 		// 2. 编排并执行 Fulfillment Saga
@@ -412,6 +449,50 @@ func registerAPIRoutes(server httpx.IServer, sys *AppSystem) {
 	})
 }
 
+// caller 描述一次调用已经通过认证入口的身份事实。
+type caller struct {
+	tenant      string
+	operator    string
+	scopeID     int64
+	permissions string
+}
+
+// doJSON 以调用方身份发起 HTTP 请求：身份事实经请求头进入服务端。
+//
+// 本示例借此模拟可信认证入口；服务端不解析身份，只消费已经建立好的上下文。
+func doJSON(ctx context.Context, method, url string, who caller, payload any) (int, string, error) {
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return 0, "", err
+		}
+		body = bytes.NewBuffer(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return 0, "", err
+	}
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	request.Header.Set(access.TenantHeader, who.tenant)
+	request.Header.Set(access.OperatorHeader, who.operator)
+	request.Header.Set(access.ScopeHeader, strconv.FormatInt(who.scopeID, 10))
+	request.Header.Set(access.PermissionHeader, who.permissions)
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = response.Body.Close() }()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		return response.StatusCode, "", err
+	}
+	return response.StatusCode, string(raw), nil
+}
+
 func main() {
 	log.SetPrefix("[e2e_fulfillment] ")
 	ctx := context.Background()
@@ -448,20 +529,28 @@ func main() {
 	// -----------------------------------------------------------------
 	fmt.Println(">>> 场景一：正常下单履约流程 (Happy Path)")
 	fmt.Println("-----------------------------------------------------------------")
+	// 下单方：租户 tenant-apple 的部门 1001 操作员，持有下单与读取权限。
+	ops := caller{tenant: "tenant-apple", operator: "alice", scopeID: 1001,
+		permissions: "order:api:create,order:api:read,order:api:list,order:api:update"}
 	orderReq1 := map[string]any{
 		"customer_id":  1001,
 		"item_id":      "item-phone",
 		"quantity":     2,
 		"total_amount": 10000,
 	}
-	body1, _ := json.Marshal(orderReq1)
-	resp1, err := http.Post(baseURL+"/api/v1/orders", "application/json", bytes.NewBuffer(body1))
+	status1, response1, err := doJSON(ctx, http.MethodPost, baseURL+"/api/v1/orders", ops, orderReq1)
 	if err != nil {
 		log.Fatalf("Scenario 1 request failed: %v", err)
 	}
-	respBody1, _ := io.ReadAll(resp1.Body)
-	_ = resp1.Body.Close()
-	fmt.Printf("HTTP Status: %d\nResponse: %s\n", resp1.StatusCode, string(respBody1))
+	fmt.Printf("HTTP Status: %d\nResponse: %s\n", status1, response1)
+
+	var created struct {
+		Order domain.Order `json:"order"`
+	}
+	if err := json.Unmarshal([]byte(response1), &created); err != nil {
+		log.Fatalf("Scenario 1 response decode failed: %v", err)
+	}
+	fmt.Printf("订单归属由服务端落定: tenant=%s department=%d\n", created.Order.Tenant, created.Order.Department)
 
 	// 验证库存与订单状态
 	avail1, res1, _ := sys.InventorySvc.GetStock(ctx, "item-phone")
@@ -487,14 +576,11 @@ func main() {
 		"quantity":     1,
 		"total_amount": 60000,
 	}
-	body2, _ := json.Marshal(orderReq2)
-	resp2, err := http.Post(baseURL+"/api/v1/orders", "application/json", bytes.NewBuffer(body2))
+	status2, response2, err := doJSON(ctx, http.MethodPost, baseURL+"/api/v1/orders", ops, orderReq2)
 	if err != nil {
 		log.Fatalf("Scenario 2 request failed: %v", err)
 	}
-	respBody2, _ := io.ReadAll(resp2.Body)
-	_ = resp2.Body.Close()
-	fmt.Printf("HTTP Status: %d\nResponse: %s\n", resp2.StatusCode, string(respBody2))
+	fmt.Printf("HTTP Status: %d\nResponse: %s\n", status2, response2)
 
 	// 验证库存自动回滚释放（不会残留锁定）
 	avail2, res2, _ := sys.InventorySvc.GetStock(ctx, "item-phone")
@@ -506,6 +592,35 @@ func main() {
 	sys.eventsMu.Lock()
 	fmt.Printf("All Outbox events received so far: %v\n", sys.ReceivedEvents)
 	sys.eventsMu.Unlock()
+
+	// -----------------------------------------------------------------
+	// 场景三：跨租户读取 —— 隔离空间不同，实体对其不可见
+	// -----------------------------------------------------------------
+	fmt.Println("\n>>> 场景三：另一租户读取订单 (L2 隔离)")
+	fmt.Println("-----------------------------------------------------------------")
+	intruder := caller{tenant: "tenant-google", operator: "mallory", scopeID: 1001,
+		permissions: "order:api:read,order:api:list"}
+	status3, response3, err := doJSON(ctx, http.MethodGet,
+		fmt.Sprintf("%s/api/v1/orders/%d", baseURL, created.Order.ID), intruder, nil)
+	if err != nil {
+		log.Fatalf("Scenario 3 request failed: %v", err)
+	}
+	fmt.Printf("HTTP Status: %d（隔离范围内不可见按 404 处理，不泄露“存在但无权”）\nResponse: %s\n",
+		status3, response3)
+
+	// -----------------------------------------------------------------
+	// 场景四：缺少动作权限 —— 在用例入口被拒绝
+	// -----------------------------------------------------------------
+	fmt.Println("\n>>> 场景四：只读操作员尝试下单 (L1 动作权限)")
+	fmt.Println("-----------------------------------------------------------------")
+	auditor := caller{tenant: "tenant-apple", operator: "bob", scopeID: 1001,
+		permissions: "order:api:read,order:api:list"}
+	status4, response4, err := doJSON(ctx, http.MethodPost, baseURL+"/api/v1/orders", auditor,
+		map[string]any{"customer_id": 1003, "item_id": "item-phone", "quantity": 1, "total_amount": 5000})
+	if err != nil {
+		log.Fatalf("Scenario 4 request failed: %v", err)
+	}
+	fmt.Printf("HTTP Status: %d\nResponse: %s\n", status4, response4)
 
 	// 优雅关闭
 	_ = sys.HTTPServer.Stop(ctx)

@@ -43,7 +43,9 @@ func (s *Server) addRoute(method, path string, handler httpx.Handler) httpx.ISer
 	defer s.mu.Unlock()
 
 	key := method + " " + path
-	s.recordRouteLocked(method, path)
+	if !s.recordRouteLocked(method, path) {
+		return s
+	}
 	s.routes[key] = &route{
 		method:      method,
 		pattern:     path,
@@ -72,6 +74,9 @@ func (s *Server) Group(prefix string) httpx.IRouteGroup {
 func (s *Server) Use(middleware ...httpx.Middleware) httpx.IServer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireRoutesMutableLocked(); err != nil {
+		return s
+	}
 	s.middlewares = append(s.middlewares, middleware...)
 	s.markMuxDirtyLocked()
 	return s

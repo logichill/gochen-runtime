@@ -2,7 +2,6 @@ package rest
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -137,32 +136,26 @@ func (rb *RouteBuilder[T, ID]) handleUpdate(c httpx.IContext) error {
 		return err
 	}
 
-	var body []byte
+	body, fields, err := readJSONBodyObject(c)
+	if err != nil {
+		return err
+	}
 	if rb.isAudited() {
-		var fields map[string]json.RawMessage
-		body, fields, err = readJSONBodyObject(c)
-		if err != nil {
-			return err
-		}
 		if err := rejectAuditedUpdateForbiddenFields(fields); err != nil {
 			return err
 		}
-		expected, err := requireUint64JSONField(fields, "version")
-		if err != nil {
-			return err
-		}
-		if got := entity.GetVersion(); expected != got {
-			return errors.NewCode(errors.Concurrency, "concurrency conflict").
-				WithContext("id", id).
-				WithContext("expected_version", expected).
-				WithContext("actual_version", got)
-		}
 	}
-	if body != nil {
-		err = bindJSONBodyIntoEntity(body, &entity)
-	} else {
-		err = bindJSONIntoEntity(c, &entity)
+	expected, err := requireUint64JSONField(fields, "version")
+	if err != nil {
+		return err
 	}
+	if got := entity.GetVersion(); expected != got {
+		return errors.NewCode(errors.Concurrency, "concurrency conflict").
+			WithContext("id", id).
+			WithContext("expected_version", expected).
+			WithContext("actual_version", got)
+	}
+	err = bindJSONBodyIntoEntity(body, &entity)
 	if err != nil {
 		if errors.Is(err, errors.PayloadTooLarge) {
 			return err

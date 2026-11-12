@@ -162,6 +162,10 @@ func main() {
 	if monitoringRegistry != nil {
 		must(publisher.SetMetricsRecorder(monitoringRegistry.Metrics))
 	}
+	// 此独立示例显式开放其私有演示账本；生产宿主在此连接资源命令并核对入口。
+	must(publisher.SetTaskExecutor(func(ctx context.Context, _ string, handler func(context.Context) error) error { return handler(ctx) }))
+	must(publisher.TaskRegistry().SealHandlers())
+	must(publisher.TaskRegistry().ActivateHandlers())
 	must(publisher.PublishPending(ctx))
 
 	// 6) 检查 Outbox 待发布数量（应变为 0）

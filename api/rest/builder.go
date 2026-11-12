@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -8,7 +9,7 @@ import (
 	"gochen-runtime/http/middleware"
 	"gochen-runtime/internal/httpheader"
 	"gochen/auth"
-	authaction "gochen/auth/action"
+
 	"gochen/contextx"
 	"gochen/domain"
 	"gochen/errors"
@@ -51,13 +52,15 @@ func (m mountedRoutes) add(method, path string) {
 
 // RouteBuilder 按 Descriptor 把 Application 的标准能力组装成 REST 路由。
 type RouteBuilder[T domain.IEntity[ID], ID comparable] struct {
-	config      *RouteConfig[ID]
-	service     Application[T, ID]
-	middlewares []httpx.Middleware
-	permissions authaction.IActionChecker
-	registry    IStartupRegistry
-	cors        httpx.Middleware
-	descriptor  auth.Descriptor
+	config          *RouteConfig[ID]
+	service         Application[T, ID]
+	middlewares     []httpx.Middleware
+	fastDenyEnabled bool
+	registry        IStartupRegistry
+	entryRegistry   IEntryRegistry
+	entryModule     string
+	cors            httpx.Middleware
+	descriptor      auth.Descriptor
 }
 
 // NewRouteBuilder 创建路由构建器。
@@ -132,6 +135,13 @@ func (rb *RouteBuilder[T, ID]) Register(group httpx.IRouteGroup) error {
 	if isNilService(group) {
 		return errors.NewCode(errors.InvalidInput, "route group cannot be nil")
 	}
+	if rb.entryRegistry == nil {
+		var err error
+		rb.entryRegistry, rb.entryModule, err = runtimehttp.EntryRegistryFrom(group)
+		if err != nil {
+			return err
+		}
+	}
 	if err := rb.prepare(); err != nil {
 		return err
 	}
@@ -143,7 +153,9 @@ func (rb *RouteBuilder[T, ID]) Register(group httpx.IRouteGroup) error {
 		}
 		mounted.add(route.spec.Method, route.spec.Path)
 	}
-	rb.registerPreflightRoutes(group, mounted)
+	if err := rb.registerPreflightRoutes(group, mounted); err != nil {
+		return err
+	}
 	return rb.registerStartup()
 }
 
@@ -232,19 +244,52 @@ func (rb *RouteBuilder[T, ID]) mount(group httpx.IRouteGroup, route routeDef) er
 			WithContext("op", string(route.spec.Op))
 	}
 	handler := route.handler
-	if rb.permissions != nil {
+	if rb.entryRegistry != nil {
+		provider, ok := any(rb.service).(interface {
+			AuthorizationBinding(string) (auth.EntryBinding, error)
+		})
+		if !ok {
+			return errors.NewCode(errors.InvalidInput, "entry registration requires a declared application execution")
+		}
+		binding, err := provider.AuthorizationBinding(route.spec.Action)
+		if err != nil {
+			return err
+		}
+		binding.Module = rb.entryModule
+		location, ok := group.(httpx.IRouteLocation)
+		if !ok {
+			return errors.NewCode(errors.InvalidInput, "route group must expose actual path resolution")
+		}
+		if err := rb.entryRegistry.BindHTTP(route.spec.Method, location.RoutePath(route.spec.Path), binding); err != nil {
+			return err
+		}
+	}
+	if rb.fastDenyEnabled {
 		handler = rb.fastDeny(route.spec.Action, handler)
 	}
 	return runtimehttp.RegisterRoute(group, route.spec.Method, route.spec.Path, rb.wrapHandler(handler))
 }
 
 func (rb *RouteBuilder[T, ID]) fastDeny(action string, next httpx.Handler) httpx.Handler {
-	permission, ok := rb.descriptor.PermissionFor(action)
+	provider, ok := any(rb.service).(interface{ AuthorizationPlan() (auth.Plan, bool) })
+	if !ok {
+		return next
+	}
+	plan, bound := provider.AuthorizationPlan()
+	if !bound {
+		return next
+	}
+	if _, safe := plan.FastDenyPermissions[action]; !safe {
+		return next
+	}
+	executor, ok := any(rb.service).(interface {
+		FastDeny(context.Context, string) error
+	})
 	if !ok {
 		return next
 	}
 	return func(c httpx.IContext) error {
-		if err := rb.permissions.RequireAction(c.RequestContext(), permission); err != nil {
+		if err := executor.FastDeny(c.RequestContext(), action); err != nil {
 			return err
 		}
 		return next(c)
@@ -307,12 +352,21 @@ func descriptorActions(descriptor auth.Descriptor) map[string]auth.Action {
 	return out
 }
 
-func (rb *RouteBuilder[T, ID]) registerPreflightRoutes(group httpx.IRouteGroup, mounted mountedRoutes) {
+func (rb *RouteBuilder[T, ID]) registerPreflightRoutes(group httpx.IRouteGroup, mounted mountedRoutes) error {
 	cors := rb.corsMiddleware()
 	if cors == nil {
-		return
+		return nil
 	}
 	for path, methods := range mounted {
+		if rb.entryRegistry != nil {
+			location, ok := group.(httpx.IRouteLocation)
+			if !ok {
+				return errors.NewCode(errors.InvalidInput, "route group must expose actual path resolution")
+			}
+			if err := rb.entryRegistry.BindHTTP(http.MethodOptions, location.RoutePath(path), auth.EntryBinding{Module: rb.entryModule, ResourceAccess: auth.ResourceAccessNone, Source: "api/rest CORS preflight", AllowReason: "HTTP protocol negotiation"}); err != nil {
+				return err
+			}
+		}
 		allowHeader := httpheader.BuildAllowHeader(methods)
 		group.OPTIONS(path, func(c httpx.IContext) error {
 			if allowHeader != "" {
@@ -326,6 +380,7 @@ func (rb *RouteBuilder[T, ID]) registerPreflightRoutes(group httpx.IRouteGroup, 
 			return c.String(http.StatusNoContent, "")
 		})
 	}
+	return nil
 }
 
 func (rb *RouteBuilder[T, ID]) registerStartup() error {

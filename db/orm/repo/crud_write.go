@@ -59,7 +59,7 @@ func (r *Repo[T, ID]) prepareCreate(ctx context.Context, entity T) error {
 		now := time.Now()
 		aud.SetCreatedInfo(by, now)
 		aud.SetUpdatedInfo(by, now)
-		// SetUpdatedInfo 会推版本；创建态统一归零，与内存实现保持一致。
+		// 审计实体创建态统一归零，与内存实现保持一致。
 		if setter, ok := any(entity).(domain.ISettableVersion); ok {
 			setter.SetVersion(0)
 		}
@@ -97,9 +97,9 @@ func (r *Repo[T, ID]) prepareUpdate(ctx context.Context, entity T) error {
 	return nil
 }
 
-// advanceVersion 推进非审计实体的版本；审计实体的版本由 SetUpdatedInfo 推进。
+// advanceVersion 根据写入前版本统一推进普通实体和审计实体的版本。
 func (r *Repo[T, ID]) advanceVersion(entity T, expected uint64) {
-	if r.auditFields || r.versioningOff {
+	if r.versioningOff {
 		return
 	}
 	if setter, ok := any(entity).(domain.ISettableVersion); ok && setter != nil {
