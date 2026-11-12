@@ -39,7 +39,7 @@ func (rb *RouteBuilder[T, ID]) handleAuditTrail(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	records, err := rb.service.AuditTrail(ctx, id, opts.Offset(), opts.Size)
+	records, err := rb.audit.AuditTrail(ctx, id, opts.Offset(), opts.Size)
 	if err != nil {
 		return err
 	}

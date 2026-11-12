@@ -205,19 +205,6 @@ func TestMountRegistersLifecycleRoutes(t *testing.T) {
 	)
 }
 
-func TestActionRequiresDeclaredAction(t *testing.T) {
-	router := testkit.NewRecordingRouter()
-	app := &stubApplication{descriptor: auth.Descriptor{
-		Resource: "user",
-		Actions:  []auth.Action{{Name: actionRead, Kind: auth.KindRead}},
-	}}
-
-	err := Action[*mountEntity, int64](router, app, http.MethodPost, "/users/:id/publish", "publish",
-		func(context.Context, httpx.IContext, Application[*mountEntity, int64]) error { return nil })
-	require.Error(t, err)
-	require.Truef(t, errors.Is(err, errors.InvalidInput), "expected InvalidInput, got %v", err)
-}
-
 func TestMountAllowsEmptyBasePath(t *testing.T) {
 	router := testkit.NewRecordingRouter()
 	app := &stubApplication{descriptor: auth.Descriptor{
@@ -283,37 +270,6 @@ func TestMountRejectsNilRouteGroup(t *testing.T) {
 	err := Mount[*mountEntity, int64](nil, app)
 	require.Error(t, err)
 	require.Truef(t, errors.Is(err, errors.InvalidInput), "expected InvalidInput, got %v", err)
-}
-
-// TestActionRejectsUnsupportedMethod：“未知 method”不能静默降级成 OPTIONS。
-func TestActionRejectsUnsupportedMethod(t *testing.T) {
-	router := testkit.NewRecordingRouter()
-	app := &stubApplication{descriptor: auth.Descriptor{
-		Resource: "user",
-		Actions:  []auth.Action{{Name: "publish", Kind: auth.KindUpdate}},
-	}}
-
-	err := Action[*mountEntity, int64](router, app, "TRACE", "/users/:id/publish", "publish",
-		func(context.Context, httpx.IContext, Application[*mountEntity, int64]) error { return nil })
-	require.Error(t, err)
-	require.Truef(t, errors.Is(err, errors.InvalidInput), "expected InvalidInput, got %v", err)
-	require.Equal(t, 0, len(router.RecordedRoutes()))
-}
-
-func TestActionRegistersDeclaredAction(t *testing.T) {
-	router := testkit.NewRecordingRouter()
-	app := &stubApplication{descriptor: auth.Descriptor{
-		Resource: "user",
-		Actions: []auth.Action{
-			{Name: actionRead, Kind: auth.KindRead},
-			{Name: "publish", Kind: auth.KindUpdate},
-		},
-	}}
-
-	err := Action[*mountEntity, int64](router, app, http.MethodPost, "/users/:id/publish", "publish",
-		func(context.Context, httpx.IContext, Application[*mountEntity, int64]) error { return nil })
-	require.NoError(t, err)
-	requireRoutes(t, router.RecordedRoutes(), "POST /users/:id/publish")
 }
 
 // stubContext 只实现 degraded 映射会触及的响应接口。

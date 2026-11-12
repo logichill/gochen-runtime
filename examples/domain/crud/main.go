@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"time"
 
 	"gochen-runtime/api/rest"
 	"gochen/app/crud"
 	"gochen/auth"
 	domcrud "gochen/domain/crud"
-	"gochen/httpx"
 	"gochen/testkit"
 )
 
@@ -25,8 +23,7 @@ type User struct {
 
 // main 演示基础 CRUD 应用与 Descriptor 驱动的 REST 路由。
 //
-// 业务动作（activate）通过 rest.Action 注册，仍由 Application 的 Execute
-// 完成授权、事务与钩子；路由层只做解码与编排。
+// 本例展示 Application 的资源操作；命名业务动作的类型化 HTTP 入口见 business-actions。
 func main() {
 	log.Println("=== Basic CRUD Example ===")
 
@@ -49,27 +46,8 @@ func main() {
 	if err := rest.Mount[*User, int64](router, app, rest.WithBasePath[*User, int64]("/users")); err != nil {
 		log.Fatalf("failed to mount standard routes: %v", err)
 	}
-	if err := rest.Action[*User, int64](
-		router, app, http.MethodPost, "/users/:id/activate", "activate",
-		func(ctx context.Context, c httpx.IContext, app rest.Application[*User, int64]) error {
-			id, err := httpx.ParseInt64Param(c, "id")
-			if err != nil {
-				return err
-			}
-			_, err = app.Execute(ctx, "activate", id, func(_ context.Context, user *User) error {
-				if user.Active {
-					return nil
-				}
-				now := time.Now()
-				user.Active = true
-				user.ActivatedAt = &now
-				return nil
-			})
-			return err
-		},
-	); err != nil {
-		log.Fatalf("failed to register business action: %v", err)
-	}
+	// 自定义命令的 HTTP 与后台共用绑定见 examples/business-actions。
+
 	router.PrintRoutes()
 
 	ctx := context.Background()

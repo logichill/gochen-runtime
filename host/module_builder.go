@@ -51,6 +51,7 @@ type Builder struct {
 	projections       []module.ProjectionRegistration
 	runtimeComponents []capability.IRuntimeComponent
 	applications      []app.IDescriptorProvider
+	bindings          []module.IBinding
 	dependencies      []string
 	publicFeatures    []module.PublicFeature
 	middlewares       []httpx.Middleware
@@ -72,6 +73,12 @@ func (b *Builder) Name(name string) *Builder {
 // Application 登记模块提供的应用，包括没有 HTTP 入口的应用。
 func (b *Builder) Application(applications ...app.IDescriptorProvider) *Builder {
 	b.applications = append(b.applications, applications...)
+	return b
+}
+
+// Binding 追加显式入口绑定，Build 时同时登记其应用与路由注册器。
+func (b *Builder) Binding(bindings ...module.IBinding) *Builder {
+	b.bindings = append(b.bindings, bindings...)
 	return b
 }
 
@@ -187,6 +194,18 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 		OnStart:      builder.onStart,
 		OnStop:       builder.onStop,
 	}
+	routeRegistrars := append([]module.IRouteRegistrar(nil), builder.routeRegistrars...)
+	for index, binding := range builder.bindings {
+		if runtimeutil.IsTypedNil(binding) {
+			return assembly.ModuleDescriptor{}, errors.NewCode(errors.InvalidInput, "module binding cannot be nil").WithContext("module", builder.id).WithContext("binding", index)
+		}
+		contribution, err := binding.ModuleBinding()
+		if err != nil {
+			return assembly.ModuleDescriptor{}, err
+		}
+		desc.Applications = append(desc.Applications, contribution.Applications...)
+		routeRegistrars = append(routeRegistrars, contribution.RouteRegistrars...)
+	}
 	if strings.TrimSpace(desc.Name) == "" {
 		desc.Name = strings.TrimSpace(desc.ID)
 	}
@@ -233,7 +252,7 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 		desc.Registrations = append(desc.Registrations, assembly.Registration{Instance: instance, Roles: []assembly.Role{role}})
 		return nil
 	}
-	for _, value := range builder.routeRegistrars {
+	for _, value := range routeRegistrars {
 		if err := appendInstance(assembly.RoleRouteRegistrar, value); err != nil {
 			return assembly.ModuleDescriptor{}, err
 		}
@@ -253,7 +272,7 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 			return assembly.ModuleDescriptor{}, err
 		}
 	}
-	for _, application := range builder.applications {
+	for _, application := range desc.Applications {
 		if runtimeutil.IsTypedNil(application) {
 			return assembly.ModuleDescriptor{}, errors.NewCode(errors.InvalidInput, "application cannot be nil").WithContext("module", builder.id)
 		}

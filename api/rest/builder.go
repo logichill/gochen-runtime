@@ -8,10 +8,9 @@ import (
 
 	runtimehttp "gochen-runtime/http"
 	"gochen-runtime/http/middleware"
-	"gochen-runtime/internal/httpheader"
+	appcrud "gochen/app/crud"
 	"gochen/auth"
 
-	"gochen/contextx"
 	"gochen/domain"
 	"gochen/errors"
 	"gochen/httpx"
@@ -54,7 +53,11 @@ func (m mountedRoutes) add(method, path string) {
 // RouteBuilder 按 Descriptor 把 Application 的标准能力组装成 REST 路由。
 type RouteBuilder[T domain.IEntity[ID], ID comparable] struct {
 	config          *RouteConfig[ID]
-	service         Application[T, ID]
+	service         ReadApplication[T, ID]
+	write           appcrud.IWriteApplication[T, ID]
+	execute         appcrud.IActionExecutor[T, ID]
+	audit           appcrud.IAuditReader[ID]
+	maxBulkSize     int
 	middlewares     []httpx.Middleware
 	fastDenyEnabled bool
 	registry        module.IApplicationRegistry
@@ -66,7 +69,7 @@ type RouteBuilder[T domain.IEntity[ID], ID comparable] struct {
 
 // NewRouteBuilder 创建路由构建器。
 func NewRouteBuilder[T domain.IEntity[ID], ID comparable](
-	app Application[T, ID],
+	app ReadApplication[T, ID],
 	options ...Option[T, ID],
 ) (*RouteBuilder[T, ID], error) {
 	if isNilService(app) {
@@ -74,6 +77,12 @@ func NewRouteBuilder[T domain.IEntity[ID], ID comparable](
 	}
 	b := newRouteBuilderWithoutApp[T, ID](options...)
 	b.service = app
+	b.write, _ = app.(appcrud.IWriteApplication[T, ID])
+	b.execute, _ = app.(appcrud.IActionExecutor[T, ID])
+	b.audit, _ = app.(appcrud.IAuditReader[ID])
+	if limits, ok := app.(interface{ MaxBulkSize() int }); ok {
+		b.maxBulkSize = limits.MaxBulkSize()
+	}
 	return b, nil
 }
 
@@ -96,7 +105,7 @@ func newRouteBuilderWithoutApp[T domain.IEntity[ID], ID comparable](options ...O
 // Mount 按 Descriptor 挂载标准 REST 路由，并在配置了启动清单时自动登记应用。
 func Mount[T domain.IEntity[ID], ID comparable](
 	group httpx.IRouteGroup,
-	app Application[T, ID],
+	app ReadApplication[T, ID],
 	options ...Option[T, ID],
 ) error {
 	builder, err := NewRouteBuilder[T, ID](app, options...)
@@ -111,7 +120,7 @@ func Mount[T domain.IEntity[ID], ID comparable](
 // 它让装配方在声明期就能拿到一条资源的路由表，而无需启动 Server。
 // 返回的 RouteSpec 不含 handler，也不含泛型参数。
 func Describe[T domain.IEntity[ID], ID comparable](
-	app Application[T, ID],
+	app ReadApplication[T, ID],
 	options ...Option[T, ID],
 ) (auth.Descriptor, []RouteSpec, error) {
 	builder, err := NewRouteBuilder[T, ID](app, options...)
@@ -238,7 +247,7 @@ func (rb *RouteBuilder[T, ID]) handlerFor(op Op) httpx.Handler {
 
 // mount 给单条路由套上中间件、错误映射与可选快速拒绝，然后注册。
 //
-// 标准路由与业务动作路由（Action）共用这一条注册路径。
+// 标准路由与专用归属迁移路由共用这一条注册路径。
 func (rb *RouteBuilder[T, ID]) mount(group httpx.IRouteGroup, route routeDef) error {
 	if route.handler == nil {
 		return errors.NewCode(errors.InvalidInput, "route handler cannot be nil").
@@ -310,6 +319,23 @@ func (rb *RouteBuilder[T, ID]) validateCORSConfig() error {
 
 func (rb *RouteBuilder[T, ID]) validateCapabilities(descriptor auth.Descriptor) error {
 	actions := descriptorActions(descriptor)
+	for _, name := range []string{actionCreate, actionUpdate, actionDelete} {
+		if _, declared := actions[name]; !declared {
+			continue
+		}
+		if isNilService(rb.write) {
+			return errors.NewCode(errors.InvalidInput, "descriptor declares writes but the application does not implement them").
+				WithContext("resource", descriptor.Resource).WithContext("action", name)
+		}
+		if name != actionDelete && isNilService(rb.execute) {
+			return errors.NewCode(errors.InvalidInput, "standard create and update routes require bulk action execution").
+				WithContext("resource", descriptor.Resource).WithContext("action", name)
+		}
+	}
+	if _, declared := actions[actionAuditRead]; declared && isNilService(rb.audit) {
+		return errors.NewCode(errors.InvalidInput, "descriptor declares audit_read but the application does not implement IAuditReader").
+			WithContext("resource", descriptor.Resource)
+	}
 	needsLifecycle := false
 	for _, name := range []string{actionRestore, actionPurge, actionListDeleted} {
 		if _, ok := actions[name]; ok {
@@ -354,34 +380,7 @@ func descriptorActions(descriptor auth.Descriptor) map[string]auth.Action {
 }
 
 func (rb *RouteBuilder[T, ID]) registerPreflightRoutes(group httpx.IRouteGroup, mounted mountedRoutes) error {
-	cors := rb.corsMiddleware()
-	if cors == nil {
-		return nil
-	}
-	for path, methods := range mounted {
-		if rb.entryRegistry != nil {
-			location, ok := group.(httpx.IRouteLocation)
-			if !ok {
-				return errors.NewCode(errors.InvalidInput, "route group must expose actual path resolution")
-			}
-			if err := rb.entryRegistry.BindHTTP(http.MethodOptions, location.RoutePath(path), auth.EntryBinding{Module: rb.entryModule, ResourceAccess: auth.ResourceAccessNone, Source: "api/rest CORS preflight", AllowReason: "HTTP protocol negotiation"}); err != nil {
-				return err
-			}
-		}
-		allowHeader := httpheader.BuildAllowHeader(methods)
-		group.OPTIONS(path, func(c httpx.IContext) error {
-			if allowHeader != "" {
-				c.SetHeader("Allow", allowHeader)
-			}
-			if isCORSPreflightRequest(c) {
-				return cors(c, func() error {
-					return c.String(http.StatusNoContent, "")
-				})
-			}
-			return c.String(http.StatusNoContent, "")
-		})
-	}
-	return nil
+	return registerPreflightRoutes(group, mounted, rb.corsMiddleware(), rb.entryRegistry, rb.entryModule)
 }
 
 func (rb *RouteBuilder[T, ID]) registerStartup() error {
@@ -416,67 +415,13 @@ func (rb *RouteBuilder[T, ID]) wrapHandler(handler httpx.Handler) httpx.Handler 
 		}
 	}
 
-	errorHandler := rb.config.Response.ErrorHandler
-	if errorHandler == nil {
-		errorHandler = DefaultErrorHandler
-	}
-	maxBodySize := rb.config.Body.MaxBodySize
-	wrapper := rb.config.Response.ResponseWrapper
-	if wrapper == nil {
-		wrapper = DefaultResponseWrapper
-	}
-
-	return func(c httpx.IContext) error {
-		if maxBodySize > 0 {
-			c.Set(httpx.MaxBodySizeKey, httpx.ValueOf(maxBodySize))
-		}
-		if err := executor(c); err != nil {
-			if contextx.IsAfterCommitError(err) {
-				c.SetHeader("X-Execution-Status", "degraded")
-				return c.JSON(http.StatusOK, httpx.JSONValue(wrapper(nil)))
-			}
-			response := errorHandler(c, err)
-			if response == nil {
-				response = DefaultErrorHandler(c, err)
-			}
-			return response.Send(c)
-		}
-		return nil
-	}
+	return wrapResponse(executor, rb.config.Response, rb.config.Body.MaxBodySize)
 }
 
 func (rb *RouteBuilder[T, ID]) corsMiddleware() httpx.Middleware {
-	if rb.config.HTTP.CORS == nil {
-		return nil
+	if rb.cors == nil {
+		rb.cors = newCORSMiddleware(rb.config.HTTP.CORS)
 	}
-	if rb.cors != nil {
-		return rb.cors
-	}
-	cfg := rb.config.HTTP.CORS
-	origins := nonEmptyStrings(cfg.AllowOrigins)
-	if len(origins) == 0 {
-		return nil
-	}
-	methods := nonEmptyStrings(cfg.AllowMethods)
-	if len(methods) == 0 {
-		methods = middleware.DefaultCORSAllowMethods()
-	}
-	headers := nonEmptyStrings(cfg.AllowHeaders)
-	if len(headers) == 0 {
-		headers = middleware.DefaultCORSAllowHeaders()
-	}
-	maxAge := cfg.MaxAge
-	if maxAge == 0 {
-		maxAge = middleware.DefaultCORSMaxAge
-	}
-	rb.cors = middleware.CORS(&middleware.CORSConfig{
-		AllowOrigins:     origins,
-		AllowMethods:     methods,
-		AllowHeaders:     headers,
-		ExposeHeaders:    nonEmptyStrings(cfg.ExposeHeaders),
-		AllowCredentials: cfg.AllowCredentials,
-		MaxAge:           maxAge,
-	})
 	return rb.cors
 }
 

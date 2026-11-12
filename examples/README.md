@@ -9,4 +9,5 @@
 - `process/`：Saga 编排、Workflow 流程引擎
 - `quick/`：Quick 开箱即用门面
 - `quick/modules`：无配置模块 HTTP 服务，演示默认前缀及分组继承（持续运行，Ctrl-C 退出）
+- [`business-actions/`](business-actions/README.md)：命名订单审批、同一 Command 的 HTTP/直接调用绑定与真实 SQL 事务验证
 - `e2e/order_fulfillment`：综合端到端履约示例

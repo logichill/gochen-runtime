@@ -1,31 +1,54 @@
 package nethttp
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 	"sort"
 	"strings"
 
 	"gochen-runtime/internal/httpheader"
+	"gochen/errors"
 	"gochen/httpx"
 )
 
-func (s *Server) registerRoutes() {
+func (s *Server) registerRoutes() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ensureMuxLocked()
+	return s.ensureMuxLocked()
 }
 
-func (s *Server) rebuildMuxLocked() {
+// rebuildMuxLocked 只发布完整通过注册校验的 mux；失败后拒绝所有已装配路由。
+func (s *Server) rebuildMuxLocked() error {
+	mux, err := s.buildMuxLocked()
+	s.muxDirty = false
+	if err != nil {
+		s.registrationErr = err
+		mux = http.NewServeMux()
+		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		})
+	}
+	if s.handler != nil {
+		s.handler.Store(mux)
+	}
+	return err
+}
+
+func (s *Server) buildMuxLocked() (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 
 	for _, static := range s.staticRoutes {
 		if static.single {
-			s.registerStaticFile(mux, static.prefix, static.root)
+			if err := s.registerStaticFile(mux, static.prefix, static.root); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		s.registerStaticRoute(mux, static.prefix, static.root)
+		if err := s.registerStaticRoute(mux, static.prefix, static.root); err != nil {
+			return nil, err
+		}
 	}
 
 	type optionsMeta struct {
@@ -79,17 +102,25 @@ func (s *Server) rebuildMuxLocked() {
 		// 为避免同一路径在不同 HTTP 方法下重复注册导致冲突，这里仅注册 method-specific pattern。
 		methodPattern := route.method + " " + pattern
 
-		mux.HandleFunc(methodPattern, func(w http.ResponseWriter, req *http.Request) {
+		if err := registerMuxHandler(mux, methodPattern, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			// Go 1.22+ ServeMux 使用 "METHOD /path" 模式注册后，只有匹配的方法才会路由到此 handler，
 			// 无需在 handler 内部再次检查方法。
 			handler(w, req)
-		})
+		})); err != nil {
+			return nil, err
+		}
 	}
 
 	// 为每个路径补充一次 OPTIONS pattern，用于 CORS 预检：
 	// - 必须走标准 handler/middleware 链，避免绕过 CORS/鉴权/观测等能力；
 	// - 若调用方显式注册了 OPTIONS，则不做自动注册，避免冲突。
-	for pattern, meta := range metaByPattern {
+	patterns := make([]string, 0, len(metaByPattern))
+	for pattern := range metaByPattern {
+		patterns = append(patterns, pattern)
+	}
+	sort.Strings(patterns)
+	for _, pattern := range patterns {
+		meta := metaByPattern[pattern]
 		if meta == nil || meta.hasExplicitOption {
 			continue
 		}
@@ -107,29 +138,44 @@ func (s *Server) rebuildMuxLocked() {
 		}
 		optionsHandler := s.createHandler(optionsRoute, append([]httpx.Middleware{}, s.middlewares...))
 		optionsPattern := http.MethodOptions + " " + pattern
-		mux.HandleFunc(optionsPattern, func(w http.ResponseWriter, req *http.Request) {
+		if err := registerMuxHandler(mux, optionsPattern, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			optionsHandler(w, req)
-		})
+		})); err != nil {
+			return nil, err
+		}
 	}
 
-	s.muxDirty = false
-	if s.handler != nil {
-		s.handler.Store(mux)
-	}
+	return mux, nil
+}
+
+// registerMuxHandler 仅转换 ServeMux 注册模式时的 panic，不捕获业务处理器或中间件错误。
+func registerMuxHandler(mux *http.ServeMux, pattern string, handler http.Handler) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = errors.NewCode(errors.InvalidInput, "invalid or conflicting HTTP route pattern").
+				WithContext("pattern", pattern).WithContext("reason", fmt.Sprint(recovered))
+		}
+	}()
+	mux.Handle(pattern, handler)
+	return nil
 }
 
 func (s *Server) markMuxDirtyLocked() {
 	s.muxDirty = true
 	if s.serverActive() || s.muxExposed {
-		s.rebuildMuxLocked()
+		// 链式注册 API 没有错误返回值；构建失败保存在 RegistrationError 并关闭分发。
+		_ = s.rebuildMuxLocked()
 	}
 }
 
-func (s *Server) ensureMuxLocked() {
-	if !s.muxDirty {
-		return
+func (s *Server) ensureMuxLocked() error {
+	if s.registrationErr != nil {
+		return s.registrationErr
 	}
-	s.rebuildMuxLocked()
+	if !s.muxDirty {
+		return nil
+	}
+	return s.rebuildMuxLocked()
 }
 
 func mergeMiddlewares(base []httpx.Middleware, extra []httpx.Middleware) []httpx.Middleware {

@@ -1,6 +1,6 @@
 # gochen-runtime/api/rest：按 Descriptor 挂载 REST 路由
 
-`api/rest` 把 `Application.Descriptor()` 声明的动作映射为 HTTP 路由。调用方提供完整应用，注册器根据动作生成路由，并在装配期校验生命周期等所需能力。
+`api/rest` 把 `Application.Descriptor()` 声明的动作映射为 HTTP 路由。调用方提供 `rest.ReadApplication`（读接口、Descriptor 与分页上限），写入、批量、审计与生命周期能力按声明显式检查。声明了动作却缺少所需能力时，在注册路由前失败。
 
 授权概念见 `gochen` 仓库 `docs/architecture/layered-authz.md`，字段保护与归属迁移见该仓库 `docs/architecture/resource-contracts.md`。
 
@@ -10,10 +10,11 @@
 | --- | --- |
 | `rest.Mount(group, app, opts...)` | 一次性挂载标准路由；推荐 |
 | `builder, err := rest.NewRouteBuilder(app, opts...)` | 需要先构造再 `Register(group)` 时使用 |
-| `rest.Action(group, app, method, path, action, handler, opts...)` | 注册 Descriptor 已声明的业务动作 |
+| `rest.Resource(app, opts...)` | 将同一应用和标准路由作为一个 Module binding 提交 |
+| `rest.Bind(method, path, command, decode, options...)` | 将同一类型化 Command 的执行与全部授权元数据绑定为 HTTP 入口 |
 | `rest.Transfer(group, app, runner, path, action, opts...)` | 显式注册带调用方版本与幂等键的 POST 迁移动作 |
 | `rest.Describe(app, opts...)` | 只推导 Descriptor 与路由表，不注册任何路由 |
-| `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error`，供 `quick.Module` 使用 |
+| `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error`，供显式 `module.RouteRegistrarFunc` 使用 |
 
 `Mount` 只做这几件事：校验 Descriptor、推导路由、包装中间件与错误映射、可选地登记启动清单。handler 本身只解码请求并调用 Application。
 
@@ -51,7 +52,7 @@ Descriptor 中声明了对应动作时才注册：
 | `update` | PUT | `{BasePath}/bulk` | 批量更新（`ExecuteBulk`） |
 | `delete` | DELETE | `{BasePath}/:id` | 删除单个实体 |
 | `delete` | DELETE | `{BasePath}/bulk` | 批量删除（`DeleteBulk`） |
-| `audit_read` | GET | `{BasePath}/:id/audit` | 需要审计查询存储 |
+| `audit_read` | GET | `{BasePath}/:id/audit` | 需要 `crud.IAuditReader` |
 | `restore` | POST | `{BasePath}/:id/restore` | 需要 `LifecycleApplication` |
 | `purge` | DELETE | `{BasePath}/:id/purge` | 需要 `LifecycleApplication` |
 | `read` | GET | `{BasePath}/:id` | 读取单个实体 |
@@ -89,30 +90,33 @@ specs = rest.Specs(desc, "/users") // 纯投影，等价于上面的 specs
 
 ## 3. 业务动作
 
-`rest.Action` 只注册 Descriptor 中已声明的动作，未声明时返回 `InvalidInput`。解码与命令编排由 handler 完成：
+业务用例使用自己的输入、输出与命名接口；装配端通过 `app.Command` 连接其授权访问能力。HTTP 不再接收另一个动作名或可以任意选择应用动作的 handler：
 
 ```go
-if err := rest.Action[*Article, int64](router, app,
-	http.MethodPost, "/articles/:id/publish", "publish",
-	func(ctx context.Context, c httpx.IContext, app rest.Application[*Article, int64]) error {
-		id, err := httpx.ParseInt64Param(c, "id")
-		if err != nil {
-			return err
-		}
-		_, err = app.Execute(ctx, "publish", id, func(ctx context.Context, article *Article) error {
-			return article.Publish()
-		})
-		if err != nil {
-			return err
-		}
-		return c.JSON(http.StatusOK, httpx.JSONValue(map[string]any{"id": id}))
-	},
-); err != nil {
-	return err
-}
+// approve 已通过 app.NewCommand 绑定资源授权、受约束 Access 与业务函数。
+// decodeApprove 只做 HTTP 输入解码：func(httpx.IContext) (ApproveOrder, error)。
+httpBinding := rest.Bind("POST", "/:id/approve", approve, decodeApprove)
+orderModule, err := host.Module("orders").Binding(httpBinding).Build()
+
+// 后台直接调用同一对象，业务层可以用 OrderApprover.Approve 包装它。
+result, err := approve.Execute(ctx, input)
 ```
 
-直接注册到 `IRouteGroup` 的路由不经过 Descriptor 声明检查。
+完整示例见 [business-actions](../../examples/business-actions/)。`Command` 的全部资源必须先通过授权，再构造访问能力与执行用例；HTTP 与后台都走这条路径。注册元数据来自同一对象的 `AuthorizationBinding`，主资源与附加资源不会分开手工声明。`ModuleBinding` 同时把命令实际使用的资源动作投影进应用清单；不把计划中未调用的动作登记为已提供的用例。
+
+`Bind` 返回类型化 `CommandBinding`，同时实现 `module.IBinding` 与 `module.IRouteRegistrar`。也可以直接调用 `RegisterRoutes(group)`。配置错误由 `Build` 或 `RegisterRoutes` 返回，不执行命令。路由登记与标准 `Mount` 一样并非事务性操作；若登记过程中失败，重试应重建路由组或服务器，避免重复部分已登记的入口。原 `rest.Action` 与 `ActionHandler` 已移除。
+
+可选的一个 `CommandOptions` 值复用 `HTTPOptions`、`ResponseOptions` 和 `AuditOptions`，另有 `MaxBodySize`、`SuccessStatus`。默认以 200 和 `DefaultResponseWrapper(output)` 返回结果，保留标准请求体上限、错误映射与提交后降级标识。只接受带响应体的 2xx JSON 状态。操作人提取派生原请求 context，不替换主体、租户与取消信号；业务授权、版本和审计要求仍在用例内部执行。CORS 配置按标准资源方式生成预检，同一路径的多个入口应由上层统一配置 CORS。
+
+普通 CRUD 资源可以一次绑定，无需重复登记应用与路由：
+
+```go
+notes, err := host.Module("notes").
+    Binding(rest.Resource(application)).
+    Build()
+```
+
+绑定只描述显式参与角色，不创建数据库、不运行用例或启动 worker。直接注册到 `IRouteGroup` 的手写路由仍须满足 Host 的独立实际入口检查。
 
 ## 4. 归属迁移
 
@@ -188,7 +192,7 @@ Host 启动 → 模块路由注册 → rest.Mount → 校验并挂载路由
 请求结束 → 响应包装或错误处理
 ```
 
-`rest.Action` 与标准路由共用挂载流程，中间件、权限快速拒绝和错误映射保持一致。
+`rest.Bind` 与标准路由共用错误映射、提交后降级、操作人派生和 CORS 预检；命令的完整授权始终在 `Command.Execute` 执行。
 
 ## 11. 依赖关系
 

@@ -6,7 +6,7 @@
 GOWORK=off go run ./examples/typed-module -port 8080
 ```
 
-组合根创建独立 SQLite 内存表及 ORM，再将 ORM 交给模块 ctor。ctor 只创建 Repository、Application 和 Routes 一次，并通过 `host.Module("notes").Application(application).RouteRegistrar(...).Build()` 声明。Host 核对真实入口后启动。Ctrl-C 先停止 Host，组合根随后关闭连接。
+组合根创建独立 SQLite 内存表及 ORM，再将 ORM 交给模块 ctor。ctor 只创建 Repository 和 Application 一次，通过 `host.Module("notes").Binding(rest.Resource(application)).Build()` 同时贡献应用登记与标准路由，不再重复登记同一应用。Host 核对真实入口后启动。Ctrl-C 先停止 Host，组合根随后关闭连接。
 
 模块 ID `notes`、用例资源 `note` 和表名 `notes` 是不同事实，代码显式声明，不从路径猜权限。表、ID 字符串、版本与响应格式继续使用现有协议。本例不需要软删除、审计或 ES，也不增加这些能力。
 

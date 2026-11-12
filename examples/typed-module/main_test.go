@@ -15,6 +15,7 @@ import (
 	"gochen-runtime/host/config"
 	"gochen-runtime/host/engine"
 	"gochen-runtime/quick"
+	"gochen/auth"
 )
 
 func TestTypedModuleHTTPAndCancellation(t *testing.T) {
@@ -134,7 +135,7 @@ func TestTypedModuleHTTPAndCancellation(t *testing.T) {
 		t.Fatal("actual routes were not checked")
 	}
 	for _, entry := range entries.Report() {
-		if entry.Class == "invalid" {
+		if entry.Class == auth.EntryInvalid {
 			t.Fatalf("invalid entry: %+v", entry)
 		}
 	}

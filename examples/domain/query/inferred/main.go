@@ -51,7 +51,7 @@ func main() {
 // 2. app.Query：PaginationOptions -> QueryOptions -> repo.Query
 func runQuery(
 	repo *demo.QueryableUserRepo,
-	app *crud.Application[*demo.User, int64],
+	app *crud.ReadApplication[*demo.User, int64],
 	cfg *rest.RouteConfig[int64],
 	rawURL string,
 ) {

@@ -111,7 +111,7 @@ func (rb *RouteBuilder[T, ID]) handleCreate(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.service.Create(ctx, entity); err != nil {
+	if err := rb.write.Create(ctx, entity); err != nil {
 		return err
 	}
 	result := map[string]any{"id": entity.GetID()}
@@ -168,7 +168,7 @@ func (rb *RouteBuilder[T, ID]) handleUpdate(c httpx.IContext) error {
 	if err := rb.validateBody(entity); err != nil {
 		return err
 	}
-	if err := rb.service.Update(ctx, entity); err != nil {
+	if err := rb.write.Update(ctx, entity); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(entity)))
@@ -186,7 +186,7 @@ func (rb *RouteBuilder[T, ID]) handleDelete(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.service.Delete(ctx, id); err != nil {
+	if err := rb.write.Delete(ctx, id); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(nil)))

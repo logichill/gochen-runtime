@@ -23,7 +23,9 @@ func (s *Server) Start(addr string) error {
 	s.trustedProxyChecker = checker
 	s.mu.Unlock()
 
-	s.registerRoutes()
+	if err := s.registerRoutes(); err != nil {
+		return s.failStart(err)
+	}
 	srv, err := runtimehttp.NewHTTPServer(s.config, addr, s.mux)
 	if err != nil {
 		return s.failStart(err)
@@ -123,20 +125,20 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Handler 返回底层 http.Handler。
+// Handler 返回底层 http.Handler；路由配置失败时返回 503，具体原因见 RegistrationError。
 func (s *Server) Handler() http.Handler {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.muxExposed = true
-	s.ensureMuxLocked()
+	_ = s.ensureMuxLocked()
 	return s.mux
 }
 
-// ServeMux 返回底层 *http.ServeMux。
+// ServeMux 返回底层 *http.ServeMux；框架路由配置失败时返回 503，具体原因见 RegistrationError。
 func (s *Server) ServeMux() *http.ServeMux {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.muxExposed = true
-	s.ensureMuxLocked()
+	_ = s.ensureMuxLocked()
 	return s.mux
 }

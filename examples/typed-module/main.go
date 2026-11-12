@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"gochen-runtime/api/rest"
 	"gochen-runtime/db/orm/lite"
 	"gochen-runtime/db/orm/repo"
 	"gochen-runtime/db/sql/stdsql"
@@ -47,8 +48,7 @@ func newNotes(database orm.IOrm) module.ModuleCtor {
 			return nil, err
 		}
 		return host.Module("notes").Name("笔记").
-			Application(application).
-			RouteRegistrar(module.RouteRegistrarFunc(quick.RESTRegistrar[*Note, string](application))).
+			Binding(rest.Resource[*Note, string](application)).
 			Build()
 	}
 }

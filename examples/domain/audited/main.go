@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
@@ -64,28 +63,8 @@ func main() {
 	); err != nil {
 		log.Fatalf("failed to mount audited routes: %v", err)
 	}
-	if err := rest.Action[*Article, int64](
-		router, app, http.MethodPost, "/api/articles/:id/publish", "publish",
-		func(ctx context.Context, c httpx.IContext, app rest.Application[*Article, int64]) error {
-			id, err := httpx.ParseInt64Param(c, "id")
-			if err != nil {
-				return err
-			}
-			_, err = app.Execute(ctx, "publish", id, func(_ context.Context, article *Article) error {
-				if article.Status == "published" {
-					return nil
-				}
-				now := time.Now()
-				article.Status = "published"
-				article.PublishedAt = &now
-				return nil
-			}, appaudited.WithReason("manual publish"))
-			return err
-		},
-		rest.WithOperatorExtractor[*Article, int64](operatorExtractor),
-	); err != nil {
-		log.Fatalf("failed to register business action: %v", err)
-	}
+	// 自定义命令的 HTTP 与后台共用绑定见 examples/business-actions。
+
 	router.PrintRoutes()
 
 	ctx, err := contextx.WithOperator(context.Background(), "alice")

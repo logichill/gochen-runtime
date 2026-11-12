@@ -356,7 +356,7 @@ func PaginateUsers(users []*User, offset, limit int) []*User {
 }
 
 // NewApplication 构造只读查询应用；授权器在此显式选择，仓储能力在构造期绑定。
-func NewApplication(repo *QueryableUserRepo) *crud.Application[*User, int64] {
+func NewApplication(repo *QueryableUserRepo) *crud.ReadApplication[*User, int64] {
 	app, err := crud.NewReadApplication[*User, int64](repo, crud.Options[*User, int64]{
 		Resource:   "user",
 		Authorizer: auth.Allow(),

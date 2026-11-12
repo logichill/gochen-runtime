@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+
+	runtimehttp "gochen-runtime/http"
 
 	appcrud "gochen/app/crud"
 	"gochen/app/operation"
@@ -30,38 +33,57 @@ func Transfer[T domain.IEntity[ID], ID comparable](group httpx.IRouteGroup, appl
 	if err != nil {
 		return err
 	}
-	return Action(group, application, http.MethodPost, path, action, func(ctx context.Context, c httpx.IContext, _ Application[T, ID]) error {
-		var input struct {
-			ExpectedVersion *uint64           `json:"expected_version"`
-			Targets         []auth.Assignment `json:"targets"`
-		}
-		if err := bindStrictJSON(c, &input); err != nil {
-			return err
-		}
-		id, err := rb.parseID(c)
+	if isNilService(group) || strings.TrimSpace(path) == "" {
+		return errors.NewCode(errors.InvalidInput, "transfer route requires a group and path")
+	}
+	if rb.entryRegistry == nil {
+		rb.entryRegistry, rb.entryModule, err = runtimehttp.EntryRegistryFrom(group)
 		if err != nil {
 			return err
 		}
-		key := c.Header("Idempotency-Key")
-		resource := application.Descriptor().Resource
-		idText := formatTransferID(id)
-		specification := &operation.Spec{Type: resource + "." + action, Mode: operation.ModeTracked,
-			IdempotencyKey: key, Resource: &operation.Resource{Type: resource, ID: idText}}
-		result, err := runner.ExecuteTransfer(ctx, specification, input.ExpectedVersion, func(runCtx context.Context, version uint64) (*operation.Result, error) {
-			entity, err := transfer.Transfer(runCtx, action, id, version, input.Targets)
-			if err != nil && !contextx.IsAfterCommitError(err) {
-				return nil, err
+	}
+	if err := rb.prepare(); err != nil {
+		return err
+	}
+	permission, _ := rb.descriptor.PermissionFor(action)
+	return rb.mount(group, routeDef{
+		spec: RouteSpec{Op: OpAction, Method: http.MethodPost, Path: strings.TrimSpace(path), Action: action, Permission: permission},
+		handler: func(c httpx.IContext) error {
+			ctx, err := rb.serviceContext(c)
+			if err != nil {
+				return err
 			}
-			return &operation.Result{Result: map[string]any{"id": entity.GetID(), "version": entity.GetVersion()}}, err
-		})
-		if err != nil && !contextx.IsAfterCommitError(err) {
-			return err
-		}
-		if contextx.IsAfterCommitError(err) || result.Operation.Status == operation.StatusDegraded {
-			c.SetHeader("X-Execution-Status", "degraded")
-		}
-		return c.JSON(http.StatusOK, httpx.JSONValue(result))
-	}, options...)
+			var input struct {
+				ExpectedVersion *uint64           `json:"expected_version"`
+				Targets         []auth.Assignment `json:"targets"`
+			}
+			if err := bindStrictJSON(c, &input); err != nil {
+				return err
+			}
+			id, err := rb.parseID(c)
+			if err != nil {
+				return err
+			}
+			key := c.Header("Idempotency-Key")
+			resource := application.Descriptor().Resource
+			idText := formatTransferID(id)
+			specification := &operation.Spec{Type: resource + "." + action, Mode: operation.ModeTracked,
+				IdempotencyKey: key, Resource: &operation.Resource{Type: resource, ID: idText}}
+			result, err := runner.ExecuteTransfer(ctx, specification, input.ExpectedVersion, func(runCtx context.Context, version uint64) (*operation.Result, error) {
+				entity, err := transfer.Transfer(runCtx, action, id, version, input.Targets)
+				if err != nil && !contextx.IsAfterCommitError(err) {
+					return nil, err
+				}
+				return &operation.Result{Result: map[string]any{"id": entity.GetID(), "version": entity.GetVersion()}}, err
+			})
+			if err != nil && !contextx.IsAfterCommitError(err) {
+				return err
+			}
+			if contextx.IsAfterCommitError(err) || result.Operation.Status == operation.StatusDegraded {
+				c.SetHeader("X-Execution-Status", "degraded")
+			}
+			return c.JSON(http.StatusOK, httpx.JSONValue(result))
+		}})
 }
 
 func formatTransferID[ID comparable](id ID) string {

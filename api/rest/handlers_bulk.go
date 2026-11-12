@@ -31,7 +31,7 @@ func (rb *RouteBuilder[T, ID]) handleCreateBulk(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	created, err := rb.service.ExecuteNewBulk(ctx, crud.ActionCreate, func(context.Context) ([]T, error) {
+	created, err := rb.execute.ExecuteNewBulk(ctx, crud.ActionCreate, func(context.Context) ([]T, error) {
 		return entities, nil
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func (rb *RouteBuilder[T, ID]) handleUpdateBulk(c httpx.IContext) error {
 		incomingFields[id] = fields[i]
 		ids = append(ids, id)
 	}
-	updated, err := rb.service.ExecuteBulk(ctx, crud.ActionUpdate, ids, func(_ context.Context, entity T) error {
+	updated, err := rb.execute.ExecuteBulk(ctx, crud.ActionUpdate, ids, func(_ context.Context, entity T) error {
 		source, ok := incoming[entity.GetID()]
 		if !ok {
 			return errors.NewCode(errors.Internal, "bulk update lost its target")
@@ -135,7 +135,7 @@ func (rb *RouteBuilder[T, ID]) handleDeleteBulk(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.service.DeleteBulk(ctx, req.IDs); err != nil {
+	if err := rb.write.DeleteBulk(ctx, req.IDs); err != nil {
 		return err
 	}
 	result := map[string]any{"count": len(req.IDs)}
@@ -163,7 +163,7 @@ func (rb *RouteBuilder[T, ID]) validateBulkSize(size int) error {
 		return errors.NewCode(errors.InvalidInput, "bulk size exceeds HTTP limit").
 			WithContext("max_bulk_size", limit)
 	}
-	if appLimit := rb.service.MaxBulkSize(); appLimit > 0 && size > appLimit {
+	if appLimit := rb.maxBulkSize; appLimit > 0 && size > appLimit {
 		return errors.NewCode(errors.InvalidInput, "bulk size exceeds application limit").
 			WithContext("max_bulk_size", appLimit)
 	}

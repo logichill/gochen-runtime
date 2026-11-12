@@ -25,6 +25,7 @@
 | 声明 | 作用 |
 | --- | --- |
 | `.Application(instances...)` | 登记 Core `app.IDescriptorProvider`，包含非 HTTP 应用 |
+| `.Binding(bindings...)` | 接收 `module.IBinding`，一次登记同一入口的应用声明与路由，如 `rest.Resource(app)` 或 `rest.Bind(...)` |
 | `.DependsOn(ids...)` | 声明模块启动依赖，不隐式注入对象 |
 | `.PublicFeatures(values...)` | 声明可公开的部署特性，不得包含秘密 |
 | `.Provide(fns...)` | 注册单例 provider；返回值类型即 DI 服务类型 |

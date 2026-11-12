@@ -27,7 +27,7 @@ func (s *Server) static(prefix, root string) httpx.IServer {
 	return s
 }
 
-func (s *Server) registerStaticRoute(mux *http.ServeMux, prefix, root string) {
+func (s *Server) registerStaticRoute(mux *http.ServeMux, prefix, root string) error {
 	if prefix == "" {
 		prefix = "/"
 	}
@@ -37,14 +37,16 @@ func (s *Server) registerStaticRoute(mux *http.ServeMux, prefix, root string) {
 	}
 	// 显式挂载跳转，保证挂载点的无斜线请求也执行全局中间件。
 	if base := strings.TrimSuffix(pattern, "/"); base != "" {
-		mux.Handle(base, s.wrapStaticHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := registerMuxHandler(mux, base, s.wrapStaticHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			location := url.URL{Path: pattern, RawQuery: r.URL.RawQuery}
 			http.Redirect(w, r, location.String(), http.StatusMovedPermanently)
-		})))
+		}))); err != nil {
+			return err
+		}
 	}
 
 	h := runtimehttp.NewStaticHandler(root)
-	mux.Handle(pattern, s.wrapStaticHandler(http.StripPrefix(pattern, h)))
+	return registerMuxHandler(mux, pattern, s.wrapStaticHandler(http.StripPrefix(pattern, h)))
 }
 
 func (s *Server) ServeStatic(path, root string) {
@@ -77,8 +79,8 @@ func (s *Server) recordStaticRouteLocked(prefix string) {
 	}
 }
 
-func (s *Server) registerStaticFile(mux *http.ServeMux, path, root string) {
-	mux.Handle(path, s.wrapStaticHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (s *Server) registerStaticFile(mux *http.ServeMux, path, root string) error {
+	return registerMuxHandler(mux, path, s.wrapStaticHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if w.Header().Get("X-Content-Type-Options") == "" {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 		}

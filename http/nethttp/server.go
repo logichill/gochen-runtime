@@ -86,7 +86,7 @@ func NewServer(config *runtimehttp.WebConfig) *Server {
 		if !ready {
 			srv.mu.Lock()
 			srv.muxExposed = true
-			srv.ensureMuxLocked()
+			_ = srv.ensureMuxLocked()
 			srv.mu.Unlock()
 		}
 		handler.ServeHTTP(w, r)
@@ -137,6 +137,9 @@ func (s *Server) recordMuxRouteLocked(method, path string) {
 }
 
 func (s *Server) requireRoutesMutableLocked() error {
+	if s.registrationErr != nil {
+		return s.registrationErr
+	}
 	if s.routesSealed {
 		s.registrationErr = errors.NewCode(errors.FailedPrecondition, "route registration is sealed; assemble and validate a new server")
 		return s.registrationErr
@@ -175,15 +178,16 @@ func (s *Server) Routes() []httpx.RegisteredRoute {
 	return out
 }
 
-// SealRoutes 封存实际路由；封存后注册失败通过返回错误报告。
+// SealRoutes 封存并校验实际路由及自动 OPTIONS；模式无效或冲突时返回 InvalidInput。
+// 配置失败后必须重新装配 Server，现有分发不执行任何业务处理器。
 func (s *Server) SealRoutes() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routesSealed = true
-	return s.registrationErr
+	return s.ensureMuxLocked()
 }
 
-// RegistrationError 返回链式注册 API 拒绝最近一次修改的错误。
+// RegistrationError 返回路由构建或链式注册首次失败的错误。
 func (s *Server) RegistrationError() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

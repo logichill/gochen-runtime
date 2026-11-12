@@ -11,11 +11,18 @@ import (
 
 // serviceContext 从 HTTP 上下文构建服务层上下文。
 func (rb *RouteBuilder[T, ID]) serviceContext(c httpx.IContext) (context.Context, error) {
-	var ctx context.Context = c.RequestContext()
-	if rb.config == nil || rb.config.Audit.OperatorExtractor == nil {
+	if rb.config == nil {
+		return c.RequestContext(), nil
+	}
+	return requestContext(c, rb.config.Audit.OperatorExtractor)
+}
+
+func requestContext(c httpx.IContext, extract func(httpx.IContext) (string, bool)) (context.Context, error) {
+	ctx := c.RequestContext()
+	if extract == nil {
 		return ctx, nil
 	}
-	operator, ok := rb.config.Audit.OperatorExtractor(c)
+	operator, ok := extract(c)
 	operator = strings.TrimSpace(operator)
 	if !ok || operator == "" {
 		return ctx, nil
