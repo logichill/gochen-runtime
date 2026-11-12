@@ -56,8 +56,8 @@ func runModules(t *testing.T, newServer func(*testing.T) IServer) {
 		return host.Module("orders").
 			Middleware(mw("module")).
 			RouteRegistrar(
-				func() *firstRegistrar { return &firstRegistrar{mw("local")} },
-				func() *secondRegistrar { return &secondRegistrar{} },
+				&firstRegistrar{mw("local")},
+				&secondRegistrar{},
 			).
 			OnStart(func(context.Context) error { starts++; return nil }).
 			OnStop(func(context.Context) error { stops++; return nil }).

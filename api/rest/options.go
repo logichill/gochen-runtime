@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"gochen-runtime/host/module"
 	"gochen-runtime/http/middleware"
 	"gochen/app/query"
 
@@ -135,6 +136,6 @@ func WithFastDeny[T domain.IEntity[ID], ID comparable]() Option[T, ID] {
 }
 
 // WithStartupRegistry 让 Mount 同时把应用登记进 Host 启动清单（D17）。
-func WithStartupRegistry[T domain.IEntity[ID], ID comparable](registry IStartupRegistry) Option[T, ID] {
+func WithStartupRegistry[T domain.IEntity[ID], ID comparable](registry module.IApplicationRegistry) Option[T, ID] {
 	return func(b *RouteBuilder[T, ID]) { b.registry = registry }
 }

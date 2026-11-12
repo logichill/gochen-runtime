@@ -97,7 +97,7 @@ func TestHostEntryRegistryReachesModuleRESTRegistrars(t *testing.T) {
 	server := nethttp.NewServer(nil)
 	registry := hostauthz.NewEntryRegistry()
 	h := hostruntime.NewHost([]module.ModuleCtor{func() (module.IModule, error) {
-		return host.Module("entry").RouteRegistrar(func() *inheritedEntryRegistrar { return &inheritedEntryRegistrar{app: app} }).Build()
+		return host.Module("entry").Application(app).RouteRegistrar(&inheritedEntryRegistrar{app: app}).Build()
 	}}, config.WithHTTPServer(server), config.WithDisableHealthRoute(true), config.WithEntryValidator(registry))
 	if err := h.Prepare(t.Context()); err != nil {
 		t.Fatal(err)

@@ -6,6 +6,8 @@ import (
 	"gochen-runtime/di"
 	"gochen-runtime/host/capability"
 	"gochen-runtime/host/config"
+	"gochen-runtime/host/internal/appregistry"
+	"gochen-runtime/host/module"
 	"gochen/errors"
 )
 
@@ -16,6 +18,13 @@ func (s *Host) ensureFrameworkRegistries() error {
 	s.config = config.Normalize(s.config)
 	if s.container == nil {
 		return errors.NewCode(errors.Internal, "container is nil")
+	}
+
+	if s.applicationRegistry == nil {
+		s.applicationRegistry = appregistry.NewRegistry()
+	}
+	if err := registerFrameworkRegistry(s.container, reflect.TypeOf((*module.IApplicationRegistry)(nil)).Elem(), s.applicationRegistry); err != nil {
+		return err
 	}
 
 	if s.catalogRegistrars == nil {

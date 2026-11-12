@@ -1,7 +1,9 @@
-package host
+package appregistry
 
 import (
+	"gochen/app"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -9,11 +11,6 @@ import (
 	"gochen/auth"
 	"gochen/errors"
 )
-
-// IDescriptorProvider 暴露资源的动作清单。
-type IDescriptorProvider interface {
-	Descriptor() auth.Descriptor
-}
 
 // IAllowAuthorizerProvider 由使用 auth.Allow() 的应用实现，用于启动期清单（D10）。
 type IAllowAuthorizerProvider interface {
@@ -26,7 +23,8 @@ type IAllowAuthorizerProvider interface {
 // 未注册的应用不参与跨应用检查。
 type Registry struct {
 	mu         sync.Mutex
-	apps       []IDescriptorProvider
+	frozen     bool
+	apps       []app.IDescriptorProvider
 	actions    map[string]map[string]auth.Action
 	resources  []string
 	allow      map[string]struct{}
@@ -45,12 +43,15 @@ func NewRegistry() *Registry {
 //
 // 同一资源名出现在多个应用上时动作取并集；同名动作的权限码与 Kind 必须一致。
 // 一次调用中的所有应用检查通过后，才提交注册状态。
-func (r *Registry) Register(apps ...IDescriptorProvider) error {
+func (r *Registry) Register(apps ...app.IDescriptorProvider) error {
 	if r == nil {
 		return errors.NewCode(errors.InvalidInput, "host registry cannot be nil")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frozen {
+		return errors.NewCode(errors.FailedPrecondition, "application registry is frozen")
+	}
 	actions := make(map[string]map[string]auth.Action, len(r.actions))
 	for resource, existing := range r.actions {
 		actions[resource] = maps.Clone(existing)
@@ -60,7 +61,7 @@ func (r *Registry) Register(apps ...IDescriptorProvider) error {
 	allow := maps.Clone(r.allow)
 	allowOrder := slices.Clone(r.allowOrder)
 	for _, app := range apps {
-		if app == nil {
+		if app == nil || isNil(app) {
 			return errors.NewCode(errors.InvalidInput, "application cannot be nil")
 		}
 		descriptor := app.Descriptor()
@@ -173,4 +174,34 @@ func (r *Registry) AllowResources() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.allowOrder...)
+}
+
+func isNil(value any) bool {
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+// Freeze 核对完整应用清单并结束登记阶段；重复调用不改变状态。
+func (r *Registry) Freeze() error {
+	if r == nil {
+		return errors.NewCode(errors.InvalidInput, "host registry cannot be nil")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frozen {
+		return nil
+	}
+	// 重建检查可发现违反不可变契约的应用在登记后修改了动作或权限。
+	checked := NewRegistry()
+	if err := checked.Register(r.apps...); err != nil {
+		return err
+	}
+	r.actions, r.resources, r.allow, r.allowOrder = checked.actions, checked.resources, checked.allow, checked.allowOrder
+	r.frozen = true
+	return nil
 }

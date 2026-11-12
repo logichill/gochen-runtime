@@ -105,7 +105,8 @@ func TestModuleQuick_BasicLifecycle(t *testing.T) {
 
 	stop, err := mod.Start(context.Background())
 	require.NoError(t, err)
-	assert.Nil(t, stop)
+	require.NotNil(t, stop)
+	require.NoError(t, stop(context.Background()))
 
 	// Invalid empty name
 	_, err = quick.Module("  ", nil)()
@@ -145,7 +146,7 @@ func TestModuleQuick_RegisterRoutes_Branches(t *testing.T) {
 		})()
 		require.NoError(t, err)
 		rm := mod.(module.IRouteModule)
-		_ = rm.Init(module.ModuleInitOptions{}) // no HTTP capability
+		require.NoError(t, rm.Init(module.ModuleInitOptions{})) // no HTTP capability
 		err = rm.RegisterRoutes(ctx)
 		require.NoError(t, err)
 		assert.False(t, called)
@@ -161,7 +162,7 @@ func TestModuleQuick_RegisterRoutes_Branches(t *testing.T) {
 		require.NoError(t, err)
 		rm := mod.(module.IRouteModule)
 		opts := module.WithCapability[module.IHTTPOptions](module.ModuleInitOptions{}, module.HTTPKey, &mockHTTPOptions{group: nil})
-		_ = rm.Init(opts)
+		require.NoError(t, rm.Init(opts))
 		err = rm.RegisterRoutes(ctx)
 		require.NoError(t, err)
 		assert.False(t, called)

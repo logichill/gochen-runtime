@@ -6,8 +6,8 @@ import (
 
 	"gochen-runtime/host/authz"
 	"gochen-runtime/host/config"
+	"gochen-runtime/host/internal/assembly"
 	"gochen-runtime/host/module"
-	"gochen-runtime/host/module/assembly"
 	"gochen-runtime/host/module/runtime"
 	"gochen/testkit/require"
 )

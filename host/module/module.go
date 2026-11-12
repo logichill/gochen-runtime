@@ -30,7 +30,7 @@ type IModule interface {
 	// Start 在 Host 的 StartBackground 阶段被调用。
 	//
 	// 约定：
-	// - Start 负责模块运行期动作（挂载路由、事件订阅、投影注册、后台任务启动等）；
+	// - Start 负责模块运行期动作（事件订阅、投影注册、后台任务启动等）；
 	// - Start 必须是“非阻塞”的（若需循环任务，应自行启动 goroutine）；
 	// - 返回的 stop 用于回滚与优雅关闭（可为 nil）。
 	Start(ctx context.Context) (ModuleStopFunc, error)
@@ -70,7 +70,7 @@ type ModuleStopFunc func(ctx context.Context) error
 //
 // 约定：
 // - Init 主要用于注册显式 provider/实例并保存运行环境引用（避免实例化副作用）；
-// - Start 用于执行运行期动作（挂载路由、订阅事件、注册投影、启动后台任务等），并返回 stop 用于回滚/关闭。
+// - Start 用于执行运行期动作（订阅事件、注册投影、启动后台任务等），并返回 stop 用于回滚/关闭。
 type ModuleInitOptions struct {
 	// Registry 仅用于 Init 阶段注册显式 provider（禁止作为 Service Locator 向下渗透）。
 	Registry di.IRegistry

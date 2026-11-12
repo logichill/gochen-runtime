@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"gochen-runtime/host"
+	"gochen-runtime/host/internal/appregistry"
+	"gochen/app"
 	appaudited "gochen/app/audited"
 	appcrud "gochen/app/crud"
 	appes "gochen/app/eventsourced"
@@ -74,7 +75,7 @@ func (s *governanceAuditStore) ListAuthzLogEntries(context.Context, auth.AuthzLo
 	return s.entries, nil
 }
 
-func newGovernanceApplicationFixture(t *testing.T, kind string, authorizer auth.IAuthorizer) (host.IDescriptorProvider, func(context.Context) error, func(context.Context) int) {
+func newGovernanceApplicationFixture(t *testing.T, kind string, authorizer auth.IAuthorizer) (app.IDescriptorProvider, func(context.Context) error, func(context.Context) int) {
 	t.Helper()
 	switch kind {
 	case "crud":
@@ -199,7 +200,7 @@ func TestGovernanceApplicationCombinations(t *testing.T) {
 					governed, err := auth.New(auth.Options{Policy: base, Governance: options})
 					require.NoError(t, err)
 					application, write, count := newGovernanceApplicationFixture(t, kind, governed)
-					startup := host.NewRegistry()
+					startup := appregistry.NewRegistry()
 					require.NoError(t, startup.Register(application))
 					if mode == "allow" {
 						require.Equal(t, []string{"document"}, startup.AllowResources())

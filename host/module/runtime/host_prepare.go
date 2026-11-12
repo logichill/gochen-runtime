@@ -82,9 +82,25 @@ func (s *Host) Prepare(ctx context.Context) error {
 	if err := s.registerModules(); err != nil {
 		return err
 	}
+	if err := s.registerApplications(); err != nil {
+		return err
+	}
 	if err := s.registerModuleCatalogs(ctx); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (s *Host) registerApplications() error {
+	for _, m := range s.modules {
+		provider, ok := m.(module.IApplicationProvider)
+		if !ok {
+			continue
+		}
+		if err := s.applicationRegistry.Register(provider.Applications()...); err != nil {
+			return errors.Wrap(err, errors.InvalidInput, "failed to register module applications").WithContext("module", m.ID())
+		}
+	}
+	return s.applicationRegistry.Validate()
 }

@@ -13,7 +13,7 @@ import (
 )
 
 // 这个示例展示模块化应用的推荐接入路径：
-// host.Module 声明 provider、路由注册器、权限目录和资源解析器，
+// host.Module 声明显式构造的路由注册器和权限目录，
 // host.Run 负责 DI 装配、模块 Init、路由挂载和启动期冲突检查。
 var catalogPermissions = authz.NewAPIPermissionSet(
 	"catalog",
@@ -51,10 +51,11 @@ func (r *catalogRoutes) RegisterRoutes(group httpx.IRouteGroup) error {
 }
 
 func NewCatalogModule() (host.IModule, error) {
+	service := NewCatalogService()
+	routes := NewCatalogRoutes(service)
 	return host.Module("catalog").
 		Name("Catalog").
-		Provide(NewCatalogService).
-		RouteRegistrar(NewCatalogRoutes).
+		RouteRegistrar(routes).
 		Extension(authz.Catalog{
 			PermissionDefinitions: catalogPermissions.Definitions(),
 		}).

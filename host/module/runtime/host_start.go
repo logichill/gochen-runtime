@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"reflect"
 
 	"gochen-runtime/di"
 	"gochen-runtime/host/capability"
@@ -36,9 +37,18 @@ func (s *Host) StartBackground(ctx context.Context) error {
 		return err
 	}
 
+	if err := s.validateRuntimeOwnership(); err != nil {
+		return err
+	}
+
 	// 先挂载路由（若模块提供独立阶段），避免“借 Start 挂路由”引入运行期副作用。
 	if err := s.registerModuleRoutes(ctx); err != nil {
 		return err
+	}
+	if s.applicationRegistry != nil {
+		if err := s.applicationRegistry.Freeze(); err != nil {
+			return err
+		}
 	}
 	if s.config != nil {
 		entries := make([]capability.ModuleCatalogEntry, 0, len(s.modules))
@@ -205,4 +215,29 @@ func (s *Host) failFastCircularDependencies() error {
 	}
 	return errors.NewCode(errors.Dependency, "circular dependencies detected in DI container").
 		WithContext("cycles", diag.CircularDependencies)
+}
+
+// validateRuntimeOwnership 在启用任何入口前拒绝重复的后台生命周期所有者。
+func (s *Host) validateRuntimeOwnership() error {
+	owners := make(map[any]string)
+	for _, m := range s.modules {
+		provider, ok := m.(capability.IRuntimeComponentProvider)
+		if !ok {
+			continue
+		}
+		components, err := provider.RuntimeComponents()
+		if err != nil {
+			return errors.Wrap(err, errors.Dependency, "prepare runtime ownership").WithContext("module", m.ID())
+		}
+		for _, component := range components {
+			if runtimeutil.IsTypedNil(component) || reflect.ValueOf(component).Kind() != reflect.Pointer {
+				return errors.NewCode(errors.InvalidInput, "runtime component requires non-nil pointer identity; wrap value in a pointer").WithContext("module", m.ID())
+			}
+			if owner, exists := owners[component]; exists {
+				return errors.NewCode(errors.Conflict, "runtime component has multiple lifecycle owners").WithContext("module", m.ID()).WithContext("owner", owner)
+			}
+			owners[component] = m.ID()
+		}
+	}
+	return nil
 }

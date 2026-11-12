@@ -6,6 +6,7 @@ import (
 	"gochen-runtime/di"
 	"gochen-runtime/host/capability"
 	"gochen-runtime/host/config"
+	"gochen-runtime/host/internal/appregistry"
 	"gochen-runtime/host/internal/bootstrap"
 	"gochen-runtime/host/module"
 	"gochen/errors"
@@ -25,10 +26,11 @@ type Host struct {
 	modules   []module.IModule
 	container di.IContainer
 
-	runtime           *bootstrap.Runtime
-	catalogRegistrars []capability.IModuleCatalogRegistrar
-	moduleRegistry    capability.IModuleRegistry
-	metadataRegistry  capability.IMetadataRegistry
+	runtime             *bootstrap.Runtime
+	catalogRegistrars   []capability.IModuleCatalogRegistrar
+	moduleRegistry      capability.IModuleRegistry
+	metadataRegistry    capability.IMetadataRegistry
+	applicationRegistry *appregistry.Registry
 
 	moduleStops       []module.ModuleStopFunc
 	transportOwned    bool // 本 Host 启动取得的 Transport；清理失败时保留所有权。

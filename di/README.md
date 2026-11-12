@@ -84,5 +84,5 @@ Host.StartBackground
 
 - `di` 仅依赖 Core 的 `gochen/errors`。
 - `di/basic` 实现 `di.IContainer`，负责反射构造、并发解析、循环依赖检测与诊断。
-- `host`、`host/module/assembly`、`host/internal/bootstrap` 使用 `di` 完成框架装配。
+- `host`、`host/internal/assembly`、`host/internal/bootstrap` 使用 `di` 完成框架装配。
 - 业务运行期通过构造函数参数接收依赖；容器只服务组合根、Host 和框架装配阶段。

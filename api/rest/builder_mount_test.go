@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"gochen-runtime/host"
+	"gochen/app"
 	appcrud "gochen/app/crud"
 	"gochen/app/query"
 	"gochen/auth"
@@ -257,10 +257,10 @@ func TestMountRegistersCORSAndPreflightRoutes(t *testing.T) {
 }
 
 type stubStartupRegistry struct {
-	apps []IDescriptorProvider
+	apps []app.IDescriptorProvider
 }
 
-func (s *stubStartupRegistry) Register(apps ...IDescriptorProvider) error {
+func (s *stubStartupRegistry) Register(apps ...app.IDescriptorProvider) error {
 	s.apps = append(s.apps, apps...)
 	return nil
 }
@@ -283,16 +283,6 @@ func TestMountRejectsNilRouteGroup(t *testing.T) {
 	err := Mount[*mountEntity, int64](nil, app)
 	require.Error(t, err)
 	require.Truef(t, errors.Is(err, errors.InvalidInput), "expected InvalidInput, got %v", err)
-}
-
-func TestMountRegistersWithHostRegistry(t *testing.T) {
-	registry := host.NewRegistry()
-	app := &stubApplication{descriptor: crudDescriptor()}
-	require.NoError(t, Mount[*mountEntity, int64](testkit.NewRecordingRouter(), app,
-		WithStartupRegistry[*mountEntity, int64](registry)))
-	require.Equal(t, []string{"user"}, registry.Resources())
-	require.Equal(t, 5, len(registry.Actions("user")))
-	require.NoError(t, registry.Validate())
 }
 
 // TestActionRejectsUnsupportedMethod：“未知 method”不能静默降级成 OPTIONS。

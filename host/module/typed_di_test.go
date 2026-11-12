@@ -3,8 +3,8 @@ package module_test
 import (
 	"context"
 	"gochen-runtime/di/basic"
+	"gochen-runtime/host/internal/assembly"
 	. "gochen-runtime/host/module"
-	"gochen-runtime/host/module/assembly"
 	"gochen-runtime/host/module/runtimecap"
 	"reflect"
 	"testing"
@@ -77,7 +77,7 @@ func TestExplicitModule_UsesTypedDIProtocolAcrossInitAndRoutes(t *testing.T) {
 			},
 			{
 				Lifetime:    SingletonLifetime,
-				ServiceType: reflect.TypeOf((*assembly.IRouteRegistrar)(nil)).Elem(),
+				ServiceType: reflect.TypeOf((*IRouteRegistrar)(nil)).Elem(),
 				Factory:     di.NewFactory(NewTestRouteRegistrar),
 				Roles:       []assembly.Role{assembly.RoleRouteRegistrar},
 			},

@@ -5,13 +5,11 @@ import (
 	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
 	"gochen-runtime/host/module/runtimecap"
+	"gochen/app"
 	"gochen/errors"
 )
 
-// NewModule 从描述符创建模块（显式路径入口）。
-//
-// 这是框架的显式模块入口，不依赖反射魔法。
-// 高级用户可直接使用此入口获得显式、可诊断、类型安全的模块定义。
+// NewModule 从宿主内部描述符创建正式模块。公开声明入口为 host.Module。
 func NewModule(desc ModuleDescriptor) module.IModule {
 	return &explicitModule{desc: desc}
 }
@@ -41,14 +39,22 @@ func (m *explicitModule) ModuleExtensions() []any {
 	return append([]any(nil), m.desc.Extensions...)
 }
 
-// Init 初始化模块，注册所有 Registrations 到 DI 容器。
+// Init 注册高级 DI 服务，并绑定直接持有的角色实例。
 func (m *explicitModule) Init(opts module.ModuleInitOptions) error {
 	m.opts = opts
 
 	// 1. 准备容器与模块运行时状态。
-	container, err := module.ResolveModuleContainer(opts)
-	if err != nil {
-		return runtimeutil.WrapModuleErr(m.desc.ID, err, "resolve container", errors.Internal)
+	var container module.IModuleContainer
+	for _, reg := range m.desc.Registrations {
+		if reg.Instance != nil && len(reg.Roles) > 0 {
+			continue
+		}
+		var err error
+		container, err = module.ResolveModuleContainer(opts)
+		if err != nil {
+			return runtimeutil.WrapModuleErr(m.desc.ID, err, "resolve container", errors.Internal)
+		}
+		break
 	}
 	m.container = container
 	m.runtime = capability.NewModuleRuntime(
@@ -71,4 +77,17 @@ func (m *explicitModule) Init(opts module.ModuleInitOptions) error {
 	}
 
 	return nil
+}
+
+// Applications 返回应用声明的独立集合。
+func (m *explicitModule) Applications() []app.IDescriptorProvider {
+	return append([]app.IDescriptorProvider(nil), m.desc.Applications...)
+}
+
+// DependsOn 返回模块依赖的独立集合。
+func (m *explicitModule) DependsOn() []string { return append([]string(nil), m.desc.Dependencies...) }
+
+// PublicFeatures 返回受限公开能力的独立集合。
+func (m *explicitModule) PublicFeatures() []module.PublicFeature {
+	return append([]module.PublicFeature(nil), m.desc.Features...)
 }

@@ -6,12 +6,16 @@ import (
 	"strings"
 
 	"gochen-runtime/di"
+	"gochen-runtime/host/capability"
+	"gochen-runtime/host/internal/assembly"
+	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
-	"gochen-runtime/host/module/assembly"
 	"gochen-runtime/host/module/runtimecap"
+	"gochen/app"
 	"gochen/domain/eventsourced"
 	"gochen/errors"
 	"gochen/httpx"
+	"gochen/messaging"
 )
 
 // AggregateConfig 描述一个需要在模块装配阶段 fail-fast 校验的 event-sourced 聚合。
@@ -42,10 +46,13 @@ type Builder struct {
 	providers         []any
 	aggregates        []AggregateConfig
 	extensions        []any
-	routeRegistrars   []any
-	eventHandlers     []any
-	projections       []any
-	runtimeComponents []any
+	routeRegistrars   []module.IRouteRegistrar
+	eventHandlers     []messaging.IMessageHandler
+	projections       []module.ProjectionRegistration
+	runtimeComponents []capability.IRuntimeComponent
+	applications      []app.IDescriptorProvider
+	dependencies      []string
+	publicFeatures    []module.PublicFeature
 	middlewares       []httpx.Middleware
 	onStart           func(ctx context.Context) error
 	onStop            func(ctx context.Context) error
@@ -59,6 +66,24 @@ func Module(id string) *Builder {
 // Name 设置模块展示名。
 func (b *Builder) Name(name string) *Builder {
 	b.name = name
+	return b
+}
+
+// Application 登记模块提供的应用，包括没有 HTTP 入口的应用。
+func (b *Builder) Application(applications ...app.IDescriptorProvider) *Builder {
+	b.applications = append(b.applications, applications...)
+	return b
+}
+
+// DependsOn 声明启动顺序，不隐式提供业务依赖。
+func (b *Builder) DependsOn(ids ...string) *Builder {
+	b.dependencies = append(b.dependencies, ids...)
+	return b
+}
+
+// PublicFeatures 声明允许公开的部署能力，不得包含秘密或连接配置。
+func (b *Builder) PublicFeatures(features ...module.PublicFeature) *Builder {
+	b.publicFeatures = append(b.publicFeatures, features...)
 	return b
 }
 
@@ -90,26 +115,26 @@ func (b *Builder) Extension(extensions ...any) *Builder {
 	return b
 }
 
-// RouteRegistrar 追加路由注册器构造器。
-func (b *Builder) RouteRegistrar(registrars ...any) *Builder {
+// RouteRegistrar 追加路由注册器实例。
+func (b *Builder) RouteRegistrar(registrars ...module.IRouteRegistrar) *Builder {
 	b.routeRegistrars = append(b.routeRegistrars, registrars...)
 	return b
 }
 
-// EventHandler 追加事件处理器构造器。
-func (b *Builder) EventHandler(handlers ...any) *Builder {
+// EventHandler 追加事件处理器实例。
+func (b *Builder) EventHandler(handlers ...messaging.IMessageHandler) *Builder {
 	b.eventHandlers = append(b.eventHandlers, handlers...)
 	return b
 }
 
-// Projection 追加投影构造器。
-func (b *Builder) Projection(projections ...any) *Builder {
+// Projection 追加投影声明。
+func (b *Builder) Projection(projections ...module.ProjectionRegistration) *Builder {
 	b.projections = append(b.projections, projections...)
 	return b
 }
 
-// RuntimeComponent 追加运行期组件构造器。
-func (b *Builder) RuntimeComponent(components ...any) *Builder {
+// RuntimeComponent 追加运行期组件实例；实例须为指针且只允许一个生命周期所有者。
+func (b *Builder) RuntimeComponent(components ...capability.IRuntimeComponent) *Builder {
 	b.runtimeComponents = append(b.runtimeComponents, components...)
 	return b
 }
@@ -151,13 +176,16 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 	}
 
 	desc := assembly.ModuleDescriptor{
-		ID:          builder.id,
-		Name:        builder.name,
-		Extensions:  append([]any(nil), builder.extensions...),
-		OnInit:      buildModuleInitHook(builder.id, builder.aggregates),
-		Middlewares: append([]httpx.Middleware(nil), builder.middlewares...),
-		OnStart:     builder.onStart,
-		OnStop:      builder.onStop,
+		ID:           builder.id,
+		Applications: append([]app.IDescriptorProvider(nil), builder.applications...),
+		Dependencies: append([]string(nil), builder.dependencies...),
+		Features:     append([]module.PublicFeature(nil), builder.publicFeatures...),
+		Name:         builder.name,
+		Extensions:   append([]any(nil), builder.extensions...),
+		OnInit:       buildModuleInitHook(builder.id, builder.aggregates),
+		Middlewares:  append([]httpx.Middleware(nil), builder.middlewares...),
+		OnStart:      builder.onStart,
+		OnStop:       builder.onStop,
 	}
 	if strings.TrimSpace(desc.Name) == "" {
 		desc.Name = strings.TrimSpace(desc.ID)
@@ -167,7 +195,7 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 		return assembly.ModuleDescriptor{}, err
 	}
 
-	appendRegistrations := func(field string, providers []any, roles ...assembly.Role) error {
+	appendRegistrations := func(field string, providers []any) error {
 		for i, provider := range providers {
 			if provider == nil {
 				continue
@@ -180,7 +208,6 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 				Lifetime:    module.SingletonLifetime,
 				ServiceType: serviceType,
 				Factory:     di.NewFactory(provider),
-				Roles:       append([]assembly.Role(nil), roles...),
 			})
 		}
 		return nil
@@ -189,16 +216,61 @@ func convertBuilderToDescriptor(builder *Builder) (assembly.ModuleDescriptor, er
 	if err := appendRegistrations("providers", builder.providers); err != nil {
 		return assembly.ModuleDescriptor{}, err
 	}
-	if err := appendRegistrations("route_registrars", builder.routeRegistrars, assembly.RoleRouteRegistrar); err != nil {
+	seen := make(map[assembly.Role][]any)
+	appendInstance := func(role assembly.Role, instance any) error {
+		if runtimeutil.IsTypedNil(instance) {
+			return errors.NewCode(errors.InvalidInput, "module role instance cannot be nil").WithContext("module", builder.id).WithContext("role", role)
+		}
+		if role == assembly.RoleRuntimeComponent && reflect.ValueOf(instance).Kind() != reflect.Pointer {
+			return errors.NewCode(errors.InvalidInput, "runtime component requires pointer identity; wrap value in a pointer").WithContext("module", builder.id)
+		}
+		for _, prior := range seen[role] {
+			if reflect.ValueOf(instance).Kind() == reflect.Pointer && reflect.TypeOf(prior) == reflect.TypeOf(instance) && instance == prior {
+				return errors.NewCode(errors.Conflict, "duplicate module role instance").WithContext("module", builder.id).WithContext("role", role)
+			}
+		}
+		seen[role] = append(seen[role], instance)
+		desc.Registrations = append(desc.Registrations, assembly.Registration{Instance: instance, Roles: []assembly.Role{role}})
+		return nil
+	}
+	for _, value := range builder.routeRegistrars {
+		if err := appendInstance(assembly.RoleRouteRegistrar, value); err != nil {
+			return assembly.ModuleDescriptor{}, err
+		}
+	}
+	for _, value := range builder.eventHandlers {
+		if err := appendInstance(assembly.RoleEventHandler, value); err != nil {
+			return assembly.ModuleDescriptor{}, err
+		}
+	}
+	for _, value := range builder.projections {
+		if err := appendInstance(assembly.RoleProjection, value.Instance()); err != nil {
+			return assembly.ModuleDescriptor{}, err
+		}
+	}
+	for _, value := range builder.runtimeComponents {
+		if err := appendInstance(assembly.RoleRuntimeComponent, value); err != nil {
+			return assembly.ModuleDescriptor{}, err
+		}
+	}
+	for _, application := range builder.applications {
+		if runtimeutil.IsTypedNil(application) {
+			return assembly.ModuleDescriptor{}, errors.NewCode(errors.InvalidInput, "application cannot be nil").WithContext("module", builder.id)
+		}
+	}
+	id, err := module.NormalizeModuleID(desc.ID)
+	if err != nil {
 		return assembly.ModuleDescriptor{}, err
 	}
-	if err := appendRegistrations("event_handlers", builder.eventHandlers, assembly.RoleEventHandler); err != nil {
-		return assembly.ModuleDescriptor{}, err
+	desc.ID = id
+	for i, dependency := range desc.Dependencies {
+		normalized, err := module.NormalizeModuleID(dependency)
+		if err != nil {
+			return assembly.ModuleDescriptor{}, err
+		}
+		desc.Dependencies[i] = normalized
 	}
-	if err := appendRegistrations("projections", builder.projections, assembly.RoleProjection); err != nil {
-		return assembly.ModuleDescriptor{}, err
-	}
-	if err := appendRegistrations("runtime_components", builder.runtimeComponents, assembly.RoleRuntimeComponent); err != nil {
+	if err := module.NewModuleRegistry().Register(module.ModuleInfo{ID: desc.ID, Name: desc.Name, Features: desc.Features}); err != nil {
 		return assembly.ModuleDescriptor{}, err
 	}
 

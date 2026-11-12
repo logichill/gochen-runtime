@@ -6,7 +6,6 @@ import (
 	"gochen-runtime/host/capability"
 	"gochen-runtime/host/internal/runtimeutil"
 	"gochen-runtime/host/module"
-	"gochen-runtime/host/module/runtimecap"
 	runtimehttp "gochen-runtime/http"
 	"gochen/errors"
 )
@@ -17,8 +16,8 @@ func (m *explicitModule) RegisterRoutes(ctx context.Context) error {
 		return errors.NewCode(errors.InvalidInput, "ctx is nil")
 	}
 
-	httpOptions := runtimecap.HTTPFrom(m.opts)
-	if httpOptions == nil {
+	httpOptions, _ := module.CapabilityFrom(m.opts, module.HTTPKey)
+	if runtimeutil.IsTypedNil(httpOptions) {
 		return nil
 	}
 	group := httpOptions.MountGroup()
@@ -50,7 +49,7 @@ func (m *explicitModule) RegisterRoutes(ctx context.Context) error {
 				WithContext("index", i)
 		}
 
-		registrar, ok := inst.(IRouteRegistrar)
+		registrar, ok := inst.(module.IRouteRegistrar)
 		if !ok {
 			return errors.NewCode(errors.Internal, "route registrar does not implement IRouteRegistrar").
 				WithContext("module", m.desc.ID).

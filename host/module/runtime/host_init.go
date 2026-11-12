@@ -56,6 +56,7 @@ func (s *Host) makeModuleInitOptions(m module.IModule) module.ModuleInitOptions 
 	}
 	capabilities := []initcap.Setter{
 		runtimecap.HTTP(httpOpt),
+		initcap.Set(module.ApplicationRegistryKey, module.IApplicationRegistry(s.applicationRegistry)),
 		runtimecap.ModuleRegistry(s.moduleRegistry),
 		runtimecap.MetadataRegistry(s.metadataRegistry),
 		runtimecap.EventBus(eventBus),

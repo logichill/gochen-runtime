@@ -21,6 +21,7 @@ type IEntryActivator interface {
 }
 
 // IRuntimeComponentProvider 暴露与 Start 使用相同实例的运行期组件。
+// 组件必须具有非空指针身份；Host 在启动前拒绝重复生命周期所有者。
 type IRuntimeComponentProvider interface {
 	RuntimeComponents() ([]IRuntimeComponent, error)
 }

@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"gochen-runtime/host/module"
 	"net/http"
 	"strings"
 
@@ -56,7 +57,7 @@ type RouteBuilder[T domain.IEntity[ID], ID comparable] struct {
 	service         Application[T, ID]
 	middlewares     []httpx.Middleware
 	fastDenyEnabled bool
-	registry        IStartupRegistry
+	registry        module.IApplicationRegistry
 	entryRegistry   IEntryRegistry
 	entryModule     string
 	cors            httpx.Middleware

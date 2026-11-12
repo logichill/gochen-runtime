@@ -3,7 +3,6 @@ package quick
 import (
 	"reflect"
 
-	"gochen/app"
 	"gochen/app/crud"
 	"gochen/auth"
 	"gochen/domain"
@@ -32,15 +31,11 @@ func DeclaredApp[T domain.IEntity[ID], ID comparable](repository crud.Repository
 	if !isNil(options.Authorizer) {
 		return nil, errors.NewCode(errors.InvalidInput, "declared application constructs its authorizer from rules")
 	}
-	provider, ok := any(repository).(app.IExecutionDescriptorProvider)
-	if !ok {
-		return nil, errors.NewCode(errors.InvalidInput, "resource repository must expose execution descriptor")
-	}
 	descriptor, err := crud.Describe(options, true)
 	if err != nil {
 		return nil, err
 	}
-	dependencies.Metadata = provider.ExecutionDescriptor().Metadata()
+	dependencies.Metadata = repository.ExecutionDescriptor().Metadata()
 	authorizer, err := auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData, Rules: rules}, dependencies)
 	if err != nil {
 		return nil, err

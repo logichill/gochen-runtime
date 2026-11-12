@@ -3,7 +3,6 @@ package rest
 import (
 	"context"
 
-	"gochen-runtime/host"
 	appaudited "gochen/app/audited"
 	appcrud "gochen/app/crud"
 	"gochen/domain"
@@ -19,14 +18,6 @@ type Application[T domain.IEntity[ID], ID comparable] = appcrud.IApplication[T, 
 
 // LifecycleApplication 是 audited 应用的生命周期入口（app/audited.ILifecycleApplication）。
 type LifecycleApplication[T domain.IEntity[ID], ID comparable] = appaudited.ILifecycleApplication[T, ID]
-
-// IDescriptorProvider 暴露资源的动作清单。
-type IDescriptorProvider = host.IDescriptorProvider
-
-// IStartupRegistry 是 Host 启动期清单端口；由 Host 实例实现，不是包级全局。
-type IStartupRegistry interface {
-	Register(apps ...IDescriptorProvider) error
-}
 
 // ActionHandler 是业务动作路由的处理器。
 //

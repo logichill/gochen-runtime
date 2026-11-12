@@ -12,6 +12,9 @@ import (
 
 // registerOne 注册单个 Registration 到容器。
 func (m *explicitModule) registerOne(container module.IModuleContainer, reg Registration, index int) error {
+	if reg.Instance != nil && len(reg.Roles) > 0 {
+		return nil
+	} // 角色实例不进入按类型索引的 DI，允许同类型的不同对象。
 	if reg.Factory.IsZero() && reg.Instance == nil {
 		return nil // 空注册项，跳过
 	}

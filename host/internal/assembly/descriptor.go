@@ -6,6 +6,7 @@ import (
 
 	"gochen-runtime/di"
 	"gochen-runtime/host/module"
+	"gochen/app"
 	"gochen/httpx"
 )
 
@@ -53,6 +54,10 @@ type Registration struct {
 type ModuleDescriptor struct {
 	// ID 模块的稳定标识。
 	ID string
+
+	Applications []app.IDescriptorProvider
+	Dependencies []string
+	Features     []module.PublicFeature
 
 	// Name 模块的展示名称。
 	Name string

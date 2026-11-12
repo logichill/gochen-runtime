@@ -8,8 +8,8 @@ import (
 
 	"gochen-runtime/di"
 	"gochen-runtime/di/basic"
+	"gochen-runtime/host/internal/assembly"
 	"gochen-runtime/host/module"
-	"gochen-runtime/host/module/assembly"
 	"gochen-runtime/host/module/runtimecap"
 	"gochen-runtime/internal/testutil"
 	"gochen/domain"
@@ -270,7 +270,7 @@ func TestModuleBuilder_RegisterRoutes(t *testing.T) {
 		Module("test").
 			Name("Test").
 			Provide(NewTestService).
-			RouteRegistrar(NewTestRouteRegistrar).
+			RouteRegistrar(NewTestRouteRegistrar(NewTestService())).
 			Middleware(testMiddleware),
 	)
 
@@ -320,7 +320,7 @@ func TestNewModule_RegisterRoutes_ResolveRoleByExplicitServiceType(t *testing.T)
 			},
 			{
 				Lifetime:    module.SingletonLifetime,
-				ServiceType: reflect.TypeOf((*assembly.IRouteRegistrar)(nil)).Elem(),
+				ServiceType: reflect.TypeOf((*module.IRouteRegistrar)(nil)).Elem(),
 				Factory:     di.NewFactory(NewTestRouteRegistrar),
 				Roles:       []assembly.Role{assembly.RoleRouteRegistrar},
 			},
@@ -350,9 +350,9 @@ func TestNewModuleDescriptor_AssignsCapabilityRoles(t *testing.T) {
 	desc, err := newModuleDescriptorForTest(t,
 		Module("test").
 			Name("Test").
-			EventHandler(NewTestEventHandler).
-			Projection(NewTestProjection1).
-			RuntimeComponent(NewTestRuntimeComponent),
+			EventHandler(NewTestEventHandler(NewTestService())).
+			Projection(module.ProjectionOf[int64](NewTestProjection1())).
+			RuntimeComponent(NewTestRuntimeComponent(NewTestService())),
 	)
 	if err != nil {
 		t.Fatalf("NewModuleDescriptor failed: %v", err)
@@ -433,7 +433,7 @@ func TestModuleBuilder_NoHTTP(t *testing.T) {
 	mod := mustBuildHostModule(t,
 		Module("test").
 			Name("Test").
-			RouteRegistrar(NewTestRouteRegistrar),
+			RouteRegistrar(NewTestRouteRegistrar(NewTestService())),
 	)
 
 	opts := runtimecap.WithHTTP(module.NewModuleInitOptions(container, container, container), nil) // HTTP 未启用

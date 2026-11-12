@@ -1,9 +1,9 @@
-package host_test
+package appregistry_test
 
 import (
 	"testing"
 
-	"gochen-runtime/host"
+	"gochen-runtime/host/internal/appregistry"
 	"gochen/auth"
 	"gochen/errors"
 	"gochen/testkit/require"
@@ -18,7 +18,7 @@ func (a *registryApp) Descriptor() auth.Descriptor { return a.descriptor }
 func (a *registryApp) UsesAllowAuthorizer() bool   { return a.allow }
 
 func TestRegistryUnionsActionsAcrossApps(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	reader := &registryApp{descriptor: auth.Descriptor{
 		Resource: "user",
 		Actions:  []auth.Action{{Name: "list", Kind: auth.KindList}},
@@ -38,7 +38,7 @@ func TestRegistryUnionsActionsAcrossApps(t *testing.T) {
 }
 
 func TestRegistryAllowsIdenticalDuplicateAction(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	first := &registryApp{descriptor: auth.Descriptor{
 		Resource: "user",
 		Actions:  []auth.Action{{Name: "read", Kind: auth.KindRead}},
@@ -54,7 +54,7 @@ func TestRegistryAllowsIdenticalDuplicateAction(t *testing.T) {
 }
 
 func TestRegistryRejectsActionKindConflict(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	first := &registryApp{descriptor: auth.Descriptor{
 		Resource: "user",
 		Actions:  []auth.Action{{Name: "read", Kind: auth.KindRead}},
@@ -71,7 +71,7 @@ func TestRegistryRejectsActionKindConflict(t *testing.T) {
 }
 
 func TestRegistryRejectsActionPermissionConflict(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	first := &registryApp{descriptor: auth.Descriptor{
 		Resource: "user",
 		Actions:  []auth.Action{{Name: "read", Kind: auth.KindRead, Permission: "user:custom:read"}},
@@ -88,7 +88,7 @@ func TestRegistryRejectsActionPermissionConflict(t *testing.T) {
 }
 
 func TestRegistryTracksAllowResources(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	open := &registryApp{
 		descriptor: auth.Descriptor{Resource: "audit_log", Actions: []auth.Action{{Name: "list", Kind: auth.KindList}}},
 		allow:      true,
@@ -102,19 +102,19 @@ func TestRegistryTracksAllowResources(t *testing.T) {
 }
 
 func TestRegistryRejectsInvalidInput(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	require.Error(t, registry.Register(nil))
 
 	err := registry.Register(&registryApp{descriptor: auth.Descriptor{Resource: " "}})
 	require.Error(t, err)
 	require.Truef(t, errors.Is(err, errors.InvalidInput), "expected InvalidInput, got %v", err)
 
-	var nilRegistry *host.Registry
+	var nilRegistry *appregistry.Registry
 	require.Error(t, nilRegistry.Register(&registryApp{}))
 }
 
 func TestRegistryFailedRegistrationLeavesStateUnchanged(t *testing.T) {
-	registry := host.NewRegistry()
+	registry := appregistry.NewRegistry()
 	reader := &registryApp{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: "read", Kind: auth.KindRead}}}}
 	require.NoError(t, registry.Register(reader))
 	failed := &registryApp{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{
@@ -130,4 +130,31 @@ func TestRegistryFailedRegistrationLeavesStateUnchanged(t *testing.T) {
 	require.NoError(t, registry.Validate())
 	// 失败的动作没有留下冲突状态，后续合法注册仍可成功。
 	require.NoError(t, registry.Register(&registryApp{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: "create", Kind: auth.KindUpdate}}}}))
+}
+
+func TestRegistryRejectsTypedNilApplication(t *testing.T) {
+	registry := appregistry.NewRegistry()
+	var application *registryApp
+	require.Error(t, registry.Register(application))
+	require.Equal(t, 0, len(registry.Resources()))
+}
+
+func TestRegistryFreezeRejectsLateRegistration(t *testing.T) {
+	registry := appregistry.NewRegistry()
+	application := &registryApp{descriptor: auth.Descriptor{Resource: "job", Actions: []auth.Action{{Name: "read", Kind: auth.KindRead}}}}
+	require.NoError(t, registry.Register(application))
+	require.NoError(t, registry.Freeze())
+	require.NoError(t, registry.Freeze())
+	err := registry.Register(application)
+	require.Truef(t, errors.Is(err, errors.FailedPrecondition), "expected frozen registry, got %v", err)
+	require.Equal(t, []string{"job"}, registry.Resources())
+}
+
+func TestRegistryFreezeRechecksConflictingDescriptors(t *testing.T) {
+	registry := appregistry.NewRegistry()
+	first := &registryApp{descriptor: auth.Descriptor{Resource: "job", Actions: []auth.Action{{Name: "read", Kind: auth.KindRead}}}}
+	second := &registryApp{descriptor: auth.Descriptor{Resource: "job", Actions: []auth.Action{{Name: "read", Kind: auth.KindRead}}}}
+	require.NoError(t, registry.Register(first, second))
+	second.descriptor.Actions[0].Permission = "job:different"
+	require.Error(t, registry.Freeze())
 }
