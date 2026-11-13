@@ -11,9 +11,9 @@ import (
 
 	"gochen-runtime/http/nethttp"
 	coreapp "gochen/app"
-	appaudit "gochen/app/audit"
 	"gochen/app/crud"
-	"gochen/app/deletion"
+	appaudit "gochen/app/crud/audit"
+	"gochen/app/crud/deletion"
 	"gochen/auth"
 
 	"gochen/contextx"

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"gochen-runtime/http/nethttp"
-	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
+	appaudit "gochen/app/crud/audit"
 	domaudited "gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"

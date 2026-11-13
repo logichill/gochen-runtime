@@ -23,8 +23,8 @@ import (
 	"gochen-runtime/host/authz"
 
 	"gochen/app"
-	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
+	appaudit "gochen/app/crud/audit"
 	"gochen/app/operation"
 	"gochen/audit"
 	"gochen/auth"

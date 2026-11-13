@@ -2,9 +2,9 @@ package rest
 
 import (
 	"gochen/app"
-	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
-	"gochen/app/deletion"
+	appaudit "gochen/app/crud/audit"
+	"gochen/app/crud/deletion"
 	"gochen/domain"
 )
 

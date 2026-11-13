@@ -60,7 +60,7 @@ Descriptor 中声明了对应动作时才注册：
 | `update` | PUT | `{BasePath}/bulk` | 批量更新（`ExecuteBulk`） |
 | `delete` | DELETE | `{BasePath}/:id` | 删除单个实体 |
 | `delete` | DELETE | `{BasePath}/bulk` | 批量删除（`DeleteBulk`） |
-| `audit_read` | GET | `{BasePath}/:id/audit` | 显式 WithAudit 的独立 app/audit.Reader |
+| `audit_read` | GET | `{BasePath}/:id/audit` | 显式 WithAudit 的独立 app/crud/audit.Reader |
 | `restore` | POST | `{BasePath}/:id/restore` | 显式 WithDeletion 的独立 DeletionApplication |
 | `purge` | DELETE | `{BasePath}/:id/purge` | 显式 WithDeletion 的独立 DeletionApplication |
 | `read` | GET | `{BasePath}/:id` | 读取单个实体 |
@@ -205,7 +205,7 @@ Host 启动 → 模块路由注册 → rest.Mount → 校验并挂载路由
 | 方向 | 依赖 |
 | --- | --- |
 | 上游调用方 | `host.Module(...).RouteRegistrar(...)`、`quick.RESTRegistrar(...)` |
-| Core 契约 | `app/crud`、`app/audit`、`app/deletion`、`auth`、`app/query`、`codec/idcodec`、`contextx`、`httpx` |
+| Core 契约 | `app/crud`、`app/crud/audit`、`app/crud/deletion`、`auth`、`app/query`、`codec/idcodec`、`contextx`、`httpx` |
 | Runtime 物理层 | `gochen-runtime/http`（`RegisterRoute` 与路由方法分派）、`http/middleware`、`http/request` |
 | 内部工具 | `gochen-runtime/internal/httpheader` |
 

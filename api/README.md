@@ -20,6 +20,6 @@ Host.StartBackground
 ## 依赖关系
 
 - 上游：`host.Module(...).RouteRegistrar(...)`、`quick.RESTRegistrar(...)`。
-- Core 契约：`app/crud`、`app/audit`、`app/deletion`、`auth`、`app/query`、`codec`、`contextx`、`httpx`。
+- Core 契约：`app/crud`、`app/crud/audit`、`app/crud/deletion`、`auth`、`app/query`、`codec`、`contextx`、`httpx`。
 - Runtime 物理层：`gochen-runtime/http`、`http/middleware`、`http/request`。
 - 持久化：由 Application 持有的 Repository 完成；`api/rest` 只处理协议绑定、路由、授权入口与响应映射。

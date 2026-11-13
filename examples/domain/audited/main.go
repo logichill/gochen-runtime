@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"gochen-runtime/api/rest"
-	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
-	appdeletion "gochen/app/deletion"
+	appaudit "gochen/app/crud/audit"
+	appdeletion "gochen/app/crud/deletion"
 	"gochen/auth"
 	"gochen/contextx"
 	"gochen/domain/crud"

@@ -3,9 +3,9 @@ package repo_test
 import (
 	"context"
 	repopkg "gochen-runtime/db/orm/repo"
-	appaudit "gochen/app/audit"
 	appcrud "gochen/app/crud"
-	appdeletion "gochen/app/deletion"
+	appaudit "gochen/app/crud/audit"
+	appdeletion "gochen/app/crud/deletion"
 	"gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"
