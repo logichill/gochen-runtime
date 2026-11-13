@@ -101,6 +101,6 @@ func TestDescribeRunsSameValidationAsMount(t *testing.T) {
 
 	_, _, err := Describe[*mountEntity, int64](app,
 		WithBasePath[*mountEntity, int64]("/users"),
-		WithOperatorExtractor[*mountEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }))
+		WithOperatorExtractor[*mountEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }), WithRoutes[*mountEntity, int64](OpRestore))
 	require.Error(t, err)
 }

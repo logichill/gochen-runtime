@@ -135,7 +135,7 @@ func (rb *RouteBuilder[T, ID]) handleDeleteBulk(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.deleteBulk(ctx, req.IDs); err != nil {
+	if err := rb.write.DeleteBulk(ctx, req.IDs); err != nil {
 		return err
 	}
 	result := map[string]any{"count": len(req.IDs)}

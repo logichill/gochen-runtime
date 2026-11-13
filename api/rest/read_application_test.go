@@ -77,6 +77,48 @@ func TestMountRequiresBulkExecutionForDeclaredCreateAndUpdate(t *testing.T) {
 	}
 }
 
+type executorWithoutWriter struct {
+	readSurface
+	appcrud.IActionExecutor[*mountEntity, int64]
+}
+
+func TestExplicitWriteRoutesRequireOnlyTheirExecutionPort(t *testing.T) {
+	for _, tc := range []struct {
+		action auth.Action
+		single Op
+		bulk   Op
+	}{
+		{action: auth.Action{Name: actionCreate, Kind: auth.KindCreate}, single: OpCreate, bulk: OpCreateBulk},
+		{action: auth.Action{Name: actionUpdate, Kind: auth.KindUpdate}, single: OpUpdate, bulk: OpUpdateBulk},
+	} {
+		t.Run(tc.action.Name, func(t *testing.T) {
+			read := readSurface{ReadApplication: &stubApplication{}, descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{tc.action}}}
+			writer := writeWithoutExecutor{readSurface: read, IWriteApplication: &stubApplication{}}
+			executor := executorWithoutWriter{readSurface: read, IActionExecutor: &stubApplication{}}
+			for _, selection := range []struct {
+				application ReadApplication[*mountEntity, int64]
+				operation   Op
+				valid       bool
+			}{
+				{application: writer, operation: tc.single, valid: true},
+				{application: executor, operation: tc.bulk, valid: true},
+				{application: executor, operation: tc.single, valid: false},
+				{application: writer, operation: tc.bulk, valid: false},
+			} {
+				router := testkit.NewRecordingRouter()
+				err := Mount(router, selection.application, WithRoutes[*mountEntity, int64](selection.operation))
+				if selection.valid {
+					require.NoError(t, err)
+					require.Equal(t, 1, len(router.RecordedRoutes()))
+				} else {
+					require.Truef(t, errors.Is(err, errors.InvalidInput), "%s: %v", selection.operation, err)
+					require.Equal(t, 0, len(router.RecordedRoutes()))
+				}
+			}
+		})
+	}
+}
+
 func TestMountRejectsTypedNilReadApplication(t *testing.T) {
 	var application *appcrud.ReadApplication[*mountEntity, int64]
 	router := testkit.NewRecordingRouter()
@@ -88,7 +130,7 @@ func TestMountRejectsTypedNilReadApplication(t *testing.T) {
 func TestReadApplicationAuditRoutePreservesDistinctAuthorization(t *testing.T) {
 	repository, err := testkit.NewAuditedMemoryRepository[*handlerEntity, int64](testkit.NewInt64Sequence(1))
 	require.NoError(t, err)
-	writer, err := appcrud.NewApplication(repository, appcrud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow(), Audit: repository})
+	writer, err := appcrud.NewApplication(repository, appcrud.Options[*handlerEntity, int64]{DeleteMode: appcrud.DeleteSoft, Resource: "items", Authorizer: auth.Allow(), Audit: repository})
 	require.NoError(t, err)
 	ctx, err := contextx.WithOperator(t.Context(), "tester")
 	require.NoError(t, err)

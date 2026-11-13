@@ -25,6 +25,7 @@ type paginationReadSurface struct {
 	ReadApplication[*mountEntity, int64]
 	maxPageSize int
 	call        paginationCall
+	deletedCall paginationCall
 }
 
 func (a *paginationReadSurface) MaxPageSize() int { return a.maxPageSize }
@@ -54,45 +55,33 @@ func (a *paginationAuditSurface) AuditTrail(_ context.Context, _ int64, offset, 
 	return []audit.AuditRecord{{ID: int64(offset + 1)}}, nil
 }
 
-type paginationDeletionSurface struct {
-	DeletionApplication[*mountEntity, int64]
-	maxPageSize int
-	call        paginationCall
-}
-
-func (a *paginationDeletionSurface) Descriptor() auth.Descriptor {
-	return auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: actionListDeleted, Kind: auth.KindList}}}
-}
-func (a *paginationDeletionSurface) MaxPageSize() int { return a.maxPageSize }
-func (a *paginationDeletionSurface) MaxBulkSize() int { return 100 }
-func (a *paginationDeletionSurface) ListDeleted(_ context.Context, offset, limit int) ([]*mountEntity, error) {
-	a.call = paginationCall{offset: offset, limit: limit}
+func (a *paginationReadSurface) ListDeleted(_ context.Context, offset, limit int) ([]*mountEntity, error) {
+	a.deletedCall = paginationCall{offset: offset, limit: limit}
 	return []*mountEntity{{ID: int64(offset + 1)}}, nil
 }
 
 func TestPaginationUsesOwningApplicationLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name                              string
-		route, read, audit, deletion      int
+		route, read, audit                int
 		wantRead, wantAudit, wantDeletion int
 	}{
-		{name: "independent limits", route: 10, read: 3, audit: 1, deletion: 2, wantRead: 3, wantAudit: 1, wantDeletion: 2},
-		{name: "read limit does not restrict capabilities", route: 10, read: 1, audit: 2, deletion: 3, wantRead: 1, wantAudit: 2, wantDeletion: 3},
-		{name: "route limit", route: 1, read: 3, audit: 3, deletion: 3, wantRead: 1, wantAudit: 1, wantDeletion: 1},
-		{name: "no application limit", route: 2, read: 0, audit: -1, deletion: 0, wantRead: 2, wantAudit: 2, wantDeletion: 2},
-		{name: "no route limit", route: 0, read: 1, audit: 2, deletion: 3, wantRead: 1, wantAudit: 2, wantDeletion: 3},
-		{name: "no limits", route: 0, read: 0, audit: 0, deletion: 0, wantRead: 3, wantAudit: 3, wantDeletion: 3},
+		{name: "independent limits", route: 10, read: 3, audit: 1, wantRead: 3, wantAudit: 1, wantDeletion: 3},
+		{name: "unified resource limit does not restrict audit", route: 10, read: 1, audit: 2, wantRead: 1, wantAudit: 2, wantDeletion: 1},
+		{name: "route limit", route: 1, read: 3, audit: 3, wantRead: 1, wantAudit: 1, wantDeletion: 1},
+		{name: "no application limit", route: 2, read: 0, audit: -1, wantRead: 2, wantAudit: 2, wantDeletion: 2},
+		{name: "no route limit", route: 0, read: 1, audit: 2, wantRead: 1, wantAudit: 2, wantDeletion: 1},
+		{name: "no limits", route: 0, read: 0, audit: 0, wantRead: 3, wantAudit: 3, wantDeletion: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			application := &paginationReadSurface{ReadApplication: &stubApplication{descriptor: auth.Descriptor{
-				Resource: "user", Actions: []auth.Action{{Name: actionList, Kind: auth.KindList}},
+				Resource: "user", Actions: []auth.Action{{Name: actionList, Kind: auth.KindList}, {Name: actionListDeleted, Kind: auth.KindList}},
 			}}, maxPageSize: tc.read}
 			history := &paginationAuditSurface{maxPageSize: tc.audit}
-			trash := &paginationDeletionSurface{maxPageSize: tc.deletion}
 			server := nethttp.NewServer(nil)
 			builder, err := NewRouteBuilder(application,
 				WithBasePath[*mountEntity, int64]("/users"),
-				WithAudit[*mountEntity, int64](history), WithDeletion[*mountEntity, int64](trash),
+				WithAudit[*mountEntity, int64](history), WithRoutes[*mountEntity, int64](OpList, OpAuditRead, OpListDeleted),
 				func(b *RouteBuilder[*mountEntity, int64]) {
 					b.config.Query.DefaultPageSize = 3
 					b.config.Query.MaxPageSize = tc.route
@@ -112,7 +101,7 @@ func TestPaginationUsesOwningApplicationLimit(t *testing.T) {
 				}{
 					{path: "/users", want: tc.wantRead, call: &application.call},
 					{path: "/users/1/audit", want: tc.wantAudit, call: &history.call},
-					{path: "/users/deleted", want: tc.wantDeletion, call: &trash.call},
+					{path: "/users/deleted", want: tc.wantDeletion, call: &application.deletedCall},
 				} {
 					response := httptest.NewRecorder()
 					server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, endpoint.path+"?page=2"+suffix, nil))

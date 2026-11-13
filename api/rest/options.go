@@ -9,6 +9,15 @@ import (
 	"gochen/httpx"
 )
 
+// WithRoutes 设置精确路由清单，替换默认 CRUD 与审计读取路由。
+// 不传操作时不挂载标准路由；可选生命周期操作必须显式选择。
+func WithRoutes[T domain.IEntity[ID], ID comparable](operations ...Op) Option[T, ID] {
+	frozen := append(make([]Op, 0, len(operations)), operations...)
+	return func(b *RouteBuilder[T, ID]) {
+		b.config.Routing.Operations = append(make([]Op, 0, len(frozen)), frozen...)
+	}
+}
+
 // WithBasePath 设置资源基础路径。
 func WithBasePath[T domain.IEntity[ID], ID comparable](path string) Option[T, ID] {
 	return func(b *RouteBuilder[T, ID]) {

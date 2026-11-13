@@ -74,7 +74,7 @@ func setupTestDB(t *testing.T) orm.IOrm {
 
 func newQuickApp(t *testing.T, r *repo.Repo[*TestQuickEntity, int64]) *crud.Application[*TestQuickEntity, int64] {
 	t.Helper()
-	app, err := quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{
+	app, err := quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{DeleteMode: crud.DeletePurge,
 		Resource:   "quick_item",
 		Authorizer: auth.Allow(),
 	})
@@ -257,7 +257,7 @@ func TestQuick_InvalidInputs(t *testing.T) {
 	require.NoError(t, err)
 
 	// App nil repository
-	_, err = quick.App[*TestQuickEntity, int64](nil, crud.Options[*TestQuickEntity, int64]{
+	_, err = quick.App[*TestQuickEntity, int64](nil, crud.Options[*TestQuickEntity, int64]{DeleteMode: crud.DeletePurge,
 		Resource:   "quick_item",
 		Authorizer: auth.Allow(),
 	})
@@ -265,20 +265,20 @@ func TestQuick_InvalidInputs(t *testing.T) {
 
 	// App typed-nil repository
 	var typedNilRepo *repo.Repo[*TestQuickEntity, int64]
-	_, err = quick.App[*TestQuickEntity, int64](typedNilRepo, crud.Options[*TestQuickEntity, int64]{
+	_, err = quick.App[*TestQuickEntity, int64](typedNilRepo, crud.Options[*TestQuickEntity, int64]{DeleteMode: crud.DeletePurge,
 		Resource:   "quick_item",
 		Authorizer: auth.Allow(),
 	})
 	require.Error(t, err)
 
 	// App without explicit authorizer
-	_, err = quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{
+	_, err = quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{DeleteMode: crud.DeletePurge,
 		Resource: "quick_item",
 	})
 	require.Error(t, err)
 
 	// App without resource name
-	_, err = quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{
+	_, err = quick.App[*TestQuickEntity, int64](r, crud.Options[*TestQuickEntity, int64]{DeleteMode: crud.DeletePurge,
 		Authorizer: auth.Allow(),
 	})
 	require.Error(t, err)

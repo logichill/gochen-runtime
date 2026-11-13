@@ -186,7 +186,7 @@ func (rb *RouteBuilder[T, ID]) handleDelete(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := rb.delete(ctx, id); err != nil {
+	if err := rb.write.Delete(ctx, id); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(nil)))

@@ -79,7 +79,7 @@ func newGovernanceApplicationFixture(t *testing.T, kind string, authorizer auth.
 	case "crud":
 		repo, err := testkit.NewMemoryRepository[*governanceDocument, int64](testkit.NewInt64Sequence(1))
 		require.NoError(t, err)
-		application, err := appcrud.NewApplication(repo, appcrud.Options[*governanceDocument, int64]{Resource: "document", Authorizer: authorizer})
+		application, err := appcrud.NewApplication(repo, appcrud.Options[*governanceDocument, int64]{DeleteMode: appcrud.DeletePurge, Resource: "document", Authorizer: authorizer})
 		require.NoError(t, err)
 		return application, func(ctx context.Context) error {
 				return application.Create(ctx, &governanceDocument{Name: "allowed"})
@@ -91,7 +91,7 @@ func newGovernanceApplicationFixture(t *testing.T, kind string, authorizer auth.
 	case "audited":
 		repo, err := testkit.NewAuditedMemoryRepository[*governanceAuditedDocument, int64](testkit.NewInt64Sequence(1))
 		require.NoError(t, err)
-		application, err := appcrud.NewApplication(repo, appcrud.Options[*governanceAuditedDocument, int64]{Resource: "document", Authorizer: authorizer, Audit: repo})
+		application, err := appcrud.NewApplication(repo, appcrud.Options[*governanceAuditedDocument, int64]{DeleteMode: appcrud.DeleteSoft, Resource: "document", Authorizer: authorizer, Audit: repo})
 		require.NoError(t, err)
 		return application, func(ctx context.Context) error {
 				return application.Create(ctx, &governanceAuditedDocument{Name: "allowed"})

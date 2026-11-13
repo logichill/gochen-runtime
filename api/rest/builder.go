@@ -51,16 +51,17 @@ func (m mountedRoutes) add(method, path string) {
 	m[path][method] = struct{}{}
 }
 
-// RouteBuilder 按 Descriptor 把 Application 的标准能力组装成 REST 路由。
+// RouteBuilder 按显式路由清单和 Descriptor 组装 Application 的 REST 入口。
 type RouteBuilder[T domain.IEntity[ID], ID comparable] struct {
 	config          *RouteConfig[ID]
 	service         ReadApplication[T, ID]
 	write           appcrud.IWriteApplication[T, ID]
 	execute         appcrud.IActionExecutor[T, ID]
 	audit           AuditApplication[ID]
-	deletion        DeletionApplication[T, ID]
+	restore         appcrud.IRestoreApplication[T, ID]
+	purge           appcrud.IPurgeApplication[ID]
+	deleted         appcrud.IDeletedQueryApplication[T, ID]
 	auditSet        bool
-	deletionSet     bool
 	configError     error
 	providers       map[string]app.IDescriptorProvider
 	maxBulkSize     int
@@ -85,6 +86,9 @@ func NewRouteBuilder[T domain.IEntity[ID], ID comparable](
 	b.service = app
 	b.write, _ = app.(appcrud.IWriteApplication[T, ID])
 	b.execute, _ = app.(appcrud.IActionExecutor[T, ID])
+	b.restore, _ = app.(appcrud.IRestoreApplication[T, ID])
+	b.purge, _ = app.(appcrud.IPurgeApplication[ID])
+	b.deleted, _ = app.(appcrud.IDeletedQueryApplication[T, ID])
 	if limits, ok := app.(interface{ MaxBulkSize() int }); ok {
 		b.maxBulkSize = limits.MaxBulkSize()
 	}
@@ -143,7 +147,7 @@ func (rb *RouteBuilder[T, ID]) Describe() (auth.Descriptor, []RouteSpec, error) 
 	if err := rb.prepare(); err != nil {
 		return auth.Descriptor{}, nil, err
 	}
-	return rb.descriptor, Specs(rb.descriptor, rb.config.Routing.BasePath), nil
+	return rb.descriptor, Specs(rb.descriptor, rb.config.Routing.BasePath, rb.config.Routing.Operations...), nil
 }
 
 // Register 注册 Descriptor 声明的标准路由。
@@ -211,7 +215,7 @@ func (rb *RouteBuilder[T, ID]) prepare() error {
 //
 // 路由集合本身是 Specs 的纯函数；这里只负责把每条 spec 映射到本包的 handler。
 func (rb *RouteBuilder[T, ID]) standardRoutes() []routeDef {
-	specs := Specs(rb.descriptor, rb.config.Routing.BasePath)
+	specs := Specs(rb.descriptor, rb.config.Routing.BasePath, rb.config.Routing.Operations...)
 	routes := make([]routeDef, 0, len(specs))
 	for _, spec := range specs {
 		routes = append(routes, routeDef{spec: spec, handler: rb.handlerFor(spec.Op)})
@@ -324,36 +328,63 @@ func (rb *RouteBuilder[T, ID]) validateCORSConfig() error {
 
 func (rb *RouteBuilder[T, ID]) validateCapabilities(descriptor auth.Descriptor) error {
 	actions := descriptorActions(descriptor)
-	for _, name := range []string{actionCreate, actionUpdate, actionDelete} {
-		if _, declared := actions[name]; !declared {
-			continue
-		}
-		if isNilService(rb.write) && (name != actionDelete || isNilService(rb.deletion)) {
-			return errors.NewCode(errors.InvalidInput, "descriptor declares writes but the application does not implement them").
-				WithContext("resource", descriptor.Resource).WithContext("action", name)
-		}
-		if name != actionDelete && isNilService(rb.execute) {
-			return errors.NewCode(errors.InvalidInput, "standard create and update routes require bulk action execution").
-				WithContext("resource", descriptor.Resource).WithContext("action", name)
+	deleteAction := actionPurge
+	if _, exists := actions[actionDelete]; exists {
+		deleteAction = actionDelete
+	}
+	templates := make(map[Op]RouteSpec)
+	for _, route := range routeTemplates(rb.config.Routing.BasePath, deleteAction) {
+		templates[route.Op] = route
+	}
+	if rb.config.Routing.Operations != nil {
+		seen := make(map[Op]bool)
+		for _, op := range rb.config.Routing.Operations {
+			route, known := templates[op]
+			if !known || seen[op] {
+				return errors.NewCode(errors.InvalidInput, "REST operation is unknown or duplicated").WithContext("op", string(op))
+			}
+			seen[op] = true
+			if _, declared := actions[route.Action]; !declared {
+				return errors.NewCode(errors.InvalidInput, "REST operation is not declared by the application").WithContext("op", string(op)).WithContext("action", route.Action)
+			}
 		}
 	}
-	if _, declared := actions[actionAuditRead]; declared && isNilService(rb.audit) {
-		return errors.NewCode(errors.InvalidInput, "descriptor declares audit_read but the application does not implement IAuditReader").
-			WithContext("resource", descriptor.Resource)
-	}
-	for _, name := range []string{actionRestore, actionPurge, actionListDeleted} {
-		if _, declared := actions[name]; declared && isNilService(rb.deletion) {
-			return errors.NewCode(errors.InvalidInput, "lifecycle action requires an explicit deletion capability").WithContext("action", name)
+	for _, route := range Specs(descriptor, rb.config.Routing.BasePath, rb.config.Routing.Operations...) {
+		var available bool
+		kind := auth.KindRead
+		switch route.Op {
+		case OpRead:
+			available = true
+		case OpList:
+			available, kind = true, auth.KindList
+		case OpCreate:
+			available, kind = !isNilService(rb.write), auth.KindCreate
+		case OpCreateBulk:
+			available, kind = !isNilService(rb.execute), auth.KindCreate
+		case OpUpdate:
+			available, kind = !isNilService(rb.write), auth.KindUpdate
+		case OpUpdateBulk:
+			available, kind = !isNilService(rb.execute), auth.KindUpdate
+		case OpDelete, OpDeleteBulk:
+			provider, ok := any(rb.service).(interface{ DeleteAction() string })
+			available, kind = !isNilService(rb.write) && ok, auth.KindDelete
+			if ok && provider.DeleteAction() != route.Action {
+				return errors.NewCode(errors.InvalidInput, "DeleteAction does not match the application descriptor").WithContext("action", route.Action)
+			}
+		case OpAuditRead:
+			available = !isNilService(rb.audit)
+		case OpRestore:
+			available, kind = !isNilService(rb.restore), auth.KindUpdate
+		case OpPurge:
+			available, kind = !isNilService(rb.purge), auth.KindDelete
+		case OpListDeleted:
+			available, kind = !isNilService(rb.deleted), auth.KindList
+		}
+		if !available || actions[route.Action].Kind != kind {
+			return errors.NewCode(errors.InvalidInput, "REST operation requires a matching declared execution capability").WithContext("op", string(route.Op)).WithContext("action", route.Action)
 		}
 	}
 	return nil
-}
-
-func (rb *RouteBuilder[T, ID]) lifecycle() (DeletionApplication[T, ID], error) {
-	if isNilService(rb.deletion) {
-		return nil, errors.NewCode(errors.InvalidInput, "deletion capability is not configured")
-	}
-	return rb.deletion, nil
 }
 
 func descriptorActions(descriptor auth.Descriptor) map[string]auth.Action {

@@ -122,7 +122,7 @@ func main() {
 	audits, err := repopkg.NewAuditStore(engine, "audit_records", auditIDs, auditConfig)
 	must(err)
 
-	options := appcrud.Options[*Contract, int64]{
+	options := appcrud.Options[*Contract, int64]{DeleteMode: appcrud.DeleteSoft,
 		Resource: "contract", Audit: audits,
 		Actions: []auth.Action{
 			{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department"}},

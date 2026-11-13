@@ -107,7 +107,7 @@ func (p *ticketPolicy) Authorize(ctx context.Context, request auth.Request) (aut
 
 // newTicketApp 装配工单应用：迁移动作声明接收动作与可写维度。
 func newTicketApp(tickets *repopkg.Repo[*Ticket, int64], audits *repopkg.AuditStore, policy auth.IAuthorizer) *appcrud.Application[*Ticket, int64] {
-	application, err := appcrud.NewApplication[*Ticket, int64](tickets, appcrud.Options[*Ticket, int64]{
+	application, err := appcrud.NewApplication[*Ticket, int64](tickets, appcrud.Options[*Ticket, int64]{DeleteMode: appcrud.DeleteSoft,
 		Resource: "ticket", Authorizer: policy, Audit: audits,
 		Actions: []auth.Action{
 			{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department", "region"}},

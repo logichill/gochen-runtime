@@ -105,7 +105,7 @@ func main() {
 		log.Fatalf("failed to create isolated repo: %v", err)
 	}
 
-	orderApp, err := quick.DeclaredApp[*Order, int64](orderRepo, crud.Options[*Order, int64]{Resource: "order"},
+	orderApp, err := quick.DeclaredApp[*Order, int64](orderRepo, crud.Options[*Order, int64]{DeleteMode: crud.DeletePurge, Resource: "order"},
 		[]auth.Rule{{Scope: &auth.ScopeRule{Resolver: scopeResolver{}}}}, auth.CompileOptions{Checker: authz.NewActionChecker()})
 	if err != nil {
 		log.Fatal(err)

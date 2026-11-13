@@ -32,7 +32,7 @@ const (
 // RouteSpec 是一条路由的纯数据描述。
 //
 // 它不含 handler，也不含任何泛型参数：标准路由集合是
-// (auth.Descriptor, BasePath) 的纯函数，见 Specs。因此路由表可以在不启动
+// (auth.Descriptor, BasePath, Operations) 的纯函数，见 Specs。因此路由表可以在不启动
 // Server 的情况下推导出来，用于 OpenAPI、跨应用路由冲突检测与路由清单。
 //
 // Path 是相对路由组/模块前缀的路径；空字符串表示路由组根路径。
@@ -44,60 +44,55 @@ type RouteSpec struct {
 	Permission string
 }
 
-// Specs 把 Descriptor 声明的动作展开为有序路由表。
-//
-// 顺序与注册顺序一致：集合路由（/deleted、/bulk）先于 /:id 路由，
-// 避免静态段被 :id 抢占。未声明的动作不会产生路由。
-func Specs(descriptor auth.Descriptor, basePath string) []RouteSpec {
+// Specs 按显式操作清单与授权描述推导有序路由表。
+// nil 清单使用标准 CRUD 与审计读取，不自动公开 restore、list_deleted 或 purge。
+// Delete 路由使用描述中的 delete 动作；没有 delete 时使用 purge。
+// NewRouteBuilder 另行验证显式操作、执行能力与 DeleteAction 的同源一致性。
+func Specs(descriptor auth.Descriptor, basePath string, operations ...Op) []RouteSpec {
 	actions := descriptorActions(descriptor)
-	has := func(name string) bool { _, ok := actions[name]; return ok }
-	base := basePath
-
-	specs := make([]RouteSpec, 0, 12)
-	add := func(op Op, method, path, action string) {
-		permission, _ := descriptor.PermissionFor(action)
-		specs = append(specs, RouteSpec{
-			Op:         op,
-			Method:     method,
-			Path:       path,
-			Action:     action,
-			Permission: permission,
-		})
+	deleteAction := actionPurge
+	if _, exists := actions[actionDelete]; exists {
+		deleteAction = actionDelete
 	}
-
-	if has(actionList) {
-		add(OpList, http.MethodGet, base, actionList)
+	selected := operations
+	if selected == nil {
+		selected = defaultOperations()
 	}
-	if has(actionListDeleted) {
-		add(OpListDeleted, http.MethodGet, base+"/deleted", actionListDeleted)
+	wanted := make(map[Op]bool, len(selected))
+	for _, op := range selected {
+		wanted[op] = true
 	}
-	if has(actionCreate) {
-		add(OpCreate, http.MethodPost, base, actionCreate)
-		add(OpCreateBulk, http.MethodPost, base+"/bulk", actionCreate)
-	}
-	if has(actionUpdate) {
-		add(OpUpdateBulk, http.MethodPut, base+"/bulk", actionUpdate)
-	}
-	if has(actionDelete) {
-		add(OpDeleteBulk, http.MethodDelete, base+"/bulk", actionDelete)
-	}
-	if has(actionAuditRead) {
-		add(OpAuditRead, http.MethodGet, base+"/:id/audit", actionAuditRead)
-	}
-	if has(actionRestore) {
-		add(OpRestore, http.MethodPost, base+"/:id/restore", actionRestore)
-	}
-	if has(actionPurge) {
-		add(OpPurge, http.MethodDelete, base+"/:id/purge", actionPurge)
-	}
-	if has(actionRead) {
-		add(OpRead, http.MethodGet, base+"/:id", actionRead)
-	}
-	if has(actionUpdate) {
-		add(OpUpdate, http.MethodPut, base+"/:id", actionUpdate)
-	}
-	if has(actionDelete) {
-		add(OpDelete, http.MethodDelete, base+"/:id", actionDelete)
+	specs := make([]RouteSpec, 0, len(selected))
+	for _, route := range routeTemplates(basePath, deleteAction) {
+		if !wanted[route.Op] {
+			continue
+		}
+		if _, declared := actions[route.Action]; !declared {
+			continue
+		}
+		route.Permission, _ = descriptor.PermissionFor(route.Action)
+		specs = append(specs, route)
 	}
 	return specs
+}
+
+func defaultOperations() []Op {
+	return []Op{OpList, OpCreate, OpCreateBulk, OpUpdateBulk, OpDeleteBulk, OpAuditRead, OpRead, OpUpdate, OpDelete}
+}
+
+func routeTemplates(base, deleteAction string) []RouteSpec {
+	return []RouteSpec{
+		{Op: OpList, Method: http.MethodGet, Path: base, Action: actionList},
+		{Op: OpListDeleted, Method: http.MethodGet, Path: base + "/deleted", Action: actionListDeleted},
+		{Op: OpCreate, Method: http.MethodPost, Path: base, Action: actionCreate},
+		{Op: OpCreateBulk, Method: http.MethodPost, Path: base + "/bulk", Action: actionCreate},
+		{Op: OpUpdateBulk, Method: http.MethodPut, Path: base + "/bulk", Action: actionUpdate},
+		{Op: OpDeleteBulk, Method: http.MethodDelete, Path: base + "/bulk", Action: deleteAction},
+		{Op: OpAuditRead, Method: http.MethodGet, Path: base + "/:id/audit", Action: actionAuditRead},
+		{Op: OpRestore, Method: http.MethodPost, Path: base + "/:id/restore", Action: actionRestore},
+		{Op: OpPurge, Method: http.MethodDelete, Path: base + "/:id/purge", Action: actionPurge},
+		{Op: OpRead, Method: http.MethodGet, Path: base + "/:id", Action: actionRead},
+		{Op: OpUpdate, Method: http.MethodPut, Path: base + "/:id", Action: actionUpdate},
+		{Op: OpDelete, Method: http.MethodDelete, Path: base + "/:id", Action: deleteAction},
+	}
 }

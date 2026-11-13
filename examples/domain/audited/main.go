@@ -9,7 +9,6 @@ import (
 	"gochen-runtime/api/rest"
 	appcrud "gochen/app/crud"
 	appaudit "gochen/app/crud/audit"
-	appdeletion "gochen/app/crud/deletion"
 	"gochen/auth"
 	"gochen/contextx"
 	"gochen/domain/crud"
@@ -36,14 +35,10 @@ func main() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	options := appcrud.Options[*Article, int64]{Resource: "article", Authorizer: auth.Allow(), Audit: repo,
+	options := appcrud.Options[*Article, int64]{Resource: "article", Authorizer: auth.Allow(), Audit: repo, DeleteMode: appcrud.DeleteSoft, EnableRestore: true, EnableDeletedQuery: true,
 		Actions: []auth.Action{{Name: "publish", Kind: auth.KindUpdate, Label: "发布文章"}},
 	}
 	app, err := appcrud.NewApplication[*Article, int64](repo, options)
-	if err != nil {
-		log.Fatal(err)
-	}
-	trash, err := appdeletion.NewApplication[*Article, int64](repo, appdeletion.Options[*Article, int64]{Options: appcrud.Options[*Article, int64]{Resource: "article", Authorizer: auth.Allow(), Audit: repo}})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,7 +57,7 @@ func main() {
 	}
 	if err := rest.Mount[*Article, int64](
 		router, app,
-		rest.WithDeletion[*Article, int64](trash),
+		rest.WithRoutes[*Article, int64](rest.OpList, rest.OpListDeleted, rest.OpCreate, rest.OpCreateBulk, rest.OpUpdateBulk, rest.OpDeleteBulk, rest.OpAuditRead, rest.OpRestore, rest.OpPurge, rest.OpRead, rest.OpUpdate, rest.OpDelete),
 		rest.WithAudit[*Article, int64](history),
 		rest.WithBasePath[*Article, int64]("/api/articles"),
 		rest.WithOperatorExtractor[*Article, int64](operatorExtractor),
@@ -97,10 +92,10 @@ func main() {
 	}
 	log.Printf("audit trail: %d record(s)", len(trail))
 
-	if err := trash.Delete(ctx, 1); err != nil {
+	if err := app.Delete(ctx, 1); err != nil {
 		log.Fatalf("failed to soft-delete: %v", err)
 	}
-	deleted, err := trash.ListDeleted(ctx, 0, 10)
+	deleted, err := app.ListDeleted(ctx, 0, 10)
 	if err != nil {
 		log.Fatalf("failed to list deleted: %v", err)
 	}

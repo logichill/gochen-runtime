@@ -31,7 +31,7 @@ func main() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	app, err := crud.NewApplication[*User, int64](repo, crud.Options[*User, int64]{
+	app, err := crud.NewApplication[*User, int64](repo, crud.Options[*User, int64]{DeleteMode: crud.DeletePurge,
 		Resource:   "user",
 		Authorizer: auth.Allow(),
 		Actions: []auth.Action{

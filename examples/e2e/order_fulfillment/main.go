@@ -124,7 +124,7 @@ func BootstrapSystem(ctx context.Context) (*AppSystem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create order repo: %w", err)
 	}
-	options := crud.Options[*domain.Order, int64]{Resource: access.Resource}
+	options := crud.Options[*domain.Order, int64]{DeleteMode: crud.DeletePurge, Resource: access.Resource}
 	descriptor, err := crud.Describe(options, true)
 	if err != nil {
 		return nil, fmt.Errorf("describe order application: %w", err)

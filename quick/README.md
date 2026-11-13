@@ -20,6 +20,10 @@
 | `quick.Repo` / `quick.IsolatedRepo` / `quick.SoftDeleteRepo` | 创建默认、租户隔离、软删除过滤仓储 |
 | `quick.EventSourced` / `quick.AtomicEventSourced` | 创建事件溯源仓储 |
 
+`quick.App` 与 `quick.DeclaredApp` 要求调用方明确填写 `crud.Options.DeleteMode`（`crud.DeleteSoft` 或 `crud.DeletePurge`）。缺失模式立即失败，便利装配不会自动选择物理清除。只读应用不配置删除模式。
+
+REST 缺省公开普通 CRUD，硬模式的普通 DELETE 使用 purge 权限、钩子与审计并永久清除实体；`restore`、`list_deleted` 和显式 `/:id/purge` 必须通过 `rest.WithRoutes` 选择。隐藏显式 purge 路由不改变业务 Delete 的硬清除语义。
+
 ## 2. 启动链路
 
 ```text

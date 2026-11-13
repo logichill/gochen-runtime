@@ -67,12 +67,13 @@ func newApp[T domain.IEntity[ID], ID comparable](
 	repo crud.Repository[T, ID],
 	policy auth.IPolicy,
 	resource string,
+	deleteMode crud.DeleteMode,
 ) *crud.Application[T, ID] {
 	authorizer, err := auth.New(auth.Options{Policy: policy})
 	if err != nil {
 		log.Fatal(err)
 	}
-	app, err := crud.NewApplication[T, ID](repo, crud.Options[T, ID]{
+	app, err := crud.NewApplication[T, ID](repo, crud.Options[T, ID]{DeleteMode: deleteMode,
 		Resource:   resource,
 		Authorizer: authorizer,
 	})
@@ -98,7 +99,7 @@ func main() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	plain := newApp[*Order, int64](plainRepo, auth.AllowPolicy(), "order")
+	plain := newApp[*Order, int64](plainRepo, auth.AllowPolicy(), "order", crud.DeletePurge)
 	ctx := context.Background()
 	if err := plain.Create(ctx, &Order{Customer: "alice", Amount: 100}); err != nil {
 		log.Fatal(err)
@@ -122,7 +123,7 @@ func main() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	secured := newApp[*Order, int64](rbacRepo, rbac, "order")
+	secured := newApp[*Order, int64](rbacRepo, rbac, "order", crud.DeletePurge)
 
 	order := &Order{Customer: "alice", Amount: 250}
 	if err := secured.Create(mustContext("alice"), order); err != nil {
@@ -169,7 +170,7 @@ func demoIsolation() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	app := newApp[*TenantOrder, int64](repo, auth.AllowPolicy(), "tenant_order")
+	app := newApp[*TenantOrder, int64](repo, auth.AllowPolicy(), "tenant_order", crud.DeletePurge)
 
 	ctxA, ctxB := mustTenantContext("tenant-a"), mustTenantContext("tenant-b")
 
@@ -230,7 +231,7 @@ func demoCrossIsolation() {
 	if repositoryErr != nil {
 		panic(repositoryErr)
 	}
-	app := newApp[*TenantOrder, int64](repo, auth.AllowPolicy(), "tenant_order")
+	app := newApp[*TenantOrder, int64](repo, auth.AllowPolicy(), "tenant_order", crud.DeletePurge)
 
 	if err := app.Create(mustTenantContext("tenant-a"), &TenantOrder{Customer: "alice"}); err != nil {
 		log.Fatal(err)
@@ -269,7 +270,7 @@ func demoCrossIsolation() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	strict := newApp[*TenantOrder, int64](strictRepo, auth.AllowPolicy(), "tenant_order")
+	strict := newApp[*TenantOrder, int64](strictRepo, auth.AllowPolicy(), "tenant_order", crud.DeletePurge)
 	_, err = strict.Count(reconCtx)
 	log.Printf("L2 valve: credential alone is inert -> forbidden=%v", errors.Is(err, errors.Forbidden))
 }
@@ -338,7 +339,7 @@ func demoScoped() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	app := newApp[*ScopedOrder, int64](repo, authorizer, "scoped_order")
+	app := newApp[*ScopedOrder, int64](repo, authorizer, "scoped_order", crud.DeletePurge)
 
 	order := &ScopedOrder{Customer: "carol"}
 	if err := app.Create(mustPrincipalContext(101, "scoped_order:api:*"), order); err != nil {

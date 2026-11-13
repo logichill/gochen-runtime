@@ -7,11 +7,7 @@ import (
 )
 
 func (rb *RouteBuilder[T, ID]) handleListDeleted(c httpx.IContext) error {
-	lifecycle, err := rb.lifecycle()
-	if err != nil {
-		return err
-	}
-	opts, err := rb.parsePaginationOptions(c, lifecycle.MaxPageSize())
+	opts, err := rb.parsePaginationOptions(c, rb.service.MaxPageSize())
 	if err != nil {
 		return err
 	}
@@ -19,7 +15,7 @@ func (rb *RouteBuilder[T, ID]) handleListDeleted(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	data, err := lifecycle.ListDeleted(ctx, opts.Offset(), opts.Size)
+	data, err := rb.deleted.ListDeleted(ctx, opts.Offset(), opts.Size)
 	if err != nil {
 		return err
 	}
@@ -47,10 +43,6 @@ func (rb *RouteBuilder[T, ID]) handleAuditTrail(c httpx.IContext) error {
 }
 
 func (rb *RouteBuilder[T, ID]) handleRestore(c httpx.IContext) error {
-	lifecycle, err := rb.lifecycle()
-	if err != nil {
-		return err
-	}
 	id, err := rb.parseID(c)
 	if err != nil {
 		return err
@@ -59,17 +51,13 @@ func (rb *RouteBuilder[T, ID]) handleRestore(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if _, err := lifecycle.Restore(ctx, id); err != nil {
+	if _, err := rb.restore.Restore(ctx, id); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(nil)))
 }
 
 func (rb *RouteBuilder[T, ID]) handlePurge(c httpx.IContext) error {
-	lifecycle, err := rb.lifecycle()
-	if err != nil {
-		return err
-	}
 	id, err := rb.parseID(c)
 	if err != nil {
 		return err
@@ -78,7 +66,7 @@ func (rb *RouteBuilder[T, ID]) handlePurge(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	if err := lifecycle.Purge(ctx, id); err != nil {
+	if err := rb.purge.Purge(ctx, id); err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(nil)))

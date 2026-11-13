@@ -31,7 +31,7 @@ func TestDeclaredRESTEntriesIncludeGeneratedRoutesAndFreezeRegistration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := quick.DeclaredApp(repo, appcrud.Options[*entryEntity, int64]{Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })})
+	app, err := quick.DeclaredApp(repo, appcrud.Options[*entryEntity, int64]{DeleteMode: appcrud.DeletePurge, Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestHostEntryRegistryReachesModuleRESTRegistrars(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := quick.DeclaredApp(repo, appcrud.Options[*entryEntity, int64]{Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })})
+	app, err := quick.DeclaredApp(repo, appcrud.Options[*entryEntity, int64]{DeleteMode: appcrud.DeletePurge, Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,5 +157,18 @@ func TestEntryGateBlocksPreRegisteredMissingRouteBeforeModuleStart(t *testing.T)
 	}
 	if !started {
 		t.Fatal("validated module did not start")
+	}
+}
+
+func TestQuickAssemblyRequiresExplicitDeleteMode(t *testing.T) {
+	repository, err := testkit.NewMemoryRepository[*entryEntity, int64](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := quick.App(repository, appcrud.Options[*entryEntity, int64]{Resource: "entry", Authorizer: auth.Allow()}); !errors.Is(err, errors.InvalidInput) {
+		t.Fatalf("App silently chose a deletion mode: %v", err)
+	}
+	if _, err := quick.DeclaredApp(repository, appcrud.Options[*entryEntity, int64]{Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })}); !errors.Is(err, errors.InvalidInput) {
+		t.Fatalf("DeclaredApp silently chose a deletion mode: %v", err)
 	}
 }

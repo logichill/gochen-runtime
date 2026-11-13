@@ -9,7 +9,7 @@ import (
 	"gochen/errors"
 )
 
-// App 创建 CRUD Application；资源名与授权器由调用方显式提供。
+// App 创建 CRUD Application；资源名、删除模式与授权器由调用方显式提供。
 //
 // 授权策略不在此内置：默认做法是在启动清单登记前选定显式授权器
 // （auth.Compile / auth.New / auth.Allow）；声明式装配由 DeclaredApp 提供。
@@ -24,6 +24,7 @@ func App[T domain.IEntity[ID], ID comparable](
 }
 
 // DeclaredApp 按强类型规则编译授权并装配 CRUD；元数据来自仓储有效契约。
+// 删除模式必须由调用方明确选择，不在便利装配中补默认值。
 func DeclaredApp[T domain.IEntity[ID], ID comparable](repository crud.Repository[T, ID], options crud.Options[T, ID], rules []auth.Rule, dependencies auth.CompileOptions) (*crud.Application[T, ID], error) {
 	if isNil(repository) {
 		return nil, errors.NewCode(errors.InvalidInput, "repository cannot be nil")

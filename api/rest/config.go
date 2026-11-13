@@ -1,4 +1,4 @@
-// Package rest 按 Application 的 Descriptor 挂载标准 REST 路由。
+// Package rest 按显式路由清单和 Application 的 Descriptor 挂载标准 REST 路由。
 package rest
 
 import (
@@ -12,8 +12,12 @@ import (
 
 // RoutingOptions 定义当前资源的路由基础配置。
 //
-// 路由集合由 Application.Descriptor() 决定，不再提供 Enable* 开关。
+// 路由集合由显式 Operations 与 Application.Descriptor() 共同决定。
 type RoutingOptions[ID comparable] struct {
+	// Operations 是精确路由清单；nil 使用标准 CRUD 与显式审计读取，空清单不挂载路由。
+	// restore、list_deleted、purge 必须显式列入，具体应用拥有方法不会自动公开路由。
+	Operations []Op
+
 	// BasePath 是当前 CRUD 资源在路由组下的基础路径。
 	BasePath string
 

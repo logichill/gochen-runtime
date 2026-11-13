@@ -58,7 +58,7 @@ func TestTransferHTTPRequiresVersionAndIdempotencyAndReplaysResult(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := crud.NewApplication(r, crud.Options[*contracttest.Document, int64]{Resource: "document", Authorizer: httpTransferPolicy{},
+	application, err := crud.NewApplication(r, crud.Options[*contracttest.Document, int64]{DeleteMode: crud.DeleteSoft, Resource: "document", Authorizer: httpTransferPolicy{},
 		Actions: []auth.Action{{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department"}}, {Name: "receive", Kind: auth.KindTransfer}}})
 	if err != nil {
 		t.Fatal(err)

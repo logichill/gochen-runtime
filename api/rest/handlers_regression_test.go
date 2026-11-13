@@ -13,7 +13,6 @@ import (
 	coreapp "gochen/app"
 	"gochen/app/crud"
 	appaudit "gochen/app/crud/audit"
-	"gochen/app/crud/deletion"
 	"gochen/auth"
 
 	"gochen/contextx"
@@ -51,7 +50,7 @@ func TestBulkUpdatePreservesOmittedDimensionsAndUsesEffectiveContract(t *testing
 		testkit.WithMemoryResourceContract[*dimensionHandlerEntity, int64](coreapp.ResourceContract{Mutable: []meta.Dimension{"category"}}),
 		testkit.WithMemoryIsolationField[*dimensionHandlerEntity, int64](meta.ByDimension("tenant"), nil))
 	require.NoError(t, err)
-	application, err := crud.NewApplication(repository, crud.Options[*dimensionHandlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()})
+	application, err := crud.NewApplication(repository, crud.Options[*dimensionHandlerEntity, int64]{DeleteMode: crud.DeletePurge, Resource: "items", Authorizer: auth.Allow()})
 	require.NoError(t, err)
 	for _, name := range []string{"first", "second"} {
 		require.NoError(t, application.Create(ctx, &dimensionHandlerEntity{Tenant: "t1", Category: 7, Name: name}))
@@ -84,7 +83,7 @@ func TestBulkUpdatePreservesEmbeddedManagedTimestamps(t *testing.T) {
 	if repositoryErr != nil {
 		t.Fatal(repositoryErr)
 	}
-	app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()})
+	app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{DeleteMode: crud.DeletePurge, Resource: "items", Authorizer: auth.Allow()})
 	require.NoError(t, err)
 	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	entity := &timestampHandlerEntity{Timestamps: domain.Timestamps{CreatedAt: createdAt, UpdatedAt: createdAt}, Name: "original"}
@@ -102,8 +101,7 @@ func TestBulkUpdatePreservesEmbeddedManagedTimestamps(t *testing.T) {
 
 type auditedFixture struct {
 	*crud.Application[*handlerEntity, int64]
-	history  *appaudit.Reader[int64]
-	deletion *deletion.Application[*handlerEntity, int64]
+	history *appaudit.Reader[int64]
 }
 
 func auditedHandlerFixture(t *testing.T, checkers ...auth.IActionChecker) (context.Context, *auditedFixture, *testkit.RecordingRouter) {
@@ -112,7 +110,7 @@ func auditedHandlerFixture(t *testing.T, checkers ...auth.IActionChecker) (conte
 	require.NoError(t, err)
 	repository, err := testkit.NewAuditedMemoryRepository[*handlerEntity, int64](nil)
 	require.NoError(t, err)
-	options := crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow(), Audit: repository}
+	options := crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow(), Audit: repository, DeleteMode: crud.DeleteSoft, EnableRestore: true, EnableDeletedQuery: true}
 	application, err := crud.NewApplication(repository, options)
 	require.NoError(t, err)
 	for i, name := range []string{"A", "B"} {
@@ -131,11 +129,10 @@ func auditedHandlerFixture(t *testing.T, checkers ...auth.IActionChecker) (conte
 	}
 	history, err := appaudit.NewReader[int64](repository, repository, appaudit.Options{Resource: "items", Authorizer: auth.Allow()})
 	require.NoError(t, err)
-	lifecycle, err := deletion.NewApplication(repository, deletion.Options[*handlerEntity, int64]{Options: crud.Options[*handlerEntity, int64]{Resource: "items", Authorizer: auth.Allow(), Audit: repository}})
-	require.NoError(t, err)
-	fixture := &auditedFixture{Application: application, history: history, deletion: lifecycle}
+	fixture := &auditedFixture{Application: application, history: history}
+
 	router := testkit.NewRecordingRouter()
-	require.NoError(t, Mount(router, application, WithAudit[*handlerEntity, int64](history), WithDeletion[*handlerEntity, int64](lifecycle), WithBasePath[*handlerEntity, int64]("/items"), WithOperatorExtractor[*handlerEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true })))
+	require.NoError(t, Mount(router, application, WithAudit[*handlerEntity, int64](history), WithRoutes[*handlerEntity, int64](OpList, OpListDeleted, OpCreate, OpCreateBulk, OpUpdateBulk, OpDeleteBulk, OpAuditRead, OpRestore, OpPurge, OpRead, OpUpdate, OpDelete), WithBasePath[*handlerEntity, int64]("/items"), WithOperatorExtractor[*handlerEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true })))
 	return ctx, fixture, router
 }
 

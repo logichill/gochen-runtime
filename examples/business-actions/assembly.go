@@ -28,7 +28,7 @@ func newOrders(database orm.IOrm) (*OrderApprover, module.IModule, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	options := crud.Options[*Order, int64]{Resource: "order", Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate, Permission: "order:api:approve"}}}
+	options := crud.Options[*Order, int64]{DeleteMode: crud.DeletePurge, Resource: "order", Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate, Permission: "order:api:approve"}}}
 	descriptor, err := crud.Describe(options, true)
 	if err != nil {
 		return nil, nil, err

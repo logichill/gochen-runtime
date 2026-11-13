@@ -23,7 +23,7 @@ func TestDeclaredHTTPRoutesBindConcreteExecutionAndRejectMissingActions(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := quick.DeclaredApp(repo, appcrud.Options[*entryEntity, int64]{Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })})
+	application, err := quick.DeclaredApp(repo, appcrud.Options[*entryEntity, int64]{DeleteMode: appcrud.DeletePurge, Resource: "entry"}, nil, auth.CompileOptions{Checker: auth.ActionCheckerFunc(func(context.Context, string) error { return nil })})
 	if err != nil {
 		t.Fatal(err)
 	}

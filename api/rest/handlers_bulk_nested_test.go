@@ -35,7 +35,7 @@ func TestBulkUpdateNestedDimensions(t *testing.T) {
 			repository, err := testkit.NewMemoryRepository[*nestedDimensionEntity, int64](testkit.NewInt64Sequence(1),
 				testkit.WithMemoryResourceContract[*nestedDimensionEntity, int64](contract))
 			require.NoError(t, err)
-			application, err := crud.NewApplication(repository, crud.Options[*nestedDimensionEntity, int64]{Resource: "items", Authorizer: auth.Allow()})
+			application, err := crud.NewApplication(repository, crud.Options[*nestedDimensionEntity, int64]{DeleteMode: crud.DeletePurge, Resource: "items", Authorizer: auth.Allow()})
 			require.NoError(t, err)
 			for range 2 {
 				require.NoError(t, application.Create(t.Context(), &nestedDimensionEntity{BulkAccess: BulkAccess{Department: 7}, Name: "original"}))

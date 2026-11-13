@@ -112,7 +112,7 @@ func newCoordinatedApplication(t *testing.T, engine orm.IOrm, resource string, c
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := crud.Options[*Order, int64]{Resource: resource, Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate}}}
+	options := crud.Options[*Order, int64]{DeleteMode: crud.DeletePurge, Resource: resource, Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate}}}
 	descriptor, err := crud.Describe(options, true)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestApprovalPreservesCommittedDTOOnPostCommitFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := crud.Options[*Order, int64]{Resource: "order", Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate}}, Hooks: crud.Hooks[*Order]{approveAction: crud.Stage[*Order]{PostCommit: func(context.Context, *Order) error { return errors.NewCode(errors.Dependency, "notification failed") }}}}
+	options := crud.Options[*Order, int64]{DeleteMode: crud.DeletePurge, Resource: "order", Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate}}, Hooks: crud.Hooks[*Order]{approveAction: crud.Stage[*Order]{PostCommit: func(context.Context, *Order) error { return errors.NewCode(errors.Dependency, "notification failed") }}}}
 	descriptor, err := crud.Describe(options, true)
 	if err != nil {
 		t.Fatal(err)

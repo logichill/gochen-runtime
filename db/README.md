@@ -1,6 +1,6 @@
 # db：物理数据库适配与数据访问驱动
 
-`gochen-runtime/db` 是 Runtime 模块提供的物理数据访问驱动集合，为 Core 的 `domain/crud`、`app/crud`、`app/crud/deletion`、`audit` 与 `db/orm` 接口提供具体的 SQL 持久化、ORM 仓储、SQL Builder、架构迁移与 Schema 差异分析支持。
+`gochen-runtime/db` 是 Runtime 模块提供的物理数据访问驱动集合，为 Core 的 `domain/crud`、`app/crud`、`audit` 与 `db/orm` 接口提供具体的 SQL 持久化、ORM 仓储、SQL Builder、架构迁移与 Schema 差异分析支持。
 
 ---
 

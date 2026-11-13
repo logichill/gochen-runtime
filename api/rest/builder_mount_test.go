@@ -32,8 +32,14 @@ type stubApplication struct {
 }
 
 func (s *stubApplication) Descriptor() auth.Descriptor { return s.descriptor }
-func (s *stubApplication) MaxPageSize() int            { return 100 }
-func (s *stubApplication) MaxBulkSize() int            { return 100 }
+func (s *stubApplication) DeleteAction() string {
+	if _, found := descriptorActions(s.descriptor)[actionDelete]; found {
+		return actionDelete
+	}
+	return actionPurge
+}
+func (s *stubApplication) MaxPageSize() int { return 100 }
+func (s *stubApplication) MaxBulkSize() int { return 100 }
 
 func (s *stubApplication) Get(context.Context, int64) (*mountEntity, error) {
 	panic("unused")
@@ -173,17 +179,16 @@ func TestMountRejectsLifecycleActionsWithoutLifecycleApplication(t *testing.T) {
 
 	err := Mount[*mountEntity, int64](router, app,
 		WithBasePath[*mountEntity, int64]("/users"),
-		WithOperatorExtractor[*mountEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }))
+		WithOperatorExtractor[*mountEntity, int64](func(httpx.IContext) (string, bool) { return "tester", true }), WithRoutes[*mountEntity, int64](OpRestore))
 	require.Error(t, err)
 	require.Truef(t, errors.Is(err, errors.InvalidInput), "expected InvalidInput, got %v", err)
 }
 
 func TestMountRegistersLifecycleRoutes(t *testing.T) {
 	router := testkit.NewRecordingRouter()
-	application := &stubApplication{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: actionRead, Kind: auth.KindRead}, {Name: actionList, Kind: auth.KindList}}}}
-	lifecycle := &stubLifecycleApplication{stubApplication: &stubApplication{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: actionRestore, Kind: auth.KindUpdate}, {Name: actionPurge, Kind: auth.KindDelete}, {Name: actionListDeleted, Kind: auth.KindList}}}}}
+	application := &stubLifecycleApplication{stubApplication: &stubApplication{descriptor: auth.Descriptor{Resource: "user", Actions: []auth.Action{{Name: actionRead, Kind: auth.KindRead}, {Name: actionList, Kind: auth.KindList}, {Name: actionRestore, Kind: auth.KindUpdate}, {Name: actionPurge, Kind: auth.KindDelete}, {Name: actionListDeleted, Kind: auth.KindList}}}}}
 	// 删除生命周期并不意味着启用审计，也不要求 HTTP 操作者提取器。
-	require.NoError(t, Mount(router, application, WithBasePath[*mountEntity, int64]("/users"), WithDeletion[*mountEntity, int64](lifecycle)))
+	require.NoError(t, Mount(router, application, WithBasePath[*mountEntity, int64]("/users"), WithRoutes[*mountEntity, int64](OpList, OpListDeleted, OpRestore, OpPurge, OpRead)))
 	requireRoutes(t, router.RecordedRoutes(), "GET /users", "GET /users/deleted", "POST /users/:id/restore", "DELETE /users/:id/purge", "GET /users/:id")
 }
 
@@ -284,6 +289,8 @@ func TestWrapHandlerMapsAfterCommitErrorToDegraded(t *testing.T) {
 	require.Equal(t, http.StatusOK, ctx.status)
 }
 
-var _ Application[*mountEntity, int64] = (*stubApplication)(nil)
-var _ DeletionApplication[*mountEntity, int64] = (*stubLifecycleApplication)(nil)
+var _ Application[*mountEntity, int64] = (*stubLifecycleApplication)(nil)
+var _ appcrud.IRestoreApplication[*mountEntity, int64] = (*stubLifecycleApplication)(nil)
+var _ appcrud.IDeletedQueryApplication[*mountEntity, int64] = (*stubLifecycleApplication)(nil)
+var _ appcrud.IPurgeApplication[int64] = (*stubLifecycleApplication)(nil)
 var _ domain.IEntity[int64] = (*mountEntity)(nil)

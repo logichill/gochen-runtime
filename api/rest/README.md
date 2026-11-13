@@ -1,6 +1,6 @@
-# gochen-runtime/api/rest：按 Descriptor 挂载 REST 路由
+# gochen-runtime/api/rest：显式选择 REST 路由
 
-`api/rest` 把 `Application.Descriptor()` 声明的动作映射为 HTTP 路由。调用方提供 `rest.ReadApplication`（读接口、Descriptor 与分页上限），写入、批量、审计与生命周期能力按声明显式检查。声明了动作却缺少所需能力时，在注册路由前失败。
+`api/rest` 按显式路由清单和 `Application.Descriptor()` 共同生成 HTTP 路由。调用方提供 `rest.ReadApplication`（读接口、Descriptor 与分页上限）；选中路由缺少授权声明或执行端口时，在注册路由前失败。
 
 授权概念见 `gochen` 仓库 `docs/architecture/layered-authz.md`，字段保护与归属迁移见该仓库 `docs/architecture/resource-contracts.md`。
 
@@ -16,19 +16,27 @@
 | `rest.Describe(app, opts...)` | 只推导 Descriptor 与路由表，不注册任何路由 |
 | `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error`，供显式 `module.RouteRegistrarFunc` 使用 |
 
-审计和删除通过 `WithAudit(history)` / `WithDeletion(trash)` 显式选择，不从资源对象的附加方法推断。三个对象分别提供自身的授权描述；`Resource` 将它们一起交给 Module。例子：
+审计历史通过 `WithAudit(history)` 显式组合独立 Reader。业务删除、恢复、回收站查询和永久清除统一来自同一个 CRUD Application，但执行能力不等于 HTTP 可见性。
+
+- 未设置 `WithRoutes` 时，只公开 Descriptor 具备的普通 CRUD 路由及显式 `WithAudit` 的历史路由。
+- `WithRoutes(ops...)` 替换整个默认清单；`WithRoutes()` 不公开标准路由。
+- `OpRestore`、`OpListDeleted`、`OpPurge` 必须显式选中，不能仅凭 concrete 对象存在方法就挂载。
+- 只公开读取可用 `WithRoutes(OpRead, OpList)`。这只限制 HTTP 可见性；需要真正只读的用例对象时，应构造 `crud.ReadApplication`。
+
+例如，`resources` 在构造时明确选择 `DeleteSoft` 并启用恢复和已删查询，然后只公开读取、业务删除、恢复、回收站和历史：
 
 ```go
 host.Module("notes").Binding(rest.Resource(resources,
     rest.WithAudit[*Note, int64](history),
-    rest.WithDeletion[*Note, int64](trash))).Build()
+    rest.WithRoutes[*Note, int64](rest.OpRead, rest.OpList, rest.OpDelete,
+        rest.OpRestore, rest.OpListDeleted, rest.OpAuditRead))).Build()
 ```
 
 `Mount` 只做这几件事：校验 Descriptor、推导路由、包装中间件与错误映射、可选地登记启动清单。handler 本身只解码请求并调用 Application。
 
 ```go
 app, err := quick.DeclaredApp[*User, int64](repo,
-	crud.Options[*User, int64]{Resource: "user"},
+	crud.Options[*User, int64]{Resource: "user", DeleteMode: crud.DeletePurge},
 	[]auth.Rule{{Scope: &auth.ScopeRule{Resolver: resolver}}},
 	auth.CompileOptions{Checker: checker},
 )
@@ -48,22 +56,28 @@ if err := rest.Mount[*User, int64](router, app,
 
 ## 2. 标准路由
 
-Descriptor 中声明了对应动作时才注册：
+仅当路由已选择且 Descriptor 声明对应动作时注册：
 
 | 动作 | 方法 | 路径 | 说明 |
 | --- | --- | --- | --- |
 | `list` | GET | `{BasePath}` | 分页/过滤/排序/字段选择 |
-| `list_deleted` | GET | `{BasePath}/deleted` | 显式 WithDeletion 的独立 DeletionApplication |
+| `list_deleted` | GET | `{BasePath}/deleted` | 同一 Application，显式选择对应 Op |
 | `create` | POST | `{BasePath}` | 创建单个实体 |
 | `create` | POST | `{BasePath}/bulk` | 批量创建（`ExecuteNewBulk`） |
 | `update` | PUT | `{BasePath}/:id` | 更新单个实体 |
 | `update` | PUT | `{BasePath}/bulk` | 批量更新（`ExecuteBulk`） |
-| `delete` | DELETE | `{BasePath}/:id` | 删除单个实体 |
-| `delete` | DELETE | `{BasePath}/bulk` | 批量删除（`DeleteBulk`） |
+| `delete` 或 `purge` | DELETE | `{BasePath}/:id` | 按冻结 DeleteMode 调用业务 Delete |
+| `delete` 或 `purge` | DELETE | `{BasePath}/bulk` | 同一模式下批量业务删除（`DeleteBulk`） |
 | `audit_read` | GET | `{BasePath}/:id/audit` | 显式 WithAudit 的独立 app/crud/audit.Reader |
-| `restore` | POST | `{BasePath}/:id/restore` | 显式 WithDeletion 的独立 DeletionApplication |
-| `purge` | DELETE | `{BasePath}/:id/purge` | 显式 WithDeletion 的独立 DeletionApplication |
+| `restore` | POST | `{BasePath}/:id/restore` | 同一 Application，显式选择对应 Op |
+| `purge` | DELETE | `{BasePath}/:id/purge` | 同一 Application，显式选择对应 Op |
 | `read` | GET | `{BasePath}/:id` | 读取单个实体 |
+
+写 Application 必须显式选择 `DeleteMode: crud.DeleteSoft` 或 `crud.DeletePurge`；未配置或未知模式在构造时失败，`quick.App` / `quick.DeclaredApp` 不会补默认值。模式在构造时冻结：`DeleteSoft` 标记软删除，重复 Delete 不会升级为清除；`DeletePurge` 的 Delete 进入完整 purge 授权、钩子和审计流程。`Purge` 始终物理清除活动或已删实体。
+
+**未公开 `OpPurge` 只隐藏 `/:id/purge`，不能阻止硬模式普通 DELETE 永久清除。** 标准 DELETE 与 bulk DELETE 使用同一 Application 的 `DeleteAction()` 核对 Descriptor，入口绑定、快速拒绝和实际执行均为相同动作。
+
+`EnableRestore` / `EnableDeletedQuery` 是独立执行选项，也可在硬模式开启以处理历史软删除记录；开启不自动公开路由。实体无软删除能力、缺少所需持久化端口或缺少 purge 端口时在 Application 构造阶段失败。
 
 `BasePath` 为空时直接注册到路由组根路径。批量路由共用单个动作的权限码；一批请求只做一次授权、一个事务，提交前任一元素失败整批回滚。
 
@@ -83,13 +97,13 @@ Descriptor 中声明了对应动作时才注册：
 
 ### 2.1 路由表自省
 
-路由集合是 `(auth.Descriptor, BasePath)` 的纯函数，可以脱离注册单独推导：
+路由集合是 `(auth.Descriptor, BasePath, Operations)` 的纯函数，可以脱离注册单独推导：
 
 ```go
 desc, specs, err := rest.Describe[*User, int64](app,
 	rest.WithBasePath[*User, int64]("/users"),
 )
-specs = rest.Specs(desc, "/users") // 纯投影，等价于上面的 specs
+specs = rest.Specs(desc, "/users") // 默认 CRUD 纯投影；自定义清单需传入同一组 Op
 ```
 
 `RouteSpec` 包含 `Op / Method / Path / Action / Permission`，可用于 OpenAPI、冲突检测和路由清单。`Describe` 复用注册校验，`Mount` 根据同一份 `Specs` 挂载实际路由。
@@ -138,6 +152,8 @@ REST 与命令入口共用 `operation.Runner.ExecuteTransfer` 的身份绑定和
 
 | Option | 说明 |
 | --- | --- |
+| `WithRoutes(ops...)` | 精确路由清单；无参隐藏所有标准路由 |
+| `WithAudit(reader)` | 组合独立审计历史读取 |
 | `WithBasePath(path)` | 资源基础路径 |
 | `WithPagination(defaultSize, maxSize)` | 分页默认值与上限；实际上限不超过 Application 的 `MaxPageSize` |
 | `WithQuerySchema(schema)` | 动态查询 schema；未提供时按实体类型自动推导 |
@@ -149,7 +165,7 @@ REST 与命令入口共用 `operation.Runner.ExecuteTransfer` 的身份绑定和
 | `WithErrorHandler(fn)` | 自定义错误响应 |
 | `WithResponseWrapper(fn)` | 成功响应包装 |
 | `WithHTTP201ForCreate()` | 创建成功返回 201 |
-| `WithPermissionChecker(checker)` | 按 Descriptor 权限码快速拒绝 |
+| `WithFastDeny()` | 使用同一 Application 编译计划的安全快速拒绝 |
 | `WithMiddleware(mw...)` / `WithAuth(mw)` / `WithLogging(mw)` | 追加路由中间件 |
 | `WithStartupRegistry(registry)` | `Mount` 时把应用登记进 Host 启动清单 |
 
@@ -177,8 +193,10 @@ REST 与命令入口共用 `operation.Runner.ExecuteTransfer` 的身份绑定和
 - Application 与路由组非 nil；
 - Descriptor 合法（资源名非空、动作名非空且不重复）；
 - `:id` 路由有可用的 ID codec；
-- 删除生命周期通过 WithDeletion 显式提供，不能依靠最大应用接口推断；
-- WithAudit / WithDeletion 的资源一致、动作不重复且能力不为空；
+- 显式操作清单无未知或重复 Op，选中操作有对应动作和执行端口；
+- DELETE 的 DeleteAction 与同一应用的 Descriptor 一致；
+- 生命周期路由只按 WithRoutes 显式选择；
+- WithAudit 的资源一致、动作不重复且能力不为空；
 - CORS 配置合法。
 
 ## 9. 示例
@@ -205,7 +223,7 @@ Host 启动 → 模块路由注册 → rest.Mount → 校验并挂载路由
 | 方向 | 依赖 |
 | --- | --- |
 | 上游调用方 | `host.Module(...).RouteRegistrar(...)`、`quick.RESTRegistrar(...)` |
-| Core 契约 | `app/crud`、`app/crud/audit`、`app/crud/deletion`、`auth`、`app/query`、`codec/idcodec`、`contextx`、`httpx` |
+| Core 契约 | `app/crud`、`app/crud/audit`、`auth`、`app/query`、`codec/idcodec`、`contextx`、`httpx` |
 | Runtime 物理层 | `gochen-runtime/http`（`RegisterRoute` 与路由方法分派）、`http/middleware`、`http/request` |
 | 内部工具 | `gochen-runtime/internal/httpheader` |
 

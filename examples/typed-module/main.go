@@ -42,7 +42,7 @@ func newNotes(database orm.IOrm) module.ModuleCtor {
 		if err != nil {
 			return nil, err
 		}
-		application, err := quick.DeclaredApp(repository, crud.Options[*Note, string]{Resource: noteResource}, nil,
+		application, err := quick.DeclaredApp(repository, crud.Options[*Note, string]{DeleteMode: crud.DeletePurge, Resource: noteResource}, nil,
 			auth.CompileOptions{Checker: authz.NewActionChecker()})
 		if err != nil {
 			return nil, err

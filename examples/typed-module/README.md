@@ -27,4 +27,4 @@ curl -X DELETE -H 'X-Demo-Role: editor' http://127.0.0.1:8080/api/v1/notes/note-
 GOWORK=off go test -count=1 ./examples/typed-module
 ```
 
-测试通过真实 TCP HTTP 请求验证 CRUD、无身份/无权限拒绝、乐观版本冲突、真实路由清单、取消停止以及注入数据库不被 Host 关闭。连接只由组合根拥有。业务审计和 ES 的独立构造与事务回归见 Core 的 `app/crud/audit`、`app/crud/deletion` 与 `app/eventsourced`，不要把示例身份入口或建表代码复制到生产。
+测试通过真实 TCP HTTP 请求验证 CRUD、无身份/无权限拒绝、乐观版本冲突、真实路由清单、取消停止以及注入数据库不被 Host 关闭。连接只由组合根拥有。业务审计和 ES 的独立构造与事务回归见 Core 的 `app/crud/audit` 与 `app/eventsourced`，不要把示例身份入口或建表代码复制到生产。

@@ -52,7 +52,7 @@ func TestApplicationTransferRejectsRawAndBoundORMTransactionsBeforeAuthorization
 				requireNoError(t, err, "inject raw session")
 			}
 			policy := &entryTransferPolicy{}
-			application, err := appcrud.NewApplication(r, appcrud.Options[*contracttest.Document, int64]{Resource: "document", Authorizer: policy,
+			application, err := appcrud.NewApplication(r, appcrud.Options[*contracttest.Document, int64]{DeleteMode: appcrud.DeleteSoft, Resource: "document", Authorizer: policy,
 				Actions: []auth.Action{{Name: "move", Kind: auth.KindTransfer, ReceiveAction: "receive", Dimensions: []meta.Dimension{"department"}}, {Name: "receive", Kind: auth.KindTransfer}}})
 			requireNoError(t, err, "application")
 			_, err = application.Transfer(ctx, "move", entity.ID, entity.Version, []auth.Assignment{{Dimension: "department", Value: 2}})

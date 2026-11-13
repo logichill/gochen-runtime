@@ -113,7 +113,7 @@ func newBindingFixture(t *testing.T) *bindingFixture {
 		}
 	}
 	for _, name := range []string{"orders", "inventory"} {
-		options := crud.Options[*bindingEntity, int64]{Resource: name, Actions: []auth.Action{{Name: "approve", Kind: auth.KindUpdate}, {Name: "unused", Kind: auth.KindUpdate}}}
+		options := crud.Options[*bindingEntity, int64]{DeleteMode: crud.DeletePurge, Resource: name, Actions: []auth.Action{{Name: "approve", Kind: auth.KindUpdate}, {Name: "unused", Kind: auth.KindUpdate}}}
 		descriptor, err := crud.Describe(options, true)
 		if err != nil {
 			t.Fatal(err)

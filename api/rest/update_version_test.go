@@ -18,7 +18,7 @@ func TestPlainUpdatesRequireCallerVersion(t *testing.T) {
 				ctx := context.Background()
 				repo, err := testkit.NewMemoryRepository[*timestampHandlerEntity, int64](testkit.NewInt64Sequence(1))
 				require.NoError(t, err)
-				app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()})
+				app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{DeleteMode: crud.DeletePurge, Resource: "items", Authorizer: auth.Allow()})
 				require.NoError(t, err)
 				entity := &timestampHandlerEntity{Name: "initial"}
 				require.NoError(t, app.Create(ctx, entity))
@@ -57,7 +57,7 @@ func TestPlainBulkVersionConflictRollsBackEarlierItems(t *testing.T) {
 	ctx := context.Background()
 	repo, err := testkit.NewMemoryRepository[*timestampHandlerEntity, int64](testkit.NewInt64Sequence(1))
 	require.NoError(t, err)
-	app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{Resource: "items", Authorizer: auth.Allow()})
+	app, err := crud.NewApplication(repo, crud.Options[*timestampHandlerEntity, int64]{DeleteMode: crud.DeletePurge, Resource: "items", Authorizer: auth.Allow()})
 	require.NoError(t, err)
 	first, second := &timestampHandlerEntity{Name: "first"}, &timestampHandlerEntity{Name: "second"}
 	require.NoError(t, app.Create(ctx, first))

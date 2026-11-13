@@ -5,7 +5,6 @@ import (
 	repopkg "gochen-runtime/db/orm/repo"
 	appcrud "gochen/app/crud"
 	appaudit "gochen/app/crud/audit"
-	appdeletion "gochen/app/crud/deletion"
 	"gochen/audit"
 	"gochen/auth"
 	"gochen/contextx"
@@ -154,7 +153,7 @@ func TestIndependentPersistenceCapabilities(t *testing.T) {
 		t.Fatal("rollback left audit records")
 	}
 	// 应用装配同样不把审计和回收站绑定在一起。
-	auditApp, err := appcrud.NewApplication[*capabilityAuditEntity, int64](auditRepo, appcrud.Options[*capabilityAuditEntity, int64]{Resource: "capability_audit", Authorizer: auth.Allow(), Audit: store})
+	auditApp, err := appcrud.NewApplication[*capabilityAuditEntity, int64](auditRepo, appcrud.Options[*capabilityAuditEntity, int64]{DeleteMode: appcrud.DeletePurge, Resource: "capability_audit", Authorizer: auth.Allow(), Audit: store})
 	must(err)
 	must(auditApp.Create(ctx, &capabilityAuditEntity{Entity: crud.Entity[int64]{ID: 2}, Name: "via application"}))
 	reader, err := appaudit.NewReader[int64](store, auditRepo, appaudit.Options{Resource: "capability_audit", Authorizer: auth.Allow()})
@@ -170,7 +169,7 @@ func TestIndependentPersistenceCapabilities(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatal("history reader lost physically deleted entity")
 	}
-	deletionApp, err := appdeletion.NewApplication[*capabilityDeletionEntity, int64](deletionRepo, appdeletion.Options[*capabilityDeletionEntity, int64]{Options: appcrud.Options[*capabilityDeletionEntity, int64]{Resource: "capability_deletion", Authorizer: auth.Allow()}})
+	deletionApp, err := appcrud.NewApplication[*capabilityDeletionEntity, int64](deletionRepo, appcrud.Options[*capabilityDeletionEntity, int64]{Resource: "capability_deletion", Authorizer: auth.Allow(), DeleteMode: appcrud.DeleteSoft, EnableRestore: true, EnableDeletedQuery: true})
 	must(err)
 	must(deletionRepo.Create(ctx, &capabilityDeletionEntity{Entity: crud.Entity[int64]{ID: 2}, Name: "no audit store"}, spec.All()))
 	must(deletionApp.Delete(ctx, 2))
@@ -179,7 +178,7 @@ func TestIndependentPersistenceCapabilities(t *testing.T) {
 	must(deletionApp.Delete(ctx, 2))
 	must(deletionApp.Purge(ctx, 2))
 	failingStore := &capabilityFailingAudit{AuditStore: store}
-	combinedApp, err := appdeletion.NewApplication[*capabilityCombinedEntity, int64](combinedRepo, appdeletion.Options[*capabilityCombinedEntity, int64]{Options: appcrud.Options[*capabilityCombinedEntity, int64]{Resource: "capability_combined", Authorizer: auth.Allow(), Audit: failingStore}})
+	combinedApp, err := appcrud.NewApplication[*capabilityCombinedEntity, int64](combinedRepo, appcrud.Options[*capabilityCombinedEntity, int64]{Resource: "capability_combined", Authorizer: auth.Allow(), Audit: failingStore, DeleteMode: appcrud.DeleteSoft, EnableRestore: true, EnableDeletedQuery: true})
 	must(err)
 	err = combinedApp.Delete(ctx, 1)
 	if !errors.Is(err, errors.Conflict) {
