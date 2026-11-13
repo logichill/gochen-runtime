@@ -13,22 +13,19 @@ approval, err := approver.Approve(ctx, ApproveOrder{
 ## 代码顺序
 
 - `order.go`：`Order.Approve` 管理业务规则，只允许 `pending → approved`，理由不能为空。失败不修改对象。
-- `approval.go`：`OrderApprover.Approve` 是业务入口。用例显式执行事务、加载、检查调用方版本、领域转换、保存和 DTO 映射。
-- `assembly.go`：仅在组合根使用 `auth.Compile`、一个 `app.Command` 和 `CommandRepository`。业务只拿到窄的订单访问接口及 `repo.WithinTx`，无法漏传授权条件。
-- `main.go`：创建独立内存 SQLite 和 `repo/lite` 仓储，装配后先直接审批订单 102，再启动回环 HTTP 服务。
+- `approval.go`：`OrderApprover.Approve` 使用既有 `crud.Application.Execute`，回调仅检查调用方版本并执行领域转换，框架负责授权、加载、事务、保护字段和保存；最后映射 DTO。
+- `assembly.go`：通过 `crud.Describe`、`auth.Compile` 与 `crud.NewApplication` 装配唯一执行路径，不再使用 Command、Grant 或仓储包装。
+- `main.go`：创建独立内存 SQLite 和仓储，先直接审批订单102，再启动回环 HTTP 服务。
 
-HTTP 绑定直接引用这一个 Command：
+HTTP 直接绑定同一具名业务对象：
 
 ```go
-approver := &OrderApprover{execute: command.Execute}
 orders, err := host.Module("orders").
-    Binding(rest.Bind(http.MethodPost, "/:id/approve", command, decodeApprove)).
+    Binding(rest.Bind(http.MethodPost, "/:id/approve", approver, decodeApprove)).
     Build()
 ```
 
-模块默认挂载在 `/api/v1/orders`，所以绑定路径只写 `/:id/approve`。
-
-`rest.Bind` 从 Command 取得冻结的授权元数据，模块同时登记应用和路由。HTTP 只解码传输输入，没有第二个动作字符串，也没有获得大 Application 后自行选择执行路径的 handler。直接调用仍执行同一个 Command，并使用调用时的可信身份重新授权。
+对象的 `Execute` 仅调用 `Approve`；`AuthorizationBinding` 从相同应用取得固定审批动作。HTTP 不另选动作，也不重复业务流程。模块默认挂载 `/api/v1/orders`；直接 Go 调用也使用调用时的可信身份正式授权。
 
 ## 运行
 

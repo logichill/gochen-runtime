@@ -1,4 +1,4 @@
-// 本示例以业务用例组合授权与显式 ES 提交工具，不使用反射聚合或聚合快照。
+// 本示例以 StateApplication 组合统一授权与显式 ES，不使用反射聚合或聚合快照。
 package main
 
 import (
@@ -9,6 +9,8 @@ import (
 	"gochen/auth"
 	"gochen/domain"
 	es "gochen/domain/eventsourced"
+	"gochen/domain/meta"
+	"gochen/domain/spec"
 	"gochen/errors"
 	"gochen/eventing/registry"
 	"gochen/eventing/store"
@@ -16,7 +18,6 @@ import (
 	"gochen/gen/uuid"
 	"log"
 	"math"
-	"strconv"
 )
 
 type accountState struct{ Balance int64 }
@@ -58,38 +59,44 @@ type Withdraw struct {
 	Amount          int64
 }
 
-// IAccountAuthorizer 按账户和动作校验调用者；返回 nil 才允许访问该完整事件流。
-// 多租户实现还须绑定租户边界，不能仅验证全局动作权限。
-type IAccountAuthorizer interface {
-	AuthorizeAccount(context.Context, int64, string) error
+// accountView 仅描述授权事实；业务状态仍是普通 accountState。
+type accountView struct {
+	ID int64 `entity:"id"`
 }
-type demoAccountAuthorizer struct{}
+type demoAccountScope struct{}
 
-func (demoAccountAuthorizer) AuthorizeAccount(ctx context.Context, id int64, action string) error {
+func (demoAccountScope) Vocabulary() auth.Vocabulary {
+	return auth.Vocabulary{Refs: []meta.Ref{meta.ID()}}
+}
+func (demoAccountScope) ResolveSpec(ctx context.Context, _ auth.Request) (spec.Spec, []auth.Assignment, error) {
 	principal, err := auth.RequirePrincipal(ctx)
 	if err != nil {
-		return err
+		return spec.Spec{}, nil, err
 	}
-	// 示例以固定账户所有权代替业务权限数据源，生产环境应显式注入真实策略。
-	if principal.SubjectID != "demo-user" || id != 888 || (action != "read" && action != "deposit" && action != "withdraw") {
-		return errors.NewCode(errors.Forbidden, "account access denied").WithContext("account_id", strconv.FormatInt(id, 10))
+	// 演示以固定所有权替代业务权限数据源。真实多租户系统须注入租户范围与可信映射。
+	if principal.SubjectID != "demo-user" {
+		return spec.Spec{}, nil, errors.NewCode(errors.Forbidden, "account access denied")
 	}
-	return nil
+	return spec.Eq(meta.ID(), int64(888)), nil, nil
 }
 
 type accountService struct {
-	repo       *appes.StateRepository[accountState, domain.IDomainEvent, int64]
-	authorizer IAccountAuthorizer
+	application *appes.StateApplication[accountState, domain.IDomainEvent, int64]
 }
 
 func (s *accountService) read(ctx context.Context, id int64) (*appes.State[accountState, int64], error) {
-	if err := s.authorizer.AuthorizeAccount(ctx, id, "read"); err != nil {
-		return nil, err
-	}
-	return s.repo.Load(ctx, id)
+	return s.application.Load(ctx, "read", id)
+}
+func (s *accountService) open(ctx context.Context, cmd Deposit) (*appes.State[accountState, int64], error) {
+	return s.application.Execute(ctx, "open", cmd.AccountID, cmd.ExpectedVersion, func(_ context.Context, state accountState) ([]domain.IDomainEvent, error) {
+		if cmd.Amount <= 0 {
+			return nil, errors.NewCode(errors.Validation, "initial deposit must be positive")
+		}
+		return []domain.IDomainEvent{&deposited{Amount: cmd.Amount}}, nil
+	})
 }
 func (s *accountService) deposit(ctx context.Context, cmd Deposit) (*appes.State[accountState, int64], error) {
-	return s.execute(ctx, cmd.AccountID, cmd.ExpectedVersion, "deposit", func(_ context.Context, state accountState) ([]domain.IDomainEvent, error) {
+	return s.application.Execute(ctx, "deposit", cmd.AccountID, cmd.ExpectedVersion, func(_ context.Context, state accountState) ([]domain.IDomainEvent, error) {
 		if cmd.Amount <= 0 || state.Balance > math.MaxInt64-cmd.Amount {
 			return nil, errors.NewCode(errors.Validation, "deposit must be positive and fit balance")
 		}
@@ -97,26 +104,12 @@ func (s *accountService) deposit(ctx context.Context, cmd Deposit) (*appes.State
 	})
 }
 func (s *accountService) withdraw(ctx context.Context, cmd Withdraw) (*appes.State[accountState, int64], error) {
-	return s.execute(ctx, cmd.AccountID, cmd.ExpectedVersion, "withdraw", func(_ context.Context, state accountState) ([]domain.IDomainEvent, error) {
+	return s.application.Execute(ctx, "withdraw", cmd.AccountID, cmd.ExpectedVersion, func(_ context.Context, state accountState) ([]domain.IDomainEvent, error) {
 		if cmd.Amount <= 0 || cmd.Amount > state.Balance {
 			return nil, errors.NewCode(errors.Validation, "invalid withdrawal")
 		}
 		return []domain.IDomainEvent{&withdrawn{Amount: cmd.Amount}}, nil
 	})
-}
-func (s *accountService) execute(ctx context.Context, id int64, expected uint64, action string, decide func(context.Context, accountState) ([]domain.IDomainEvent, error)) (*appes.State[accountState, int64], error) {
-	if err := s.authorizer.AuthorizeAccount(ctx, id, action); err != nil {
-		return nil, err
-	}
-	base, err := s.repo.Load(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if base.Version() != expected {
-		return nil, errors.NewCode(errors.Concurrency, "command expected version is stale")
-	}
-	// AppendEvents 再以同一版本检查，覆盖 Load 与追加之间的并发变更；不自动重试。
-	return s.repo.Execute(ctx, base, decide)
 }
 func newAccountService() (*accountService, error) {
 	events := registry.NewRegistry()
@@ -136,14 +129,41 @@ func newAccountService() (*accountService, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &accountService{repo: repo, authorizer: demoAccountAuthorizer{}}, nil
+	options := appes.StateOptions[accountState, int64, *accountView]{
+		Resource: "account",
+		Actions:  []auth.Action{{Name: "read", Kind: auth.KindRead}, {Name: "open", Kind: auth.KindCreate}, {Name: "deposit", Kind: auth.KindUpdate}, {Name: "withdraw", Kind: auth.KindUpdate}},
+		View:     func(id int64, _ accountState) *accountView { return &accountView{ID: id} },
+		Validate: func(state accountState) error {
+			if state.Balance < 0 {
+				return errors.NewCode(errors.Validation, "account balance cannot be negative")
+			}
+			return nil
+		},
+	}
+	descriptor, err := appes.DescribeState(options)
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := meta.Describe[*accountView]()
+	if err != nil {
+		return nil, err
+	}
+	options.Authorizer, err = auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData, Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: demoAccountScope{}}, System: auth.SystemCheckConstraints}}}, auth.CompileOptions{Metadata: metadata, Checker: auth.ActionCheckerFunc(func(ctx context.Context, _ string) error { _, err := auth.RequirePrincipal(ctx); return err })})
+	if err != nil {
+		return nil, err
+	}
+	application, err := appes.NewStateApplication(repo, options)
+	if err != nil {
+		return nil, err
+	}
+	return &accountService{application: application}, nil
 }
 func main() {
 	ctx, err := auth.WithPrincipal(context.Background(), auth.Principal{SubjectID: "demo-user"})
 	must(err)
 	service, err := newAccountService()
 	must(err)
-	funded, err := service.deposit(ctx, Deposit{AccountID: 888, ExpectedVersion: 0, Amount: 1000})
+	funded, err := service.open(ctx, Deposit{AccountID: 888, ExpectedVersion: 0, Amount: 1000})
 	must(err)
 	paid, err := service.withdraw(ctx, Withdraw{AccountID: 888, ExpectedVersion: funded.Version(), Amount: 250})
 	must(err)

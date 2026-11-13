@@ -38,9 +38,13 @@ func (rb *RouteBuilder[T, ID]) parseQueryParams(c httpx.IContext) (*query.QueryR
 	return parseQueryParams(c, rb.config)
 }
 
-// parsePaginationOptions 解析分页参数。
-func (rb *RouteBuilder[T, ID]) parsePaginationOptions(c httpx.IContext) (*query.PaginationOptions, error) {
-	return parsePaginationOptions(c, rb.config)
+// parsePaginationOptions 在计算偏移量前应用当前能力的分页上限，不影响其他能力。
+func (rb *RouteBuilder[T, ID]) parsePaginationOptions(c httpx.IContext, maxPageSize int) (*query.PaginationOptions, error) {
+	cfg := *rb.config
+	if maxPageSize > 0 && (cfg.Query.MaxPageSize <= 0 || cfg.Query.MaxPageSize > maxPageSize) {
+		cfg.Query.MaxPageSize = maxPageSize
+	}
+	return parsePaginationOptions(c, &cfg)
 }
 
 // AppendPaginationFilters 追加固定过滤条件，并同步补齐解码结果。

@@ -13,7 +13,7 @@ import (
 	runtimehttp "gochen-runtime/http"
 	"gochen-runtime/http/middleware"
 	"gochen-runtime/http/nethttp"
-	"gochen/app"
+	"gochen/app/crud"
 	"gochen/auth"
 	"gochen/contextx"
 	domcrud "gochen/domain/crud"
@@ -49,16 +49,56 @@ func (bindingScope) Vocabulary() auth.Vocabulary {
 	return auth.Vocabulary{Refs: []meta.Ref{meta.ByDimension("department")}}
 }
 
-type boundTestCommand = app.Command[bindingInput, *app.CommandRepository[*bindingEntity, int64], bindingOutput]
-
+// bindingService 保留具名业务方法，以同一对象提供传输执行和授权清单。
+type bindingService struct{ fixture *bindingFixture }
 type bindingFixture struct {
-	command *boundTestCommand
-	repo    *testkit.MemoryRepository[*bindingEntity, int64]
-	deny    bool
-	calls   int
-	failure error
+	service      *bindingService
+	repo         *testkit.MemoryRepository[*bindingEntity, int64]
+	applications []*crud.Application[*bindingEntity, int64]
+	authorizers  []auth.IAuthorizer
+	deny         bool
+	calls        int
+	failure      error
 }
 
+func (s *bindingService) AuthorizationBinding() (auth.EntryBinding, error) {
+	if s == nil || s.fixture == nil {
+		return auth.EntryBinding{}, errors.NewCode(errors.InvalidInput, "service is not initialized")
+	}
+	f := s.fixture
+	binding, err := f.applications[0].AuthorizationBinding("approve")
+	if err != nil {
+		return auth.EntryBinding{}, err
+	}
+	other, err := f.applications[1].AuthorizationBinding("approve")
+	if err != nil {
+		return auth.EntryBinding{}, err
+	}
+	binding.Resources = []auth.ResourceBinding{{Name: "inventory", Plan: other.Plan, Action: other.Action, Source: other.Source, ConditionPath: other.ConditionPath}}
+	return binding, nil
+}
+func (s *bindingService) Execute(ctx context.Context, input bindingInput) (bindingOutput, error) {
+	return s.Approve(ctx, input)
+}
+func (s *bindingService) Approve(ctx context.Context, input bindingInput) (bindingOutput, error) {
+	f := s.fixture
+	// 跨资源先预检；普通应用仍正式授权，不隐式复用决定或暴露原始仓储。
+	for i, name := range []string{"orders", "inventory"} {
+		decision, err := f.authorizers[i].Authorize(ctx, auth.Request{Resource: name, Action: "approve", IDs: []string{fmt.Sprint(input.ID)}})
+		if err != nil {
+			return bindingOutput{}, err
+		}
+		if !decision.Allowed {
+			return bindingOutput{}, errors.NewCode(errors.Forbidden, "preflight denied")
+		}
+	}
+	entity, err := f.applications[0].Execute(ctx, "approve", input.ID, func(_ context.Context, e *bindingEntity) error { e.Name = input.Name; return nil })
+	if err != nil {
+		return bindingOutput{}, err
+	}
+	f.calls++
+	return bindingOutput{Name: entity.Name, Operator: contextx.Operator(ctx)}, f.failure
+}
 func newBindingFixture(t *testing.T) *bindingFixture {
 	t.Helper()
 	f := &bindingFixture{}
@@ -72,47 +112,31 @@ func newBindingFixture(t *testing.T) *bindingFixture {
 			t.Fatal(err)
 		}
 	}
-	resources := make([]app.CommandResource[bindingInput], 0, 2)
 	for _, name := range []string{"orders", "inventory"} {
-		authorizer, err := auth.Compile(auth.Declaration{
-			Descriptor:     auth.Descriptor{Resource: name, Actions: []auth.Action{{Name: "approve", Kind: auth.KindUpdate}, {Name: "unused", Kind: auth.KindUpdate}}},
-			ResourceAccess: auth.ResourceAccessData,
-			Rules:          []auth.Rule{{Scope: &auth.ScopeRule{Resolver: bindingScope{}}}},
-		}, auth.CompileOptions{Metadata: f.repo.ExecutionDescriptor().Metadata(), Checker: auth.ActionCheckerFunc(func(ctx context.Context, permission string) error {
-			principal, ok := auth.PrincipalFromContext(ctx)
-			if !ok || principal.SubjectID != "alice" || (f.deny && permission == "inventory:api:approve") {
-				return errors.NewCode(errors.Forbidden, "denied")
-			}
-			return nil
-		})})
+		options := crud.Options[*bindingEntity, int64]{Resource: name, Actions: []auth.Action{{Name: "approve", Kind: auth.KindUpdate}, {Name: "unused", Kind: auth.KindUpdate}}}
+		descriptor, err := crud.Describe(options, true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		resources = append(resources, app.CommandResource[bindingInput]{Name: name, Repository: f.repo, Authorizer: authorizer, Action: "approve", Intent: func(input bindingInput) (auth.Request, error) {
-			return auth.Request{IDs: []string{fmt.Sprint(input.ID)}}, nil
-		}})
+		options.Authorizer, err = auth.Compile(auth.Declaration{Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData, Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: bindingScope{}}}}},
+			auth.CompileOptions{Metadata: f.repo.ExecutionDescriptor().Metadata(), Checker: auth.ActionCheckerFunc(func(ctx context.Context, permission string) error {
+				principal, ok := auth.PrincipalFromContext(ctx)
+				if !ok || principal.SubjectID != "alice" || (f.deny && permission == "inventory:api:approve") {
+					return errors.NewCode(errors.Forbidden, "denied")
+				}
+				return nil
+			})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		application, err := crud.NewApplication(f.repo, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.applications = append(f.applications, application)
+		f.authorizers = append(f.authorizers, options.Authorizer)
 	}
-	f.command, err = app.NewCommand(app.CommandOptions[bindingInput, *app.CommandRepository[*bindingEntity, int64], bindingOutput]{
-		Resources: resources,
-		Access: func(_ context.Context, _ bindingInput, grants []*app.CommandGrant) (*app.CommandRepository[*bindingEntity, int64], error) {
-			return app.NewCommandRepository(f.repo, grants[0])
-		},
-		Handler: func(ctx context.Context, input bindingInput, repo *app.CommandRepository[*bindingEntity, int64]) (bindingOutput, error) {
-			entity, err := repo.Get(ctx, input.ID)
-			if err != nil {
-				return bindingOutput{}, err
-			}
-			entity.Name = input.Name
-			if err := repo.Update(ctx, entity); err != nil {
-				return bindingOutput{}, err
-			}
-			f.calls++
-			return bindingOutput{Name: entity.Name, Operator: contextx.Operator(ctx)}, f.failure
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.service = &bindingService{fixture: f}
 	return f
 }
 
@@ -145,9 +169,9 @@ func invokeBinding(t *testing.T, handler httpx.Handler, ctx context.Context, bod
 	return writer
 }
 
-func TestCommandBindingUsesSameProtectedCommandForHTTPAndBackend(t *testing.T) {
+func TestEndpointBindingUsesSameProtectedBusinessForHTTPAndBackend(t *testing.T) {
 	f := newBindingFixture(t)
-	binding := Bind("post", "/orders/approve", f.command, decodeBindingInput, CommandOptions{Audit: AuditOptions{OperatorExtractor: func(httpx.IContext) (string, bool) { return "http-actor", true }}})
+	binding := Bind("post", "/orders/approve", f.service, decodeBindingInput, EndpointOptions{Audit: AuditOptions{OperatorExtractor: func(httpx.IContext) (string, bool) { return "http-actor", true }}})
 	router := testkit.NewRecordingRouter()
 	if err := binding.RegisterRoutes(router); err != nil {
 		t.Fatal(err)
@@ -164,7 +188,7 @@ func TestCommandBindingUsesSameProtectedCommandForHTTPAndBackend(t *testing.T) {
 	if response.Code != 200 || output.Data.Name != "http" || output.Data.Operator != "http-actor" || f.calls != 1 {
 		t.Fatalf("HTTP result: %d %s calls=%d", response.Code, response.Body, f.calls)
 	}
-	backend, err := f.command.Execute(ctx, bindingInput{ID: 1, Name: "backend"})
+	backend, err := f.service.Execute(ctx, bindingInput{ID: 1, Name: "backend"})
 	if err != nil || backend.Name != "backend" || f.calls != 2 {
 		t.Fatalf("backend result: %+v %v calls=%d", backend, err, f.calls)
 	}
@@ -173,7 +197,7 @@ func TestCommandBindingUsesSameProtectedCommandForHTTPAndBackend(t *testing.T) {
 	if response.Code != 403 || f.calls != 2 {
 		t.Fatalf("secondary resource denial: %d calls=%d", response.Code, f.calls)
 	}
-	if _, err := f.command.Execute(ctx, bindingInput{ID: 1, Name: "denied"}); !errors.Is(err, errors.Forbidden) || f.calls != 2 {
+	if _, err := f.service.Execute(ctx, bindingInput{ID: 1, Name: "denied"}); !errors.Is(err, errors.Forbidden) || f.calls != 2 {
 		t.Fatalf("backend secondary denial: %v calls=%d", err, f.calls)
 	}
 	f.deny = false
@@ -187,9 +211,9 @@ func TestCommandBindingUsesSameProtectedCommandForHTTPAndBackend(t *testing.T) {
 	}
 }
 
-func TestCommandBindingPreservesEveryResourceInHostEntryChecks(t *testing.T) {
+func TestEndpointBindingPreservesEveryResourceInHostEntryChecks(t *testing.T) {
 	f := newBindingFixture(t)
-	binding := Bind("POST", "/approve", f.command, decodeBindingInput)
+	binding := Bind("POST", "/approve", f.service, decodeBindingInput)
 	contribution, err := binding.ModuleBinding()
 	if err != nil || len(contribution.Applications) != 2 || contribution.RouteRegistrars[0] != binding {
 		t.Fatalf("module contribution: %+v %v", contribution, err)
@@ -217,14 +241,14 @@ func TestCommandBindingPreservesEveryResourceInHostEntryChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := entries.Report()
-	var commandEntry *auth.EntryStatus
+	var businessEntry *auth.EntryStatus
 	for index := range report {
 		if report[index].Entry.Key == "POST /api/orders/approve" {
-			commandEntry = &report[index]
+			businessEntry = &report[index]
 		}
 	}
-	if commandEntry == nil || commandEntry.Module != "orders" || len(commandEntry.Resources) != 1 || commandEntry.Resources[0].Plan.Descriptor.Resource != "inventory" {
-		t.Fatalf("incomplete command entry: %+v", report)
+	if businessEntry == nil || businessEntry.Module != "orders" || len(businessEntry.Resources) != 1 || businessEntry.Resources[0].Plan.Descriptor.Resource != "inventory" {
+		t.Fatalf("incomplete business entry: %+v", report)
 	}
 	// A manual route still fails the independent Host inventory check.
 	unbound := nethttp.NewServer(nil)
@@ -234,22 +258,22 @@ func TestCommandBindingPreservesEveryResourceInHostEntryChecks(t *testing.T) {
 	}
 }
 
-func TestCommandBindingRejectsInvalidConfigurationBeforeRegistering(t *testing.T) {
+func TestEndpointBindingRejectsInvalidConfigurationBeforeRegistering(t *testing.T) {
 	f := newBindingFixture(t)
-	var nilCommand *boundTestCommand
-	var nilBinding *CommandBinding[bindingInput, *app.CommandRepository[*bindingEntity, int64], bindingOutput]
-	cases := []*CommandBinding[bindingInput, *app.CommandRepository[*bindingEntity, int64], bindingOutput]{
+	var nilService *bindingService
+	var nilBinding *EndpointBinding[bindingInput, bindingOutput]
+	cases := []*EndpointBinding[bindingInput, bindingOutput]{
 		nilBinding,
-		Bind("POST", "/approve", nilCommand, decodeBindingInput),
-		Bind("POST", "/approve", new(boundTestCommand), decodeBindingInput),
-		Bind("TRACE", "/approve", f.command, decodeBindingInput),
-		Bind("POST", " ", f.command, decodeBindingInput),
-		Bind("POST", "/approve", f.command, nil),
-		Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{}, CommandOptions{}),
-		Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{MaxBodySize: -1}),
-		Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{SuccessStatus: 204}),
-		Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{HTTP: HTTPOptions{Middlewares: []httpx.Middleware{nil}}}),
-		Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{HTTP: HTTPOptions{CORS: &middleware.CORSConfig{AllowOrigins: []string{"*"}, AllowCredentials: true}}}),
+		Bind("POST", "/approve", nilService, decodeBindingInput),
+		Bind("POST", "/approve", new(bindingService), decodeBindingInput),
+		Bind("TRACE", "/approve", f.service, decodeBindingInput),
+		Bind("POST", " ", f.service, decodeBindingInput),
+		Bind("POST", "/approve", f.service, nil),
+		Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{}, EndpointOptions{}),
+		Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{MaxBodySize: -1}),
+		Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{SuccessStatus: 204}),
+		Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{HTTP: HTTPOptions{Middlewares: []httpx.Middleware{nil}}}),
+		Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{HTTP: HTTPOptions{CORS: &middleware.CORSConfig{AllowOrigins: []string{"*"}, AllowCredentials: true}}}),
 	}
 	for index, binding := range cases {
 		router := testkit.NewRecordingRouter()
@@ -262,9 +286,9 @@ func TestCommandBindingRejectsInvalidConfigurationBeforeRegistering(t *testing.T
 	}
 }
 
-func TestCommandBindingSharesBodyLimitDecodeAndDegradedErrors(t *testing.T) {
+func TestEndpointBindingSharesBodyLimitDecodeAndDegradedErrors(t *testing.T) {
 	f := newBindingFixture(t)
-	binding := Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{MaxBodySize: 50})
+	binding := Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{MaxBodySize: 50})
 	router := testkit.NewRecordingRouter()
 	if err := binding.RegisterRoutes(router); err != nil {
 		t.Fatal(err)
@@ -273,7 +297,7 @@ func TestCommandBindingSharesBodyLimitDecodeAndDegradedErrors(t *testing.T) {
 	for _, body := range []string{`{"id":1,"unknown":true}`, `{"id":1,"name":"` + strings.Repeat("x", 100) + `"}`} {
 		response := invokeBinding(t, handler, bindingContext(t), body)
 		if response.Code < 400 || f.calls != 0 {
-			t.Fatalf("invalid input ran command: %d calls=%d", response.Code, f.calls)
+			t.Fatalf("invalid input ran business: %d calls=%d", response.Code, f.calls)
 		}
 	}
 	f.failure = contextx.WrapAfterCommitError(errors.NewCode(errors.Internal, "delivery failed"))
@@ -283,10 +307,10 @@ func TestCommandBindingSharesBodyLimitDecodeAndDegradedErrors(t *testing.T) {
 	}
 }
 
-func TestCommandBindingFreezesCORSOptionsAndKeepsPreflightOutsideCommand(t *testing.T) {
+func TestEndpointBindingFreezesCORSOptionsAndKeepsPreflightOutsideBusiness(t *testing.T) {
 	f := newBindingFixture(t)
 	origins := []string{"https://client.example"}
-	binding := Bind("POST", "/approve", f.command, decodeBindingInput, CommandOptions{HTTP: HTTPOptions{CORS: &middleware.CORSConfig{AllowOrigins: origins}}})
+	binding := Bind("POST", "/approve", f.service, decodeBindingInput, EndpointOptions{HTTP: HTTPOptions{CORS: &middleware.CORSConfig{AllowOrigins: origins}}})
 	origins[0] = "https://changed.example"
 	router := testkit.NewRecordingRouter()
 	if err := binding.RegisterRoutes(router); err != nil {
@@ -294,7 +318,7 @@ func TestCommandBindingFreezesCORSOptionsAndKeepsPreflightOutsideCommand(t *test
 	}
 	routes := router.RecordedRoutes()
 	if len(routes) != 2 || routes[1].Method != http.MethodOptions {
-		t.Fatalf("missing command preflight: %+v", routes)
+		t.Fatalf("missing business preflight: %+v", routes)
 	}
 	request := httptest.NewRequest(http.MethodOptions, "/approve", nil)
 	request.Header.Set("Origin", "https://client.example")
@@ -318,18 +342,18 @@ func (rejectedBindingRegistry) BindHTTP(string, string, auth.EntryBinding) error
 	return errors.NewCode(errors.FailedPrecondition, "entry registry is sealed")
 }
 
-func TestCommandBindingStopsBeforeMountWhenEntryRegistrationFails(t *testing.T) {
+func TestEndpointBindingStopsBeforeMountWhenEntryRegistrationFails(t *testing.T) {
 	f := newBindingFixture(t)
 	server := nethttp.NewServer(nil)
 	group, err := runtimehttp.WithEntryRegistry(server.Group("/orders"), rejectedBindingRegistry{}, "orders")
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := Bind("POST", "/approve", f.command, decodeBindingInput)
+	binding := Bind("POST", "/approve", f.service, decodeBindingInput)
 	if err := binding.RegisterRoutes(group); !errors.Is(err, errors.FailedPrecondition) {
 		t.Fatalf("registry rejection was hidden: %v", err)
 	}
 	if len(server.Routes()) != 0 || f.calls != 0 {
-		t.Fatal("entry rejection must not mount or run command")
+		t.Fatal("entry rejection must not mount or run business")
 	}
 }

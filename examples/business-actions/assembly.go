@@ -10,7 +10,7 @@ import (
 	"gochen-runtime/host"
 	"gochen-runtime/host/authz"
 	"gochen-runtime/host/module"
-	"gochen/app"
+	"gochen/app/crud"
 	"gochen/auth"
 	"gochen/db/orm"
 	"gochen/domain/meta"
@@ -28,36 +28,24 @@ func newOrders(database orm.IOrm) (*OrderApprover, module.IModule, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	authorizer, err := auth.Compile(auth.Declaration{
-		Descriptor: auth.Descriptor{Resource: "order", Actions: []auth.Action{
-			{Name: approveAction, Kind: auth.KindUpdate, Permission: "order:api:approve"},
-		}},
-		ResourceAccess: auth.ResourceAccessData,
-		Rules:          []auth.Rule{{Scope: &auth.ScopeRule{Resolver: departmentScope{}}, System: auth.SystemCheckConstraints}},
+	options := crud.Options[*Order, int64]{Resource: "order", Actions: []auth.Action{{Name: approveAction, Kind: auth.KindUpdate, Permission: "order:api:approve"}}}
+	descriptor, err := crud.Describe(options, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	options.Authorizer, err = auth.Compile(auth.Declaration{
+		Descriptor: descriptor, ResourceAccess: auth.ResourceAccessData,
+		Rules: []auth.Rule{{Scope: &auth.ScopeRule{Resolver: departmentScope{}}, System: auth.SystemCheckConstraints}},
 	}, auth.CompileOptions{Checker: authz.NewActionChecker(), Metadata: repository.ExecutionDescriptor().Metadata()})
 	if err != nil {
 		return nil, nil, err
 	}
-	command, err := app.NewCommand(app.CommandOptions[ApproveOrder, approvalAccess, Approval]{
-		Resources: []app.CommandResource[ApproveOrder]{{
-			Name: "order", Repository: repository, Authorizer: authorizer, Action: approveAction,
-			Intent: func(input ApproveOrder) (auth.Request, error) {
-				return auth.Request{IDs: []string{strconv.FormatInt(input.ID, 10)}}, nil
-			},
-		}},
-		Access: func(_ context.Context, _ ApproveOrder, grants []*app.CommandGrant) (approvalAccess, error) {
-			orders, err := app.NewCommandRepository(repository, grants[0])
-			return approvalAccess{orders: orders, withinTx: repository.WithinTx}, err
-		},
-		Handler: approveOrder,
-	})
+	application, err := crud.NewApplication(repository, options)
 	if err != nil {
 		return nil, nil, err
 	}
-	// 同一个 command 同时提供调用能力与冻结的授权元数据，HTTP 不另选动作。
-	approver := &OrderApprover{execute: command.Execute}
-	orders, err := host.Module("orders").Name("订单审批").
-		Binding(rest.Bind(http.MethodPost, "/:id/approve", command, decodeApprove)).Build()
+	approver := &OrderApprover{orders: application}
+	orders, err := host.Module("orders").Name("订单审批").Binding(rest.Bind(http.MethodPost, "/:id/approve", approver, decodeApprove)).Build()
 	return approver, orders, err
 }
 

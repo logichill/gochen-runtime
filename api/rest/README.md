@@ -11,7 +11,7 @@
 | `rest.Mount(group, app, opts...)` | 一次性挂载标准路由；推荐 |
 | `builder, err := rest.NewRouteBuilder(app, opts...)` | 需要先构造再 `Register(group)` 时使用 |
 | `rest.Resource(app, opts...)` | 将同一应用和标准路由作为一个 Module binding 提交 |
-| `rest.Bind(method, path, command, decode, options...)` | 将同一类型化 Command 的执行与全部授权元数据绑定为 HTTP 入口 |
+| `rest.Bind(method, path, endpoint, decode, options...)` | 将同一具名业务对象的类型化执行与授权元数据绑定为 HTTP 入口 |
 | `rest.Transfer(group, app, runner, path, action, opts...)` | 显式注册带调用方版本与幂等键的 POST 迁移动作 |
 | `rest.Describe(app, opts...)` | 只推导 Descriptor 与路由表，不注册任何路由 |
 | `quick.RESTRegistrar(app, opts...)` | 生成 `func(httpx.IRouteGroup) error`，供显式 `module.RouteRegistrarFunc` 使用 |
@@ -98,23 +98,21 @@ specs = rest.Specs(desc, "/users") // 纯投影，等价于上面的 specs
 
 ## 3. 业务动作
 
-业务用例使用自己的输入、输出与命名接口；装配端通过 `app.Command` 连接其授权访问能力。HTTP 不再接收另一个动作名或可以任意选择应用动作的 handler：
+业务用例保留自己的输入、输出与具名方法，内部使用受保护的 CRUD／ES Application。传输只需要同一对象实现 `IEndpoint[Input, Output]`：`Execute` 调用具名方法，`AuthorizationBinding()` 从它实际执行的应用和固定动作取得授权声明。不依赖具体框架用例类型，也不接受另一组任意 handler＋权限字符串。
 
 ```go
-// approve 已通过 app.NewCommand 绑定资源授权、受约束 Access 与业务函数。
-// decodeApprove 只做 HTTP 输入解码：func(httpx.IContext) (ApproveOrder, error)。
-httpBinding := rest.Bind("POST", "/:id/approve", approve, decodeApprove)
+// approver.Approve 内部使用 orders.Execute(ctx, "approve", ...)。
+// approver.Execute 只调用 Approve；AuthorizationBinding 返回同一个固定动作。
+httpBinding := rest.Bind("POST", "/:id/approve", approver, decodeApprove)
 orderModule, err := host.Module("orders").Binding(httpBinding).Build()
-
-// 后台直接调用同一对象，业务层可以用 OrderApprover.Approve 包装它。
-result, err := approve.Execute(ctx, input)
+result, err := approver.Approve(ctx, input)
 ```
 
-完整示例见 [business-actions](../../examples/business-actions/)。`Command` 的全部资源必须先通过授权，再构造访问能力与执行用例；HTTP 与后台都走这条路径。注册元数据来自同一对象的 `AuthorizationBinding`，主资源与附加资源不会分开手工声明。`ModuleBinding` 同时把命令实际使用的资源动作投影进应用清单；不把计划中未调用的动作登记为已提供的用例。
+完整示例见 [business-actions](../../examples/business-actions/)。HTTP、Worker 和直接 Go 调用都必须经过同一受保护应用。接口实现是可信装配边界：审核方法与绑定同源，并用行为测试核对，不能把任意接口实现当作沙箱。多资源业务对象应把全部实际资源绑定投影到 `EntryBinding.Resources`。
 
-`Bind` 返回类型化 `CommandBinding`，同时实现 `module.IBinding` 与 `module.IRouteRegistrar`。也可以直接调用 `RegisterRoutes(group)`。配置错误由 `Build` 或 `RegisterRoutes` 返回，不执行命令。路由登记与标准 `Mount` 一样并非事务性操作；若登记过程中失败，重试应重建路由组或服务器，避免重复部分已登记的入口。原 `rest.Action` 与 `ActionHandler` 已移除。
+`Bind` 返回类型化 `EndpointBinding`，同时实现 `module.IBinding` 与 `module.IRouteRegistrar`。配置在挂载前校验，支持直接 `RegisterRoutes(group)`；登记失败应重建路由组/服务器，不原地重复部分挂载。它只从计划投影实际动作，不把未提供的动作登记成业务入口。
 
-可选的一个 `CommandOptions` 值复用 `HTTPOptions`、`ResponseOptions` 和 `AuditOptions`，另有 `MaxBodySize`、`SuccessStatus`。默认以 200 和 `DefaultResponseWrapper(output)` 返回结果，保留标准请求体上限、错误映射与提交后降级标识。只接受带响应体的 2xx JSON 状态。操作人提取派生原请求 context，不替换主体、租户与取消信号；业务授权、版本和审计要求仍在用例内部执行。CORS 配置按标准资源方式生成预检，同一路径的多个入口应由上层统一配置 CORS。
+一个可选的 `EndpointOptions` 复用 HTTPOptions、ResponseOptions、AuditOptions，另有 MaxBodySize、SuccessStatus。默认 200 JSON 信封，保留请求体上限、错误映射、AfterCommitError 降级标识、可信操作人上下文及 CORS。JSON 成功状态须带响应体。授权和持久化仍由业务对象中的受保护应用执行，不由 HTTP 替代。
 
 普通 CRUD 资源可以一次绑定，无需重复登记应用与路由：
 
@@ -200,7 +198,7 @@ Host 启动 → 模块路由注册 → rest.Mount → 校验并挂载路由
 请求结束 → 响应包装或错误处理
 ```
 
-`rest.Bind` 与标准路由共用错误映射、提交后降级、操作人派生和 CORS 预检；命令的完整授权始终在 `Command.Execute` 执行。
+`rest.Bind` 与标准路由共用错误映射、提交后降级、操作人派生和 CORS 预检；正式授权始终在业务对象使用的 CRUD／ES Application 执行。
 
 ## 11. 依赖关系
 

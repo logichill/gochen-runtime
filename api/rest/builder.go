@@ -203,9 +203,6 @@ func (rb *RouteBuilder[T, ID]) prepare() error {
 	if err := rb.validateCapabilities(descriptor); err != nil {
 		return err
 	}
-	if max := rb.service.MaxPageSize(); max > 0 && (rb.config.Query.MaxPageSize <= 0 || rb.config.Query.MaxPageSize > max) {
-		rb.config.Query.MaxPageSize = max
-	}
 	rb.descriptor = descriptor
 	return nil
 }

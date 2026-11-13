@@ -27,7 +27,7 @@ func (rb *RouteBuilder[T, ID]) handleList(c httpx.IContext) error {
 		}
 		return c.JSON(http.StatusOK, httpx.JSONValue(rb.config.Response.ResponseWrapper(data)))
 	}
-	opts, err := rb.parsePaginationOptions(c)
+	opts, err := rb.parsePaginationOptions(c, rb.service.MaxPageSize())
 	if err != nil {
 		return err
 	}

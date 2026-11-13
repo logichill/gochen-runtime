@@ -11,7 +11,7 @@ func (rb *RouteBuilder[T, ID]) handleListDeleted(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	opts, err := rb.parsePaginationOptions(c)
+	opts, err := rb.parsePaginationOptions(c, lifecycle.MaxPageSize())
 	if err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func (rb *RouteBuilder[T, ID]) handleAuditTrail(c httpx.IContext) error {
 	if err != nil {
 		return err
 	}
-	opts, err := rb.parsePaginationOptions(c)
+	opts, err := rb.parsePaginationOptions(c, rb.audit.MaxPageSize())
 	if err != nil {
 		return err
 	}
